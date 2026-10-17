@@ -59,8 +59,10 @@ def check_cycle():
 
 
 if __name__ == "__main__":
-    if not os.environ.get("DATABASE_URL"):
-        raise SystemExit("Set DATABASE_URL to a disposable development database")
+    if not os.environ.get("DATABASE_URL") and not all(
+        os.environ.get(name) for name in ("PGHOST", "PGUSER", "PGDATABASE")
+    ):
+        raise SystemExit("Set DATABASE_URL or PGHOST, PGUSER and PGDATABASE for a disposable database")
     check_cycle()
     check_cycle()  # Migrations must remain repeatable on the same database.
     print("PASS: startup, migrations, HTTP health, healthcheck exit status, SIGTERM, restart")
