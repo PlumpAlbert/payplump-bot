@@ -17,6 +17,15 @@ import (
 
 func testStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
+	s, ctx := unmigratedStore(t)
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return s, ctx
+}
+
+func unmigratedStore(t *testing.T) (*Store, context.Context) {
+	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	cfg, err := connectionConfig(url, 4)
 	if err != nil {
@@ -49,9 +58,6 @@ func testStore(t *testing.T) (*Store, context.Context) {
 	}
 	s := &Store{pool: pool}
 	t.Cleanup(s.Close)
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
 	return s, ctx
 }
 

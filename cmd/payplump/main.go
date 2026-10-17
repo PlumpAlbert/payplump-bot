@@ -54,17 +54,37 @@ func run(logger *slog.Logger, args []string) error {
 		return fmt.Errorf("database migrations: %w", err)
 	}
 	cancelStartup()
-	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), store.Ping)
-	var worker func(context.Context) error
+	var endpoint *telegram.WebhookHandler
+	var handler http.Handler
+	var initialize func(context.Context) error
 	if telegramConfig.Enabled {
-		worker = telegram.NewPoller(telegram.NewClient(telegramConfig.Token), store, logger).Run
+		endpoint, err = telegram.NewWebhookHandler(telegramConfig.WebhookSecret, store)
+		if err != nil {
+			return err
+		}
+		handler = endpoint
+		initialize = func(ctx context.Context) error {
+			bot, err := telegram.ConfigureWebhook(ctx, telegram.NewClient(telegramConfig.Token), telegramConfig, logger)
+			if err != nil {
+				return err
+			}
+			return endpoint.Activate(bot)
+		}
 	}
-	return serve(ctx, logger, srv, worker)
+	ready := func(ctx context.Context) error {
+		if endpoint != nil && !endpoint.Ready() {
+			return errors.New("Telegram webhook setup pending")
+		}
+		return store.Ping(ctx)
+	}
+	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), ready, handler)
+	return serve(ctx, logger, srv, initialize)
 }
 
-// A fatal worker error stops HTTP too; stopping HTTP cancels the poller before
-// waiting for it. Both components finish before the database pool is closed.
-func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, worker func(context.Context) error) error {
+// The listener is opened before registering the webhook. Successful setup leaves
+// HTTP serving; fatal setup errors stop the service. Shutdown drains in-flight
+// requests before the database pool is closed and preserves Telegram's webhook.
+func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, initialize func(context.Context) error) error {
 	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		return fmt.Errorf("HTTP listen: %w", err)
@@ -73,26 +93,33 @@ func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, worker fu
 	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- srv.Serve(listener) }()
-	var workerResult chan error
-	if worker != nil {
-		workerResult = make(chan error, 1)
-		go func() { workerResult <- worker(serviceCtx) }()
+	var setupResult chan error
+	if initialize != nil {
+		setupResult = make(chan error, 1)
+		go func() { setupResult <- initialize(serviceCtx) }()
 	}
 	var failure error
-	select {
-	case err := <-result:
-		result = nil
-		if !errors.Is(err, http.ErrServerClosed) {
-			failure = err
+running:
+	for {
+		select {
+		case err := <-result:
+			result = nil
+			if !errors.Is(err, http.ErrServerClosed) {
+				failure = err
+			}
+			break running
+		case err := <-setupResult:
+			setupResult = nil
+			if err == nil {
+				continue
+			}
+			if ctx.Err() == nil {
+				failure = fmt.Errorf("Telegram webhook setup: %w", err)
+			}
+			break running
+		case <-ctx.Done():
+			break running
 		}
-	case err := <-workerResult:
-		workerResult = nil
-		if err != nil {
-			failure = fmt.Errorf("Telegram polling: %w", err)
-		} else if ctx.Err() == nil {
-			failure = errors.New("Telegram polling stopped unexpectedly")
-		}
-	case <-ctx.Done():
 	}
 	cancel()
 	logger.Info("shutting down")
@@ -107,12 +134,14 @@ func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, worker fu
 			failure = errors.Join(failure, err)
 		}
 	}
-	if workerResult != nil {
+	if setupResult != nil {
 		select {
-		case err := <-workerResult:
-			failure = errors.Join(failure, err)
+		case err := <-setupResult:
+			if !errors.Is(err, context.Canceled) {
+				failure = errors.Join(failure, err)
+			}
 		case <-shutdownCtx.Done():
-			failure = errors.Join(failure, errors.New("Telegram shutdown timed out"))
+			failure = errors.Join(failure, errors.New("Telegram webhook setup shutdown timed out"))
 		}
 	}
 	return failure

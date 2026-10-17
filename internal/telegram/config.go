@@ -44,7 +44,7 @@ func ConfigFromEnv() (Config, error) {
 	}
 	cfg.WebhookURL = os.Getenv("TELEGRAM_WEBHOOK_URL")
 	if !validWebhookURL(cfg.WebhookURL) {
-		return Config{}, errors.New("TELEGRAM_WEBHOOK_URL must be an HTTPS URL ending in /telegram/webhook without userinfo, query or fragment")
+		return Config{}, errors.New("TELEGRAM_WEBHOOK_URL must be an HTTPS URL with path /telegram/webhook without userinfo, query or fragment")
 	}
 	cfg.WebhookSecret = os.Getenv("TELEGRAM_WEBHOOK_SECRET")
 	if !validWebhookSecret(cfg.WebhookSecret) {

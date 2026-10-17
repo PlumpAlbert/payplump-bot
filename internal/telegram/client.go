@@ -23,7 +23,7 @@ type Client struct {
 
 func NewClient(token string) *Client {
 	return &Client{token: token, baseURL: "https://api.telegram.org", http: &http.Client{
-		Timeout: 40 * time.Second,
+		Timeout: 10 * time.Second,
 		// Never forward a token-bearing URL to a redirect destination.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -118,32 +118,27 @@ func (c *Client) GetMe(ctx context.Context) (User, error) {
 	return user, nil
 }
 
-func (c *Client) GetUpdates(ctx context.Context, offset int64) ([]Update, error) {
-	if offset < 0 {
-		return nil, errors.New("invalid Telegram offset")
+// SetWebhook preserves pending updates and limits concurrent deliveries for the
+// initial single-process service. Secret validation matches Telegram's contract.
+func (c *Client) SetWebhook(ctx context.Context, webhookURL, secret string) error {
+	if !validWebhookURL(webhookURL) || !validWebhookSecret(secret) {
+		return errors.New("invalid Telegram webhook configuration")
 	}
-	var wire []struct {
-		ID      *int64   `json:"update_id"`
-		Message *Message `json:"message"`
-	}
-	err := c.call(ctx, "getUpdates", struct {
-		Offset         int64    `json:"offset"`
-		Limit          int      `json:"limit"`
-		Timeout        int      `json:"timeout"`
-		AllowedUpdates []string `json:"allowed_updates"`
-	}{offset, 100, 30, []string{"message"}}, &wire)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var accepted bool
+	err := c.call(ctx, "setWebhook", struct {
+		URL         string   `json:"url"`
+		Secret      string   `json:"secret_token"`
+		Allowed     []string `json:"allowed_updates"`
+		Connections int      `json:"max_connections"`
+		Drop        bool     `json:"drop_pending_updates"`
+	}{webhookURL, secret, []string{"message"}, 1, false}, &accepted)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if len(wire) > 100 {
-		return nil, errors.New("too many Telegram updates")
+	if !accepted {
+		return errors.New("Telegram did not accept webhook registration")
 	}
-	updates := make([]Update, 0, len(wire))
-	for i, u := range wire {
-		if u.ID == nil || *u.ID < 0 || *u.ID == math.MaxInt64 || (i > 0 && *u.ID <= updates[i-1].ID) {
-			return nil, errors.New("invalid Telegram update sequence")
-		}
-		updates = append(updates, Update{ID: *u.ID, Message: u.Message})
-	}
-	return updates, nil
+	return nil
 }
