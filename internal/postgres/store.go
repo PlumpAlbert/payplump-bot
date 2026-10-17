@@ -90,8 +90,21 @@ func (s *Store) RegisterPrivateClient(ctx context.Context, identity TelegramIden
 		return Registration{}, fmt.Errorf("begin registration: %w", err)
 	}
 	defer rollback(tx)
+	result, err := registerPrivateClient(ctx, tx, identity)
+	if err != nil {
+		return Registration{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Registration{}, fmt.Errorf("commit registration: %w", err)
+	}
+	return result, nil
+}
+
+// The caller validates the private identity and owns the transaction so an
+// incoming Telegram update can commit registration and its checkpoint together.
+func registerPrivateClient(ctx context.Context, tx pgx.Tx, identity TelegramIdentity) (Registration, error) {
 	var result Registration
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
         INSERT INTO clients (telegram_id, chat_id, display_name) VALUES ($1, $2, $3)
         ON CONFLICT (telegram_id) DO UPDATE
             SET chat_id = EXCLUDED.chat_id, display_name = EXCLUDED.display_name
@@ -112,9 +125,6 @@ func (s *Store) RegisterPrivateClient(ctx context.Context, identity TelegramIden
 		if err != nil {
 			return Registration{}, fmt.Errorf("enqueue registration: %w", err)
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Registration{}, fmt.Errorf("commit registration: %w", err)
 	}
 	return result, nil
 }
