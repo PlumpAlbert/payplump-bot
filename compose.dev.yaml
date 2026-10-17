@@ -1,17 +1,18 @@
-# Isolated local development only. Do not use trust authentication in production.
+# Isolated local development. Supply database settings outside Git.
 services:
   db:
     image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     environment:
-      POSTGRES_USER: payplump
-      POSTGRES_DB: payplump
-      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_USER: ${PGUSER:?Set PGUSER}
+      POSTGRES_DB: ${PGDATABASE:?Set PGDATABASE}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?Set PGPASSWORD}
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
     ports:
       - "127.0.0.1:${PAYPLUMP_DB_PORT:-15432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U payplump -d payplump"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -29,7 +30,12 @@ services:
       args:
         VCS_REF: ${VCS_REF:-unknown}
     environment:
-      DATABASE_URL: postgres://payplump@db:5432/payplump?sslmode=disable
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: ${PGUSER:?Set PGUSER}
+      PGDATABASE: ${PGDATABASE:?Set PGDATABASE}
+      PGPASSWORD: ${PGPASSWORD:?Set PGPASSWORD}
+      PGSSLMODE: ${PGSSLMODE:?Set PGSSLMODE}
       DB_MAX_CONNS: "4"
       HTTP_ADDR: ":8080"
       GOMEMLIMIT: 96MiB
