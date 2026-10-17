@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_USER: payplump
+          POSTGRES_DB: payplump
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U payplump -d payplump"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://payplump@127.0.0.1:5432/payplump?sslmode=disable
+      DATABASE_URL: postgres://payplump@127.0.0.1:5432/payplump?sslmode=disable
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: test -z "$(gofmt -l cmd internal)"
+      - run: go mod verify
+      - run: go vet ./...
+      - run: go test -race -tags=integration -count=1 ./...
+      - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/payplump ./cmd/payplump
+      - run: python3 scripts/smoke.py
+      - run: git diff --exit-code -- go.mod go.sum
