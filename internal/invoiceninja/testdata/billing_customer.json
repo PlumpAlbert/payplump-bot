@@ -1,0 +1,10 @@
+{
+  "data": {
+    "id": "billing-client",
+    "name": "Synthetic customer",
+    "id_number": "9007199254740993",
+    "private_notes": "payplump:abcdefghijklmnopqrstuvwx:customer_create",
+    "is_deleted": false,
+    "archived_at": 0
+  }
+}

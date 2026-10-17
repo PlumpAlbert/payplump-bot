@@ -1,0 +1,57 @@
+{
+  "data": [
+    {
+      "id": "billing-invoice",
+      "client_id": "billing-client",
+      "recurring_id": "",
+      "status_id": "2",
+      "date": "2040-02-29",
+      "due_date": "2040-02-29",
+      "private_notes": "payplump:abcdefghijklmnopqrstuvwx:invoice_create",
+      "discount": 0,
+      "is_amount_discount": true,
+      "tax_rate1": 0,
+      "tax_rate2": 0,
+      "tax_rate3": 0,
+      "custom_surcharge1": 0,
+      "custom_surcharge2": 0,
+      "custom_surcharge3": 0,
+      "custom_surcharge4": 0,
+      "partial": 0,
+      "paid_to_date": 0,
+      "number": "SYNTHETIC-2040-001",
+      "uses_inclusive_taxes": false,
+      "line_items": [
+        {
+          "product_key": "SYNTHETIC-TAX-PLAN",
+          "notes": "Synthetic product only\nSecond line",
+          "cost": 12345678901234567890.123456789012345678,
+          "quantity": 1,
+          "discount": 0,
+          "is_amount_discount": false,
+          "type_id": "1",
+          "tax_name1": "Synthetic VAT",
+          "tax_name2": "",
+          "tax_name3": "Synthetic fee",
+          "tax_rate1": "19.600000000000000001",
+          "tax_rate2": 0,
+          "tax_rate3": "2.005",
+          "tax_id": "synthetic-tax-code"
+        }
+      ],
+      "amount": 9007199254740993.010000000000000001,
+      "balance": "9007199254740993.010000000000000001",
+      "is_deleted": false,
+      "archived_at": 0,
+      "invitations": [
+        {
+          "id": "synthetic-invitation",
+          "link": "https://synthetic.invalid/invoice/synthetic-invitation"
+        }
+      ]
+    }
+  ],
+  "meta": {
+    "synthetic": true
+  }
+}

@@ -1,4 +1,5 @@
-// Package integrationhttp provides a bounded, read-only HTTP transport. Errors
+// Package integrationhttp provides bounded HTTP transport with separate read-only
+// and explicitly constructed write clients. Errors
 // never include URLs, headers, response bodies or remote error descriptions.
 package integrationhttp
 
@@ -81,6 +82,10 @@ func New(baseURL string, headers http.Header, timeout time.Duration) (*Client, e
 // It deliberately does not follow pagination links supplied by a remote API:
 // adapters construct each page on the configured origin themselves.
 func (c *Client) Get(ctx context.Context, segments []string, query url.Values, result any) (http.Header, error) {
+	return c.request(ctx, http.MethodGet, segments, query, nil, result)
+}
+
+func (c *Client) request(ctx context.Context, method string, segments []string, query url.Values, body io.Reader, result any) (http.Header, error) {
 	u := *c.base
 	escaped := strings.TrimRight(u.EscapedPath(), "/")
 	decoded, err := url.PathUnescape(escaped)
@@ -95,12 +100,17 @@ func (c *Client) Get(ctx context.Context, segments []string, query url.Values, r
 		escaped += "/" + url.PathEscape(segment)
 	}
 	u.Path, u.RawPath, u.RawQuery = decoded, escaped, query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
 		return nil, errors.New("invalid integration API request")
 	}
 	req.Header = c.headers.Clone()
 	req.Header.Set("Accept", "application/json")
+	if method != http.MethodGet {
+		req.Header.Set("Content-Type", "application/json")
+		// A write must not be transparently replayed after an unknown result.
+		req.GetBody = nil
+	}
 	response, err := c.http.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -115,17 +125,17 @@ func (c *Client) Get(ctx context.Context, segments []string, query url.Values, r
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, &HTTPError{StatusCode: response.StatusCode}
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, MaxResponseBytes+1))
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, MaxResponseBytes+1))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, errors.New("could not read integration API response")
 	}
-	if len(body) > MaxResponseBytes {
+	if len(responseBody) > MaxResponseBytes {
 		return nil, errors.New("integration API response exceeds 4 MiB limit")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder := json.NewDecoder(bytes.NewReader(responseBody))
 	decoder.UseNumber()
 	if decoder.Decode(result) != nil || decoder.Decode(new(any)) != io.EOF {
 		return nil, ErrInvalidResponse
