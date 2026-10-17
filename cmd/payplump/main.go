@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
+	"github.com/PlumpAlbert/payplump-bot/internal/postgres"
 )
 
 func main() {
@@ -31,7 +33,22 @@ func run(logger *slog.Logger, args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), func(context.Context) error { return nil })
+	maxConns, err := strconv.ParseInt(envOr("DB_MAX_CONNS", "4"), 10, 32)
+	if err != nil {
+		return errors.New("DB_MAX_CONNS must be an integer between 1 and 64")
+	}
+	startupCtx, cancelStartup := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelStartup()
+	store, err := postgres.Open(startupCtx, os.Getenv("DATABASE_URL"), int32(maxConns))
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.Migrate(startupCtx); err != nil {
+		return fmt.Errorf("database migrations: %w", err)
+	}
+	cancelStartup()
+	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), store.Ping)
 	result := make(chan error, 1)
 	go func() { result <- srv.ListenAndServe() }()
 	select {
