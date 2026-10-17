@@ -18,12 +18,13 @@ import (
 func testStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Fatal("integration tests require TEST_DATABASE_URL pointing to a disposable PostgreSQL database")
+	cfg, err := connectionConfig(url, 4)
+	if err != nil {
+		t.Fatal("integration tests require TEST_DATABASE_URL or PGHOST, PGUSER and PGDATABASE for a disposable database")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
-	admin, err := pgx.Connect(ctx, url)
+	admin, err := pgx.ConnectConfig(ctx, cfg.ConnConfig.Copy())
 	if err != nil {
 		t.Fatal("cannot connect to integration database")
 	}
@@ -41,11 +42,6 @@ func testStore(t *testing.T) (*Store, context.Context) {
 		}
 		_ = admin.Close(cleanup)
 	})
-	cfg, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		t.Fatal("invalid TEST_DATABASE_URL")
-	}
-	cfg.MaxConns = 4
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

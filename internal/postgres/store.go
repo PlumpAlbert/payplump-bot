@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 	"unicode/utf8"
 
@@ -16,27 +17,39 @@ import (
 type Store struct{ pool *pgxpool.Pool }
 
 func Open(ctx context.Context, databaseURL string, maxConns int32) (*Store, error) {
-	if databaseURL == "" {
-		return nil, errors.New("DATABASE_URL is required")
-	}
-	if maxConns < 1 || maxConns > 64 {
-		return nil, errors.New("DB_MAX_CONNS must be between 1 and 64")
-	}
-	cfg, err := pgxpool.ParseConfig(databaseURL)
+	cfg, err := connectionConfig(databaseURL, maxConns)
 	if err != nil {
-		return nil, errors.New("invalid DATABASE_URL")
+		return nil, err
 	}
-	cfg.MaxConns = maxConns
-	cfg.ConnConfig.ConnectTimeout = 5 * time.Second
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, errors.New("could not initialize PostgreSQL pool")
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, errors.New("PostgreSQL unavailable; check DATABASE_URL and connectivity")
+		return nil, errors.New("PostgreSQL unavailable; check connection environment and connectivity")
 	}
 	return &Store{pool: pool}, nil
+}
+
+// pgx reads standard PG* environment variables itself. Passing the values to
+// the driver separately avoids URL escaping and keeps passwords out of DSNs.
+// Explicit DATABASE_URL fields retain precedence for existing deployments.
+func connectionConfig(databaseURL string, maxConns int32) (*pgxpool.Config, error) {
+	if maxConns < 1 || maxConns > 64 {
+		return nil, errors.New("DB_MAX_CONNS must be between 1 and 64")
+	}
+	if databaseURL == "" && (os.Getenv("PGHOST") == "" || os.Getenv("PGUSER") == "" || os.Getenv("PGDATABASE") == "") {
+		return nil, errors.New("set DATABASE_URL or PGHOST, PGUSER and PGDATABASE")
+	}
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		// Driver parse errors may contain the connection string or password.
+		return nil, errors.New("invalid PostgreSQL connection configuration")
+	}
+	cfg.MaxConns = maxConns
+	cfg.ConnConfig.ConnectTimeout = 5 * time.Second
+	return cfg, nil
 }
 
 func (s *Store) Close()                         { s.pool.Close() }

@@ -15,21 +15,40 @@ jobs:
       postgres:
         image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         env:
-          POSTGRES_USER: payplump
-          POSTGRES_DB: payplump
-          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: ${{ vars.PGUSER }}
+          POSTGRES_DB: ${{ vars.PGDATABASE }}
+          POSTGRES_PASSWORD: ${{ secrets.PGPASSWORD }}
+          POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+          PGUSER: ${{ vars.PGUSER }}
+          PGDATABASE: ${{ vars.PGDATABASE }}
         ports:
-          - 5432:5432
+          - ${{ vars.PGPORT }}:5432
         options: >-
-          --health-cmd "pg_isready -U payplump -d payplump"
+          --health-cmd pg_isready
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      TEST_DATABASE_URL: postgres://payplump@127.0.0.1:5432/payplump?sslmode=disable
-      DATABASE_URL: postgres://payplump@127.0.0.1:5432/payplump?sslmode=disable
+      PGHOST: ${{ vars.PGHOST }}
+      PGPORT: ${{ vars.PGPORT }}
+      PGDATABASE: ${{ vars.PGDATABASE }}
+      PGUSER: ${{ vars.PGUSER }}
+      PGSSLMODE: ${{ vars.PGSSLMODE }}
+      PGPASSWORD: ${{ secrets.PGPASSWORD }}
+      # Keep runner-provided URLs from overriding the CI PG* settings.
+      DATABASE_URL: ""
+      TEST_DATABASE_URL: ""
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate PostgreSQL settings
+        shell: bash
+        run: |
+          for name in PGHOST PGPORT PGDATABASE PGUSER PGSSLMODE PGPASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Configure $name in GitHub Actions variables (PGPASSWORD in secrets)"
+              exit 1
+            fi
+          done
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
@@ -42,17 +61,17 @@ jobs:
       - run: python3 scripts/smoke.py
       - run: git diff --exit-code -- go.mod go.sum
       - name: Build and start development containers
-        run: VCS_REF="$GITHUB_SHA" docker compose -f compose.dev.yaml up --build --wait --wait-timeout 120
+        run: VCS_REF="$GITHUB_SHA" docker compose -p payplump-ci -f compose.dev.yaml up --build --wait --wait-timeout 120
       - name: Check container and restart
         run: |
-          docker compose -f compose.dev.yaml exec -T app /payplump healthcheck
+          docker compose -p payplump-ci -f compose.dev.yaml exec -T app /payplump healthcheck
           curl --fail --silent --show-error http://127.0.0.1:8080/readyz
-          docker compose -f compose.dev.yaml stop app
-          docker compose -f compose.dev.yaml up -d --wait --wait-timeout 60
-          docker compose -f compose.dev.yaml exec -T app /payplump healthcheck
+          docker compose -p payplump-ci -f compose.dev.yaml stop app
+          docker compose -p payplump-ci -f compose.dev.yaml up -d --wait --wait-timeout 60
+          docker compose -p payplump-ci -f compose.dev.yaml exec -T app /payplump healthcheck
       - name: Container logs
         if: failure()
-        run: docker compose -f compose.dev.yaml logs
+        run: docker compose -p payplump-ci -f compose.dev.yaml logs
       - name: Clean up test containers
         if: always()
-        run: docker compose -f compose.dev.yaml down --volumes
+        run: docker compose -p payplump-ci -f compose.dev.yaml down --volumes
