@@ -41,3 +41,18 @@ jobs:
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/payplump ./cmd/payplump
       - run: python3 scripts/smoke.py
       - run: git diff --exit-code -- go.mod go.sum
+      - name: Build and start development containers
+        run: VCS_REF="$GITHUB_SHA" docker compose -f compose.dev.yaml up --build --wait --wait-timeout 120
+      - name: Check container and restart
+        run: |
+          docker compose -f compose.dev.yaml exec -T app /payplump healthcheck
+          curl --fail --silent --show-error http://127.0.0.1:8080/readyz
+          docker compose -f compose.dev.yaml stop app
+          docker compose -f compose.dev.yaml up -d --wait --wait-timeout 60
+          docker compose -f compose.dev.yaml exec -T app /payplump healthcheck
+      - name: Container logs
+        if: failure()
+        run: docker compose -f compose.dev.yaml logs
+      - name: Clean up test containers
+        if: always()
+        run: docker compose -f compose.dev.yaml down --volumes

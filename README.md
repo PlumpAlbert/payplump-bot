@@ -19,6 +19,8 @@ Docker нужен, если PostgreSQL запускается в контейн�
 export PATH=/workspace/.cloud-tools/go1.27.2/bin:$PATH
 export GOCACHE=/workspace/.cloud-cache/go-build
 export GOPATH=/workspace/.cloud-cache/gopath
+export DOCKER_CONFIG=/workspace/.cloud-cache/docker
+mkdir -p "$DOCKER_CONFIG"
 cd /workspace/payplump-bot
 ```
 
@@ -91,6 +93,58 @@ Smoke-проверка запускает настоящий бинарник д
 Ограничение следующего месяца последним днём для 29–31 чисел покрыто тестами,
 но совместимость с установленным Invoice Ninja ещё требуется проверить.
 CI выполняет те же проверки на PostgreSQL 17 и собирает статический бинарник.
+
+## Контейнер для разработки
+
+```sh
+VCS_REF=$(git rev-parse HEAD) docker compose -f compose.dev.yaml up --build --wait
+docker compose -f compose.dev.yaml exec app /payplump healthcheck
+docker compose -f compose.dev.yaml logs app
+docker compose -f compose.dev.yaml stop app
+docker compose -f compose.dev.yaml up -d --wait
+```
+
+В текущем облачном окружении сборщику нужны сетевой прокси и доверенный
+CA bundle хоста. Их можно передать только на время сборки, не сохраняя
+в образе или исходниках:
+
+```sh
+docker build --network=host \
+  --add-host "proxy:$(getent ahostsv4 proxy | awk 'NR == 1 {print $1}')" \
+  --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg NO_PROXY \
+  --secret "id=build_ca,src=$SSL_CERT_FILE" \
+  --build-arg VCS_REF="$(git rev-parse HEAD)" -t payplump:dev .
+docker compose -f compose.dev.yaml up --no-build --wait
+```
+
+Проверки TLS и `go.sum` при этом включены. За пределами этого окружения
+обычно достаточно стандартной команды Compose выше. `DOCKER_CONFIG` из
+раздела облачной настройки нужен, поскольку домашний каталог здесь read-only.
+
+Локальная сборка использует многоэтапный Dockerfile: Go с `CGO_ENABLED=0`,
+финальная база `gcr.io/distroless/static-debian13:nonroot`. Обе базы закреплены
+по digest; миграции встроены в бинарник, сертификаты и tzdata входят в базу.
+Сервис работает от UID
+65532 с read-only файловой системой. Docker healthcheck вызывает подкоманду
+самого бинарника. HTTP опубликован только на `127.0.0.1:8080`, PostgreSQL —
+на `127.0.0.1:15432`. Переменные `PAYPLUMP_HTTP_PORT` и `PAYPLUMP_DB_PORT`
+позволяют выбрать другие локальные порты; задавайте их одинаково во всех
+командах Compose. Остановите ранее запущенную тестовую БД или выберите
+другой порт, чтобы избежать конфликта.
+
+`compose.dev.yaml` предназначен только для разработки: `trust` у БД,
+локальный тег `payplump:dev`, без реестра и рабочих интеграций. Данные
+сохраняются в volume; `docker compose -f compose.dev.yaml down` удаляет
+контейнеры, но сохраняет volume. Добавление `--volumes` удаляет данные.
+Для тестов можно использовать опубликованный PostgreSQL из Compose вместо
+отдельного `docker run`, приведённого выше.
+
+Лимиты 128 MiB для приложения, 256 MiB для БД, `GOMEMLIMIT=96MiB`, 1 CPU
+и ротация логов ограничивают локальное окружение. Это начальные значения
+для разработки; они ещё не проверены на бизнес-нагрузке и не являются
+рекомендацией для VPS. Рабочий выпуск должен использовать digest готового
+образа, а не локальную сборку или тег `dev`. Публикация в реестр и развёртывание
+Komodo здесь не выполняются.
 
 ## Следующие этапы
 
