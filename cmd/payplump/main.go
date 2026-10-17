@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
 	"github.com/PlumpAlbert/payplump-bot/internal/postgres"
+	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
 )
 
 func main() {
@@ -30,6 +32,10 @@ func run(logger *slog.Logger, args []string) error {
 	}
 	if len(args) != 0 {
 		return errors.New("usage: payplump [healthcheck]")
+	}
+	telegramConfig, err := telegram.ConfigFromEnv()
+	if err != nil {
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -49,24 +55,67 @@ func run(logger *slog.Logger, args []string) error {
 	}
 	cancelStartup()
 	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), store.Ping)
+	var worker func(context.Context) error
+	if telegramConfig.Enabled {
+		worker = telegram.NewPoller(telegram.NewClient(telegramConfig.Token), store, logger).Run
+	}
+	return serve(ctx, logger, srv, worker)
+}
+
+// A fatal worker error stops HTTP too; stopping HTTP cancels the poller before
+// waiting for it. Both components finish before the database pool is closed.
+func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, worker func(context.Context) error) error {
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return fmt.Errorf("HTTP listen: %w", err)
+	}
+	serviceCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	result := make(chan error, 1)
-	go func() { result <- srv.ListenAndServe() }()
+	go func() { result <- srv.Serve(listener) }()
+	var workerResult chan error
+	if worker != nil {
+		workerResult = make(chan error, 1)
+		go func() { workerResult <- worker(serviceCtx) }()
+	}
+	var failure error
 	select {
 	case err := <-result:
-		return err
+		result = nil
+		if !errors.Is(err, http.ErrServerClosed) {
+			failure = err
+		}
+	case err := <-workerResult:
+		workerResult = nil
+		if err != nil {
+			failure = fmt.Errorf("Telegram polling: %w", err)
+		} else if ctx.Err() == nil {
+			failure = errors.New("Telegram polling stopped unexpectedly")
+		}
 	case <-ctx.Done():
-		logger.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			_ = srv.Close()
-			return fmt.Errorf("HTTP shutdown: %w", err)
-		}
-		if err := <-result; !errors.Is(err, http.ErrServerClosed) {
-			return err
-		}
-		return nil
 	}
+	cancel()
+	logger.Info("shutting down")
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		_ = srv.Close()
+		failure = errors.Join(failure, fmt.Errorf("HTTP shutdown: %w", err))
+	}
+	if result != nil {
+		if err := <-result; !errors.Is(err, http.ErrServerClosed) {
+			failure = errors.Join(failure, err)
+		}
+	}
+	if workerResult != nil {
+		select {
+		case err := <-workerResult:
+			failure = errors.Join(failure, err)
+		case <-shutdownCtx.Done():
+			failure = errors.Join(failure, errors.New("Telegram shutdown timed out"))
+		}
+	}
+	return failure
 }
 
 func healthcheck(url string) error {

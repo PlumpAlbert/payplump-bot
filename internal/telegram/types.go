@@ -70,7 +70,7 @@ func (u Update) PrivateStart(botUsername string) (Identity, bool) {
 		return Identity{}, false
 	}
 	displayName := strings.TrimSpace(m.From.FirstName + " " + m.From.LastName)
-	if !utf8.ValidString(displayName) || utf8.RuneCountInString(displayName) > 256 {
+	if !utf8.ValidString(displayName) || strings.ContainsRune(displayName, '\x00') || utf8.RuneCountInString(displayName) > 256 {
 		return Identity{}, false
 	}
 	return Identity{TelegramID: m.From.ID, ChatID: m.Chat.ID, DisplayName: displayName}, true

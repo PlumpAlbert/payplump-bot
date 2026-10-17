@@ -3,11 +3,79 @@
 package postgres
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
 )
+
+type pollingAPI struct {
+	fetch func(context.Context, int64) ([]telegram.Update, error)
+}
+
+func (a pollingAPI) GetMe(context.Context) (telegram.User, error) {
+	return telegram.User{ID: 123, IsBot: true, Username: "PayplumpBot"}, nil
+}
+func (a pollingAPI) GetUpdates(ctx context.Context, offset int64) ([]telegram.Update, error) {
+	return a.fetch(ctx, offset)
+}
+
+type stopAfterCommit struct {
+	*Store
+	cancel context.CancelFunc
+}
+
+func (s stopAfterCommit) ApplyTelegramUpdate(ctx context.Context, botID int64, name string, u telegram.Update) error {
+	err := s.Store.ApplyTelegramUpdate(ctx, botID, name, u)
+	if err == nil {
+		s.cancel()
+	}
+	return err
+}
+
+func TestPollingRestartAfterCommitBeforeAcknowledgement(t *testing.T) {
+	s, ctx := testStore(t)
+	firstCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	requests := 0
+	api := pollingAPI{fetch: func(_ context.Context, offset int64) ([]telegram.Update, error) {
+		requests++
+		if offset != 0 {
+			t.Error("first request must start at zero")
+		}
+		return []telegram.Update{privateUpdate(100)}, nil
+	}}
+	if err := telegram.NewPoller(api, stopAfterCommit{Store: s, cancel: cancel}, logger).Run(firstCtx); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatal("old process confirmed an update after cancellation")
+	}
+	s.pool.Reset()
+	secondCtx, cancelSecond := context.WithCancel(ctx)
+	defer cancelSecond()
+	api.fetch = func(ctx context.Context, offset int64) ([]telegram.Update, error) {
+		if offset != 101 {
+			t.Error("restart did not confirm the committed update")
+		}
+		cancelSecond()
+		return nil, ctx.Err()
+	}
+	if err := telegram.NewPoller(api, s, logger).Run(secondCtx); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM clients`).Scan(&count); err != nil || count != 1 {
+		t.Fatal("restart lost or duplicated registration")
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM operations`).Scan(&count); err != nil || count != 1 {
+		t.Fatal("restart lost or duplicated registration operation")
+	}
+}
 
 func privateUpdate(id int64) telegram.Update {
 	return telegram.Update{ID: id, Message: &telegram.Message{

@@ -40,6 +40,7 @@ func TestPrivateStart(t *testing.T) {
 		{"shifted entity", func(u *Update) { u.Message.Entities[0].Offset = 1 }},
 		{"invalid length", func(u *Update) { u.Message.Entities[0].Length = 99 }},
 		{"long name", func(u *Update) { u.Message.From.FirstName = strings.Repeat("я", 257) }},
+		{"NUL in name", func(u *Update) { u.Message.From.FirstName = "bad\x00name" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u := startUpdate(1, "/start")

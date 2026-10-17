@@ -18,6 +18,7 @@ def check_cycle():
         **os.environ,
         "HTTP_ADDR": f"127.0.0.1:{port}",
         "HEALTHCHECK_URL": base + "/readyz",
+        "TELEGRAM_ENABLED": "false",
     }
     binary = os.environ.get("PAYPLUMP_BINARY", "./bin/payplump")
     process = subprocess.Popen(
