@@ -38,6 +38,7 @@ jobs:
       # Keep runner-provided URLs from overriding the CI PG* settings.
       DATABASE_URL: ""
       TEST_DATABASE_URL: ""
+      TELEGRAM_ENABLED: "false"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Validate PostgreSQL settings
