@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
+	"github.com/PlumpAlbert/payplump-bot/internal/outbox"
 	"github.com/PlumpAlbert/payplump-bot/internal/postgres"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
 )
@@ -37,6 +38,13 @@ func run(logger *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	var deliveryConfig outbox.Config
+	if telegramConfig.Enabled {
+		deliveryConfig, err = outbox.ConfigFromEnv()
+		if err != nil {
+			return err
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	maxConns, err := strconv.ParseInt(envOr("DB_MAX_CONNS", "4"), 10, 32)
@@ -57,18 +65,29 @@ func run(logger *slog.Logger, args []string) error {
 	var endpoint *telegram.WebhookHandler
 	var handler http.Handler
 	var initialize func(context.Context) error
+	var background func(context.Context) error
 	if telegramConfig.Enabled {
 		endpoint, err = telegram.NewWebhookHandler(telegramConfig.WebhookSecret, store)
 		if err != nil {
 			return err
 		}
 		handler = endpoint
+		client := telegram.NewClient(telegramConfig.Token)
+		var botID int64
 		initialize = func(ctx context.Context) error {
-			bot, err := telegram.ConfigureWebhook(ctx, telegram.NewClient(telegramConfig.Token), telegramConfig, logger)
+			bot, err := telegram.ConfigureWebhook(ctx, client, telegramConfig, logger)
 			if err != nil {
 				return err
 			}
+			botID = bot.ID
 			return endpoint.Activate(bot)
+		}
+		background = func(ctx context.Context) error {
+			worker, err := outbox.New(store, client, botID, deliveryConfig, logger)
+			if err != nil {
+				return err
+			}
+			return worker.Run(ctx)
 		}
 	}
 	ready := func(ctx context.Context) error {
@@ -78,13 +97,14 @@ func run(logger *slog.Logger, args []string) error {
 		return store.Ping(ctx)
 	}
 	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), ready, handler)
-	return serve(ctx, logger, srv, initialize)
+	return serve(ctx, logger, srv, initialize, background)
 }
 
 // The listener is opened before registering the webhook. Successful setup leaves
 // HTTP serving; fatal setup errors stop the service. Shutdown drains in-flight
-// requests before the database pool is closed and preserves Telegram's webhook.
-func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, initialize func(context.Context) error) error {
+// requests and joins background deliveries before the database pool is closed.
+// Telegram's webhook and interrupted durable leases are preserved.
+func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, initialize, background func(context.Context) error) error {
 	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		return fmt.Errorf("HTTP listen: %w", err)
@@ -93,10 +113,18 @@ func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, initializ
 	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- srv.Serve(listener) }()
-	var setupResult chan error
+	var setupResult, backgroundResult chan error
+	startBackground := func() {
+		if background != nil {
+			backgroundResult = make(chan error, 1)
+			go func() { backgroundResult <- background(serviceCtx) }()
+		}
+	}
 	if initialize != nil {
 		setupResult = make(chan error, 1)
 		go func() { setupResult <- initialize(serviceCtx) }()
+	} else {
+		startBackground()
 	}
 	var failure error
 running:
@@ -111,10 +139,20 @@ running:
 		case err := <-setupResult:
 			setupResult = nil
 			if err == nil {
+				startBackground()
 				continue
 			}
 			if ctx.Err() == nil {
 				failure = fmt.Errorf("Telegram webhook setup: %w", err)
+			}
+			break running
+		case err := <-backgroundResult:
+			backgroundResult = nil
+			if ctx.Err() == nil {
+				if err == nil {
+					err = errors.New("worker stopped unexpectedly")
+				}
+				failure = fmt.Errorf("outbox worker: %w", err)
 			}
 			break running
 		case <-ctx.Done():
@@ -142,6 +180,16 @@ running:
 			}
 		case <-shutdownCtx.Done():
 			failure = errors.Join(failure, errors.New("Telegram webhook setup shutdown timed out"))
+		}
+	}
+	if backgroundResult != nil {
+		select {
+		case err := <-backgroundResult:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				failure = errors.Join(failure, err)
+			}
+		case <-shutdownCtx.Done():
+			failure = errors.Join(failure, errors.New("outbox worker shutdown timed out"))
 		}
 	}
 	return failure

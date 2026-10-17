@@ -36,7 +36,7 @@ func TestServiceCancelsWebhookSetupOnShutdown(t *testing.T) {
 			close(started)
 			<-ctx.Done()
 			return nil
-		})
+		}, nil)
 	}()
 	select {
 	case <-started:
@@ -57,7 +57,7 @@ func TestServiceCancelsWebhookSetupOnShutdown(t *testing.T) {
 func TestServiceStopsOnFatalWebhookSetupError(t *testing.T) {
 	want := errors.New("unauthorized")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	err := serve(context.Background(), logger, &http.Server{Addr: "127.0.0.1:0"}, func(context.Context) error { return want })
+	err := serve(context.Background(), logger, &http.Server{Addr: "127.0.0.1:0"}, func(context.Context) error { return want }, nil)
 	if !errors.Is(err, want) {
 		t.Fatalf("fatal webhook setup error lost: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestServiceStopsOnFatalWebhookSetupError(t *testing.T) {
 func TestServiceDoesNotStartWebhookSetupWhenListenFails(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	called := false
-	err := serve(context.Background(), logger, &http.Server{Addr: "invalid address"}, func(context.Context) error { called = true; return nil })
+	err := serve(context.Background(), logger, &http.Server{Addr: "invalid address"}, func(context.Context) error { called = true; return nil }, nil)
 	if err == nil || called {
 		t.Fatal("webhook setup started without HTTP listener")
 	}
@@ -79,7 +79,7 @@ func TestServiceKeepsServingAfterWebhookSetup(t *testing.T) {
 	done := make(chan error, 1)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	go func() {
-		done <- serve(ctx, logger, &http.Server{Addr: "127.0.0.1:0"}, func(context.Context) error { close(setup); return nil })
+		done <- serve(ctx, logger, &http.Server{Addr: "127.0.0.1:0"}, func(context.Context) error { close(setup); return nil }, nil)
 	}()
 	select {
 	case <-setup:
