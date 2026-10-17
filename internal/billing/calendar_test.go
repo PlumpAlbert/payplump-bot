@@ -1,8 +1,11 @@
 package billing
 
 import (
+	"os"
+	"os/exec"
 	"testing"
 	"time"
+	_ "time/tzdata" // Test DST and TZ resolution without requiring host tzdata.
 )
 
 func TestNextBillingDate(t *testing.T) {
@@ -26,26 +29,76 @@ func TestNextBillingDate(t *testing.T) {
 	}
 }
 
-func TestMoscowOverdueBoundary(t *testing.T) {
-	deadline, err := PaymentDeadline("2026-10-17")
+func TestLocalOverdueBoundary(t *testing.T) {
+	newYork, err := time.LoadLocation("America/New_York")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := deadline.UTC().Format(time.RFC3339); got != "2026-10-17T21:00:00Z" {
-		t.Fatalf("deadline: %s", got)
-	}
 	for _, tc := range []struct {
-		now     time.Time
-		overdue bool
+		name          string
+		location      *time.Location
+		due, deadline string
 	}{
-		{deadline.Add(-time.Nanosecond), false},
-		{deadline, true},
-		{deadline.Add(time.Hour), true},
+		{"UTC", time.UTC, "2026-10-17", "2026-10-18T00:00:00Z"},
+		{"east", time.FixedZone("server", 9*60*60), "2026-10-17", "2026-10-17T15:00:00Z"},
+		{"west", time.FixedZone("server", -7*60*60), "2026-10-17", "2026-10-18T07:00:00Z"},
+		{"DST spring", newYork, "2026-03-08", "2026-03-09T04:00:00Z"},
+		{"DST autumn", newYork, "2026-11-01", "2026-11-02T05:00:00Z"},
 	} {
-		got, err := IsOverdue("2026-10-17", tc.now.UTC())
-		if err != nil || got != tc.overdue {
-			t.Fatalf("at %s: %v, %v", tc.now, got, err)
+		t.Run(tc.name, func(t *testing.T) {
+			// These tests are sequential because time.Local is process-wide.
+			previous := time.Local
+			time.Local = tc.location
+			defer func() { time.Local = previous }()
+			deadline, err := PaymentDeadline(tc.due)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := deadline.UTC().Format(time.RFC3339); got != tc.deadline {
+				t.Fatalf("deadline: %s; want %s", got, tc.deadline)
+			}
+			for _, boundary := range []struct {
+				now     time.Time
+				overdue bool
+			}{
+				{deadline.Add(-time.Nanosecond), false},
+				{deadline, true},
+				{deadline.Add(time.Hour), true},
+			} {
+				got, err := IsOverdue(tc.due, boundary.now.UTC())
+				if err != nil || got != boundary.overdue {
+					t.Fatalf("at %s: %v, %v", boundary.now, got, err)
+				}
+			}
+		})
+	}
+}
+
+func TestServerTimezoneResolution(t *testing.T) {
+	// Local is initialized once by the standard library. Use a fresh process to
+	// exercise its real TZ lookup and unavailable-data fallback for each case.
+	if os.Getenv("PAYPLUMP_TIMEZONE_TEST") == "1" {
+		deadline, err := PaymentDeadline("2026-10-17")
+		if err != nil {
+			t.Fatal(err)
 		}
+		if got := deadline.UTC().Format(time.RFC3339); got != os.Getenv("PAYPLUMP_EXPECTED_DEADLINE") {
+			t.Fatalf("deadline: %s", got)
+		}
+		return
+	}
+	for _, tc := range []struct{ name, zone, expected string }{
+		{"configured server zone", "America/New_York", "2026-10-18T04:00:00Z"},
+		{"UTC", "", "2026-10-18T00:00:00Z"},
+		{"unavailable timezone", ":" + t.TempDir() + "/missing-zone", "2026-10-18T00:00:00Z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestServerTimezoneResolution$")
+			cmd.Env = append(os.Environ(), "TZ="+tc.zone, "PAYPLUMP_TIMEZONE_TEST=1", "PAYPLUMP_EXPECTED_DEADLINE="+tc.expected)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("timezone check: %v\n%s", err, output)
+			}
+		})
 	}
 }
 

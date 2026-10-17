@@ -4,21 +4,12 @@ package billing
 import (
 	"errors"
 	"time"
-	_ "time/tzdata" // Keep Moscow rules available in a static executable.
 )
 
-var moscow = mustMoscow()
-
-func mustMoscow() *time.Location {
-	loc, err := time.LoadLocation("Europe/Moscow")
-	if err != nil {
-		panic(err)
-	}
-	return loc
-}
-
 func parseDate(value string) (time.Time, error) {
-	d, err := time.ParseInLocation(time.DateOnly, value, moscow)
+	// Go resolves Local from TZ or the server's /etc/localtime and falls back
+	// to UTC if timezone data is unavailable.
+	d, err := time.ParseInLocation(time.DateOnly, value, time.Local)
 	if err != nil || d.Year() < 1 || d.Format(time.DateOnly) != value {
 		return time.Time{}, errors.New("expected a valid YYYY-MM-DD date")
 	}
@@ -33,17 +24,18 @@ func NextBillingDate(paymentDate string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	first := time.Date(paid.Year(), paid.Month()+1, 1, 0, 0, 0, 0, moscow)
+	first := time.Date(paid.Year(), paid.Month()+1, 1, 0, 0, 0, 0, paid.Location())
 	last := first.AddDate(0, 1, -1).Day()
 	day := min(paid.Day(), last)
-	next := time.Date(first.Year(), first.Month(), day, 0, 0, 0, 0, moscow)
+	next := time.Date(first.Year(), first.Month(), day, 0, 0, 0, 0, paid.Location())
 	if next.Year() > 9999 {
 		return "", errors.New("next billing date exceeds supported range")
 	}
 	return next.Format(time.DateOnly), nil
 }
 
-// PaymentDeadline is the first instant after the due date in Europe/Moscow.
+// PaymentDeadline is the first instant after the due date in the server's local
+// timezone (UTC when unavailable).
 // Access is retained throughout the due date; at this instant it is overdue.
 func PaymentDeadline(dueDate string) (time.Time, error) {
 	due, err := parseDate(dueDate)
