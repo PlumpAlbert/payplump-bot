@@ -14,14 +14,16 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
+	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/outbox"
 	"github.com/PlumpAlbert/payplump-bot/internal/postgres"
+	"github.com/PlumpAlbert/payplump-bot/internal/registration"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
 )
 
 func main() {
 	logOutput := os.Stdout
-	if len(os.Args) > 1 && os.Args[1] == "check-integrations" {
+	if len(os.Args) > 1 && (os.Args[1] == "check-integrations" || os.Args[1] == "resume-registration") {
 		logOutput = os.Stderr // Keep the command's stdout a single JSON report.
 	}
 	logger := slog.New(slog.NewJSONHandler(logOutput, nil))
@@ -40,12 +42,31 @@ func run(logger *slog.Logger, args []string) error {
 		defer stop()
 		return checkIntegrations(ctx, os.Stdout)
 	}
+	if len(args) == 2 && args[0] == "resume-registration" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		return resumeRegistration(ctx, args[1], os.Stdout)
+	}
 	if len(args) != 0 {
-		return errors.New("usage: payplump [healthcheck | check-integrations]")
+		return errors.New("usage: payplump [healthcheck | check-integrations | resume-registration OPERATION_ID]")
 	}
 	telegramConfig, err := telegram.ConfigFromEnv()
 	if err != nil {
 		return err
+	}
+	registrationConfig, err := registration.ConfigFromEnv(telegramConfig.Enabled)
+	if err != nil {
+		return err
+	}
+	var registrationAPI *invoiceninja.BillingClient
+	if registrationConfig.Enabled {
+		if len(telegramConfig.AdminIDs) > 99 {
+			return errors.New("registration requires at most 99 Telegram administrators")
+		}
+		registrationAPI, err = invoiceninja.NewBillingClient(registrationConfig.BaseURL, registrationConfig.Token, registrationConfig.HTTPTimeout, registrationConfig.PageSize, registrationConfig.MaxPages)
+		if err != nil {
+			return errors.New("invalid registration API configuration")
+		}
 	}
 	var deliveryConfig outbox.Config
 	if telegramConfig.Enabled {
@@ -96,7 +117,19 @@ func run(logger *slog.Logger, args []string) error {
 			if err != nil {
 				return err
 			}
-			return worker.Run(ctx)
+			workers := []func(context.Context) error{worker.Run}
+			if registrationConfig.Enabled {
+				var admins []int64
+				for id := range telegramConfig.AdminIDs {
+					admins = append(admins, id)
+				}
+				onboarding, err := registration.New(store, registrationAPI, botID, admins, registrationConfig, logger)
+				if err != nil {
+					return err
+				}
+				workers = append(workers, onboarding.Run)
+			}
+			return runWorkers(ctx, workers...)
 		}
 	}
 	ready := func(ctx context.Context) error {
@@ -161,7 +194,7 @@ running:
 				if err == nil {
 					err = errors.New("worker stopped unexpectedly")
 				}
-				failure = fmt.Errorf("outbox worker: %w", err)
+				failure = fmt.Errorf("background workers: %w", err)
 			}
 			break running
 		case <-ctx.Done():
@@ -198,7 +231,7 @@ running:
 				failure = errors.Join(failure, err)
 			}
 		case <-shutdownCtx.Done():
-			failure = errors.Join(failure, errors.New("outbox worker shutdown timed out"))
+			failure = errors.Join(failure, errors.New("background workers shutdown timed out"))
 		}
 	}
 	return failure
