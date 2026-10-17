@@ -23,9 +23,11 @@ func (s *Store) ApplyTelegramUpdate(ctx context.Context, botID int64, botUsernam
 	if _, err := tx.Exec(ctx, `INSERT INTO telegram_bots (bot_id) VALUES ($1) ON CONFLICT DO NOTHING`, botID); err != nil {
 		return err
 	}
-	// Serialize business changes for overlapping deliveries of the same bot.
+	// Serialize deliveries without blocking foreign-key checks from outbox
+	// inserts. FOR UPDATE would deadlock with a completing operation that
+	// already owns its client row while this registration waits for that row.
 	var lockedBotID int64
-	if err := tx.QueryRow(ctx, `SELECT bot_id FROM telegram_bots WHERE bot_id = $1 FOR UPDATE`, botID).Scan(&lockedBotID); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT bot_id FROM telegram_bots WHERE bot_id = $1 FOR NO KEY UPDATE`, botID).Scan(&lockedBotID); err != nil {
 		return err
 	}
 	tag, err := tx.Exec(ctx, `INSERT INTO telegram_processed_updates (bot_id, update_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, botID, update.ID)
