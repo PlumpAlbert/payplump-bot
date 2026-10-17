@@ -8,7 +8,31 @@ permissions:
   contents: read
 
 jobs:
+  validate-postgres-settings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      PGHOST: ${{ vars.PGHOST }}
+      PGPORT: ${{ vars.PGPORT }}
+      PGDATABASE: ${{ vars.PGDATABASE }}
+      PGUSER: ${{ vars.PGUSER }}
+      PGSSLMODE: ${{ vars.PGSSLMODE }}
+      PGPASSWORD: ${{ secrets.PGPASSWORD }}
+    steps:
+      # Service containers start before steps, so validate in a preceding job.
+      - name: Validate PostgreSQL settings
+        shell: bash
+        run: |
+          missing=0
+          for name in PGHOST PGPORT PGDATABASE PGUSER PGSSLMODE PGPASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Configure $name in repository Actions variables (PGPASSWORD in repository Actions secrets)"
+              missing=1
+            fi
+          done
+          exit "$missing"
   test:
+    needs: validate-postgres-settings
     runs-on: ubuntu-latest
     timeout-minutes: 10
     services:
@@ -41,15 +65,6 @@ jobs:
       TELEGRAM_ENABLED: "false"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Validate PostgreSQL settings
-        shell: bash
-        run: |
-          for name in PGHOST PGPORT PGDATABASE PGUSER PGSSLMODE PGPASSWORD; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Configure $name in GitHub Actions variables (PGPASSWORD in secrets)"
-              exit 1
-            fi
-          done
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
