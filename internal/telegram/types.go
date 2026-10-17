@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -50,11 +51,10 @@ func (u Update) PrivateStart(botUsername string) (Identity, bool) {
 	if m == nil || m.From == nil || m.From.IsBot || m.Chat.Type != "private" || m.From.ID <= 0 || m.Chat.ID != m.From.ID {
 		return Identity{}, false
 	}
-	fields := strings.Fields(m.Text)
-	if len(fields) == 0 || !strings.HasPrefix(m.Text, fields[0]) {
-		return Identity{}, false
+	command := m.Text
+	if end := strings.IndexFunc(command, unicode.IsSpace); end >= 0 {
+		command = command[:end]
 	}
-	command := fields[0]
 	name, mention, addressed := strings.Cut(command, "@")
 	if name != "/start" || (addressed && (mention == "" || !strings.EqualFold(mention, botUsername))) {
 		return Identity{}, false
