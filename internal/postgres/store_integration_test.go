@@ -17,6 +17,15 @@ import (
 
 func testStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
+	s, ctx := unmigratedStore(t)
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return s, ctx
+}
+
+func unmigratedStore(t *testing.T) (*Store, context.Context) {
+	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	cfg, err := connectionConfig(url, 4)
 	if err != nil {
@@ -42,16 +51,27 @@ func testStore(t *testing.T) (*Store, context.Context) {
 		}
 		_ = admin.Close(cleanup)
 	})
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	// Neon may ignore search_path in the startup packet even on a direct
+	// endpoint. Set it explicitly on every new session, including after Reset.
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		if _, err := conn.Exec(ctx, `SELECT set_config('search_path', $1, false)`, schema); err != nil {
+			return fmt.Errorf("set integration schema: %w", err)
+		}
+		var actual string
+		if err := conn.QueryRow(ctx, `SELECT current_schema()`).Scan(&actual); err != nil {
+			return err
+		}
+		if actual != schema {
+			return fmt.Errorf("integration schema isolation failed: expected %q, got %q; use a direct PostgreSQL connection", schema, actual)
+		}
+		return nil
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := &Store{pool: pool}
 	t.Cleanup(s.Close)
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
 	return s, ctx
 }
 

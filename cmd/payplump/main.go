@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
 	"github.com/PlumpAlbert/payplump-bot/internal/postgres"
+	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
 )
 
 func main() {
@@ -30,6 +32,10 @@ func run(logger *slog.Logger, args []string) error {
 	}
 	if len(args) != 0 {
 		return errors.New("usage: payplump [healthcheck]")
+	}
+	telegramConfig, err := telegram.ConfigFromEnv()
+	if err != nil {
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -48,25 +54,97 @@ func run(logger *slog.Logger, args []string) error {
 		return fmt.Errorf("database migrations: %w", err)
 	}
 	cancelStartup()
-	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), store.Ping)
-	result := make(chan error, 1)
-	go func() { result <- srv.ListenAndServe() }()
-	select {
-	case err := <-result:
-		return err
-	case <-ctx.Done():
-		logger.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			_ = srv.Close()
-			return fmt.Errorf("HTTP shutdown: %w", err)
-		}
-		if err := <-result; !errors.Is(err, http.ErrServerClosed) {
+	var endpoint *telegram.WebhookHandler
+	var handler http.Handler
+	var initialize func(context.Context) error
+	if telegramConfig.Enabled {
+		endpoint, err = telegram.NewWebhookHandler(telegramConfig.WebhookSecret, store)
+		if err != nil {
 			return err
 		}
-		return nil
+		handler = endpoint
+		initialize = func(ctx context.Context) error {
+			bot, err := telegram.ConfigureWebhook(ctx, telegram.NewClient(telegramConfig.Token), telegramConfig, logger)
+			if err != nil {
+				return err
+			}
+			return endpoint.Activate(bot)
+		}
 	}
+	ready := func(ctx context.Context) error {
+		if endpoint != nil && !endpoint.Ready() {
+			return errors.New("Telegram webhook setup pending")
+		}
+		return store.Ping(ctx)
+	}
+	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), ready, handler)
+	return serve(ctx, logger, srv, initialize)
+}
+
+// The listener is opened before registering the webhook. Successful setup leaves
+// HTTP serving; fatal setup errors stop the service. Shutdown drains in-flight
+// requests before the database pool is closed and preserves Telegram's webhook.
+func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, initialize func(context.Context) error) error {
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return fmt.Errorf("HTTP listen: %w", err)
+	}
+	serviceCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- srv.Serve(listener) }()
+	var setupResult chan error
+	if initialize != nil {
+		setupResult = make(chan error, 1)
+		go func() { setupResult <- initialize(serviceCtx) }()
+	}
+	var failure error
+running:
+	for {
+		select {
+		case err := <-result:
+			result = nil
+			if !errors.Is(err, http.ErrServerClosed) {
+				failure = err
+			}
+			break running
+		case err := <-setupResult:
+			setupResult = nil
+			if err == nil {
+				continue
+			}
+			if ctx.Err() == nil {
+				failure = fmt.Errorf("Telegram webhook setup: %w", err)
+			}
+			break running
+		case <-ctx.Done():
+			break running
+		}
+	}
+	cancel()
+	logger.Info("shutting down")
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		_ = srv.Close()
+		failure = errors.Join(failure, fmt.Errorf("HTTP shutdown: %w", err))
+	}
+	if result != nil {
+		if err := <-result; !errors.Is(err, http.ErrServerClosed) {
+			failure = errors.Join(failure, err)
+		}
+	}
+	if setupResult != nil {
+		select {
+		case err := <-setupResult:
+			if !errors.Is(err, context.Canceled) {
+				failure = errors.Join(failure, err)
+			}
+		case <-shutdownCtx.Done():
+			failure = errors.Join(failure, errors.New("Telegram webhook setup shutdown timed out"))
+		}
+	}
+	return failure
 }
 
 func healthcheck(url string) error {
