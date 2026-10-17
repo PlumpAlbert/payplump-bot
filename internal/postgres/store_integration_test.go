@@ -51,10 +51,12 @@ func unmigratedStore(t *testing.T) (*Store, context.Context) {
 		}
 		_ = admin.Close(cleanup)
 	})
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
-	// Fail before any migration or destructive test query if a transaction
-	// pooler ignores the connection's search_path.
+	// Neon may ignore search_path in the startup packet even on a direct
+	// endpoint. Set it explicitly on every new session, including after Reset.
 	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		if _, err := conn.Exec(ctx, `SELECT set_config('search_path', $1, false)`, schema); err != nil {
+			return fmt.Errorf("set integration schema: %w", err)
+		}
 		var actual string
 		if err := conn.QueryRow(ctx, `SELECT current_schema()`).Scan(&actual); err != nil {
 			return err

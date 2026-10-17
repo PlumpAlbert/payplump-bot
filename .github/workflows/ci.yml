@@ -74,7 +74,13 @@ jobs:
       - name: Smoke test against Neon
         env:
           PGOPTIONS: -c search_path=${{ env.SMOKE_SCHEMA }}
-        run: python3 scripts/smoke.py
+        run: |
+          actual=$(psql -X -v ON_ERROR_STOP=1 -Atc 'SELECT current_schema()')
+          if [ "$actual" != "$SMOKE_SCHEMA" ]; then
+            echo "::error::Smoke schema isolation failed; refusing to run migrations in the shared schema"
+            exit 1
+          fi
+          python3 scripts/smoke.py
       - run: git diff --exit-code -- go.mod go.sum
       - name: Build and start development containers
         env:
