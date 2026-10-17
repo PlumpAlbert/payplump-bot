@@ -10,6 +10,7 @@ permissions:
 jobs:
   validate-postgres-settings:
     runs-on: ubuntu-latest
+    environment: test
     timeout-minutes: 2
     env:
       PGHOST: ${{ vars.PGHOST }}
@@ -26,7 +27,7 @@ jobs:
           missing=0
           for name in PGHOST PGPORT PGDATABASE PGUSER PGSSLMODE PGPASSWORD; do
             if [ -z "${!name:-}" ]; then
-              echo "::error::Configure $name in repository Actions variables (PGPASSWORD in repository Actions secrets)"
+              echo "::error::Configure $name in Environment test variables (PGPASSWORD in Environment test secrets)"
               missing=1
             fi
           done
@@ -34,6 +35,7 @@ jobs:
   test:
     needs: validate-postgres-settings
     runs-on: ubuntu-latest
+    environment: test
     timeout-minutes: 10
     services:
       postgres:

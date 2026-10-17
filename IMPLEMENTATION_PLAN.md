@@ -31,9 +31,10 @@
 - [x] Тесты календарных границ, високосного года, переходов DST и недоступной таймзоны.
 - [x] Подготовлены CI с GitHub Variables / Secret `PGPASSWORD`, интеграционные тесты и smoke-проверка бинарника.
 - [x] Проверка наличия настроек CI вынесена в отдельный job до запуска PostgreSQL; значения переменных и пароля не выводятся.
+- [x] Оба job CI привязаны к GitHub Environment `test`, где настроены Variables и Secret для PostgreSQL.
 - [x] Подготовлены и локально проверены статическая сборка, Distroless-образ по digest, nonroot, exec-healthcheck и Compose для разработки.
 - [x] Документированы локальный запуск и настройки PostgreSQL; в CI и Compose заменён `trust` на SCRAM-SHA-256.
-- [ ] Подтвердить успешный GitHub Actions run после заполнения Variables и Secret в настройках репозитория; сохранить ссылку на запуск.
+- [ ] Подтвердить успешный GitHub Actions run с Variables и Secret из Environment `test`; сохранить ссылку на запуск.
 
 Эти галочки относятся к основе сервиса. Испытания с настоящим Telegram-ботом,
 Invoice Ninja и S-UI, полный платёжный цикл и рабочее развёртывание ещё не проверены.

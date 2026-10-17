@@ -172,7 +172,7 @@ Telegram; для них не нужны реальные Telegram-секреты
 
 ## PostgreSQL в GitHub Actions
 
-В Settings → Secrets and variables → Actions задайте следующие **Repository variables**:
+В Settings → Environments → **test** задайте следующие **Environment variables**:
 
 | Имя | Назначение |
 | --- | --- |
@@ -182,16 +182,16 @@ Telegram; для них не нужны реальные Telegram-секреты
 | `PGUSER` | Имя роли тестовой базы |
 | `PGSSLMODE` | `disable` для локального service-контейнера без TLS |
 
-В **Repository secrets** добавьте `PGPASSWORD` — пароль этой тестовой роли. Пароль
+В **Environment secrets** этого же окружения добавьте `PGPASSWORD` — пароль тестовой роли. Пароль
 передаётся через окружение; его не следует хранить в Variables, YAML или URL.
 Workflow создаёт временный PostgreSQL с заданными именами и паролем, используя
 SCRAM-SHA-256 вместо `trust`. Этот CI не подключается к рабочей базе.
 Все перечисленные значения обязательны; фиксированных учётных данных и
-запасного пароля в workflow нет. PR из fork не получает repository secrets,
+запасного пароля в workflow нет. PR из fork не получает secrets,
 поэтому для него эти проверки БД недоступны без отдельной настройки.
 
-Значения должны быть доступны на уровне репозитория: workflow не привязан к
-GitHub Environment, поэтому его Environment variables/secrets не используются.
+Оба job привязаны к GitHub Environment `test` через `environment: test`, чтобы
+проверка настроек и запуск PostgreSQL использовали его Variables и Secrets.
 Отдельный job `validate-postgres-settings` проверяет наличие всех настроек до
 создания PostgreSQL. При отсутствии значения он выводит только имя настройки,
 а job с БД и тестами не запускается.
