@@ -37,7 +37,7 @@ const (
 	leaseDuration   = 45 * time.Second
 	claimTimeout    = 5 * time.Second
 	sendTimeout     = 10 * time.Second
-	finalizeTimeout = 3 * time.Second
+	finalizeTimeout = 5 * time.Second
 	maxRetryDelay   = 5 * time.Minute
 	retryJitter     = 250 * time.Millisecond
 )

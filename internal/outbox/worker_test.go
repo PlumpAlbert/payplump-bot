@@ -157,7 +157,7 @@ func TestWorkerIndependentOutcomes(t *testing.T) {
 			return messages, nil
 		},
 		finalize: func(ctx context.Context, result finalization) error {
-			checkDeadline(t, ctx, 3*time.Second)
+			checkDeadline(t, ctx, 5*time.Second)
 			results <- result
 			return nil
 		},
@@ -249,7 +249,7 @@ func TestWorkerPersistsCooldownDuringShutdown(t *testing.T) {
 	defer cancel()
 	var got finalization
 	store := &fakeStore{finalize: func(ctx context.Context, result finalization) error {
-		checkDeadline(t, ctx, 3*time.Second)
+		checkDeadline(t, ctx, 5*time.Second)
 		got = result
 		return nil
 	}}
@@ -376,7 +376,7 @@ func TestWorkerShutdownJoinsAndPersistsKnownSuccess(t *testing.T) {
 					return []queue.Message{{Lease: queue.Lease{ID: 1, Attempt: 1}, ChatID: 42, Text: "message"}}, nil
 				},
 				finalize: func(ctx context.Context, result finalization) error {
-					checkDeadline(t, ctx, 3*time.Second)
+					checkDeadline(t, ctx, 5*time.Second)
 					finalizing <- result
 					select {
 					case <-releaseFinalize:

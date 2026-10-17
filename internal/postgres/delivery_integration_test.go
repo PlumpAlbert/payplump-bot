@@ -12,6 +12,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/outbox"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type observedDeliveryStore struct {
@@ -60,6 +61,22 @@ func TestOutboxWorkerPersistsDeliveryResults(t *testing.T) {
 		if _, err := s.EnqueueOutbox(ctx, draft); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// This test checks durable outcomes, not the hosted database's TLS setup
+	// latency. Open all concurrent connections before timed finalization starts.
+	var warm []*pgxpool.Conn
+	for range 3 {
+		conn, err := s.pool.Acquire(ctx)
+		if err != nil {
+			for _, held := range warm {
+				held.Release()
+			}
+			t.Fatal(err)
+		}
+		warm = append(warm, conn)
+	}
+	for _, conn := range warm {
+		conn.Release()
 	}
 	observed := observedDeliveryStore{Store: s, finalized: make(chan error, 3)}
 	worker, err := outbox.New(observed, scriptedDeliverySender{}, 123, outbox.Config{Workers: 3, PollInterval: time.Second}, slog.New(slog.NewTextHandler(io.Discard, nil)))
