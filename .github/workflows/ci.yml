@@ -20,7 +20,6 @@ jobs:
       PGSSLMODE: ${{ vars.PGSSLMODE }}
       PGPASSWORD: ${{ secrets.PGPASSWORD }}
     steps:
-      # Service containers start before steps, so validate in a preceding job.
       - name: Validate PostgreSQL settings
         shell: bash
         run: |
@@ -31,29 +30,18 @@ jobs:
               missing=1
             fi
           done
-          exit "$missing"
+          if [ "$missing" -ne 0 ]; then
+            exit "$missing"
+          fi
+          if [[ "$PGHOST" == *-pooler.*.neon.tech ]]; then
+            echo "::error::Use the Neon direct endpoint (without -pooler); integration tests require session-level search_path isolation"
+            exit 1
+          fi
   test:
     needs: validate-postgres-settings
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 10
-    services:
-      postgres:
-        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
-        env:
-          POSTGRES_USER: ${{ vars.PGUSER }}
-          POSTGRES_DB: ${{ vars.PGDATABASE }}
-          POSTGRES_PASSWORD: ${{ secrets.PGPASSWORD }}
-          POSTGRES_HOST_AUTH_METHOD: scram-sha-256
-          PGUSER: ${{ vars.PGUSER }}
-          PGDATABASE: ${{ vars.PGDATABASE }}
-        ports:
-          - ${{ vars.PGPORT }}:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       PGHOST: ${{ vars.PGHOST }}
       PGPORT: ${{ vars.PGPORT }}
@@ -65,6 +53,7 @@ jobs:
       DATABASE_URL: ""
       TEST_DATABASE_URL: ""
       TELEGRAM_ENABLED: "false"
+      SMOKE_SCHEMA: ci_smoke_${{ github.run_id }}_${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -76,11 +65,25 @@ jobs:
       - run: go vet ./...
       - run: go test -race -tags=integration -count=1 ./...
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/payplump ./cmd/payplump
-      - run: python3 scripts/smoke.py
+      - name: Create isolated smoke schema
+        id: smoke-schema
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -v schema="$SMOKE_SCHEMA" <<'SQL'
+          CREATE SCHEMA :"schema";
+          SQL
+      - name: Smoke test against Neon
+        env:
+          PGOPTIONS: -c search_path=${{ env.SMOKE_SCHEMA }}
+        run: python3 scripts/smoke.py
       - run: git diff --exit-code -- go.mod go.sum
       - name: Build and start development containers
+        env:
+          # Compose uses its own local PostgreSQL without TLS, not Neon.
+          PGSSLMODE: disable
         run: VCS_REF="$GITHUB_SHA" docker compose -p payplump-ci -f compose.dev.yaml up --build --wait --wait-timeout 120
       - name: Check container and restart
+        env:
+          PGSSLMODE: disable
         run: |
           docker compose -p payplump-ci -f compose.dev.yaml exec -T app /payplump healthcheck
           curl --fail --silent --show-error http://127.0.0.1:8080/readyz
@@ -89,7 +92,17 @@ jobs:
           docker compose -p payplump-ci -f compose.dev.yaml exec -T app /payplump healthcheck
       - name: Container logs
         if: failure()
+        env:
+          PGSSLMODE: disable
         run: docker compose -p payplump-ci -f compose.dev.yaml logs
       - name: Clean up test containers
         if: always()
+        env:
+          PGSSLMODE: disable
         run: docker compose -p payplump-ci -f compose.dev.yaml down --volumes
+      - name: Drop isolated smoke schema
+        if: ${{ always() && steps.smoke-schema.outcome == 'success' }}
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -v schema="$SMOKE_SCHEMA" <<'SQL'
+          DROP SCHEMA :"schema" CASCADE;
+          SQL

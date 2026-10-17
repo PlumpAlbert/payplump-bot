@@ -62,6 +62,18 @@ func TestConnectionFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestConnectionPreservesSchemaOptions(t *testing.T) {
+	// CI smoke tests use a run-specific schema without changing DATABASE_URL.
+	t.Setenv("PGOPTIONS", "-c search_path=ci_smoke_test")
+	cfg, err := connectionConfig("postgres://test-user@localhost/test-db?sslmode=disable", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConnConfig.RuntimeParams["options"] != "-c search_path=ci_smoke_test" {
+		t.Fatal("PGOPTIONS schema isolation was lost")
+	}
+}
+
 func TestConnectionRequiresExplicitTarget(t *testing.T) {
 	for _, missing := range []string{"PGHOST", "PGUSER", "PGDATABASE"} {
 		t.Run(missing, func(t *testing.T) {
