@@ -101,7 +101,7 @@ func (s *Store) RegisterPrivateClient(ctx context.Context, identity TelegramIden
 }
 
 // The caller validates the private identity and owns the transaction so an
-// incoming Telegram update can commit registration and its checkpoint together.
+// incoming Telegram update can commit registration and deduplication metadata together.
 func registerPrivateClient(ctx context.Context, tx pgx.Tx, identity TelegramIdentity) (Registration, error) {
 	var result Registration
 	err := tx.QueryRow(ctx, `
