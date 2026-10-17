@@ -1,0 +1,52 @@
+{
+  "data": [
+    {
+      "id": "synthetic-client-1",
+      "name": "Synthetic customer A",
+      "number": "SYN-C-001",
+      "id_number": "9007199254740993",
+      "custom_value1": "9223372036854775807",
+      "custom_value2": "",
+      "custom_value3": "123456789",
+      "custom_value4": "42",
+      "is_deleted": false,
+      "archived_at": 0
+    },
+    {
+      "id": "synthetic-client-2",
+      "name": "Synthetic customer B",
+      "number": "SYN-C-002",
+      "id_number": "",
+      "custom_value1": "",
+      "custom_value2": "",
+      "custom_value3": "",
+      "custom_value4": "",
+      "is_deleted": true,
+      "archived_at": 0
+    },
+    {
+      "id": "synthetic-client-3",
+      "name": "Synthetic customer C",
+      "number": "SYN-C-003",
+      "id_number": "",
+      "custom_value1": "",
+      "custom_value2": "",
+      "custom_value3": "",
+      "custom_value4": "",
+      "is_deleted": false,
+      "archived_at": 2200000000
+    }
+  ],
+  "meta": {
+    "pagination": {
+      "total": 3,
+      "count": 3,
+      "per_page": 25,
+      "current_page": 1,
+      "total_pages": 1,
+      "links": {
+        "next": "https://pagination.invalid/never-follow"
+      }
+    }
+  }
+}

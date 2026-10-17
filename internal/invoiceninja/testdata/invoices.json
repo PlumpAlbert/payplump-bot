@@ -1,0 +1,29 @@
+{
+  "data": [
+    {
+      "id": "synthetic-invoice-1",
+      "client_id": "synthetic-client-1",
+      "recurring_id": "synthetic-recurring-1",
+      "status_id": "2",
+      "number": "SYN-I-001",
+      "date": "2040-01-02",
+      "due_date": "2040-02-03",
+      "amount": 9007199254740993.010000000000000001,
+      "balance": 0,
+      "is_deleted": false,
+      "archived_at": 0
+    }
+  ],
+  "meta": {
+    "pagination": {
+      "total": 1,
+      "count": 1,
+      "per_page": 25,
+      "current_page": 1,
+      "total_pages": 1,
+      "links": {
+        "next": "https://pagination.invalid/never-follow"
+      }
+    }
+  }
+}

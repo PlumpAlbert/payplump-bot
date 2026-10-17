@@ -1,0 +1,13 @@
+{
+  "success": true,
+  "msg": "Synthetic fixture",
+  "obj": {
+    "subURI": "https://subscriptions.invalid/synthetic-prefix/",
+    "subPath": "/synthetic-sub/",
+    "subPort": "12345",
+    "subDomain": "subscriptions.invalid",
+    "webCertFile": "/synthetic/ignored-certificate",
+    "webKeyFile": "/synthetic/ignored-key",
+    "subJsonTemplate": "synthetic ignored template"
+  }
+}
