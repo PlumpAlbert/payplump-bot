@@ -1,0 +1,18 @@
+{
+  "success": true,
+  "msg": "Synthetic fixture",
+  "obj": {
+    "inbounds": [
+      {
+        "id": 9007199254740993,
+        "type": "vless",
+        "tag": "synthetic-inbound",
+        "listen": "::",
+        "listen_port": 12345,
+        "tls": {
+          "enabled": false
+        }
+      }
+    ]
+  }
+}

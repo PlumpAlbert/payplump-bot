@@ -1,0 +1,24 @@
+{
+  "data": [
+    {
+      "id": "synthetic-product-1",
+      "product_key": "SYNTHETIC-PLAN",
+      "notes": "Synthetic product only",
+      "price": 12345678901234567890.123456789012345678,
+      "is_deleted": false,
+      "archived_at": 0
+    }
+  ],
+  "meta": {
+    "pagination": {
+      "total": 1,
+      "count": 1,
+      "per_page": 25,
+      "current_page": 1,
+      "total_pages": 1,
+      "links": {
+        "next": "https://pagination.invalid/never-follow"
+      }
+    }
+  }
+}

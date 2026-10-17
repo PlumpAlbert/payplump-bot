@@ -20,7 +20,11 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logOutput := os.Stdout
+	if len(os.Args) > 1 && os.Args[1] == "check-integrations" {
+		logOutput = os.Stderr // Keep the command's stdout a single JSON report.
+	}
+	logger := slog.New(slog.NewJSONHandler(logOutput, nil))
 	if err := run(logger, os.Args[1:]); err != nil {
 		logger.Error("service stopped", "error", err)
 		os.Exit(1)
@@ -31,8 +35,13 @@ func run(logger *slog.Logger, args []string) error {
 	if len(args) == 1 && args[0] == "healthcheck" {
 		return healthcheck(envOr("HEALTHCHECK_URL", "http://127.0.0.1:8080/readyz"))
 	}
+	if len(args) == 1 && args[0] == "check-integrations" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		return checkIntegrations(ctx, os.Stdout)
+	}
 	if len(args) != 0 {
-		return errors.New("usage: payplump [healthcheck]")
+		return errors.New("usage: payplump [healthcheck | check-integrations]")
 	}
 	telegramConfig, err := telegram.ConfigFromEnv()
 	if err != nil {

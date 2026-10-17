@@ -1,0 +1,10 @@
+{
+  "data": {
+    "id": "synthetic-product-1",
+    "product_key": "SYNTHETIC-PLAN",
+    "notes": "Synthetic product only",
+    "price": 12345678901234567890.123456789012345678,
+    "is_deleted": false,
+    "archived_at": 0
+  }
+}
