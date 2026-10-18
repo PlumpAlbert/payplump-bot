@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -33,10 +34,16 @@ func (f configurationWorkflowRoundTrip) RoundTrip(r *http.Request) (*http.Respon
 type configurationWorkflowSender struct {
 	*telegram.Client
 	service *configdelivery.Service
+	logger  *slog.Logger
 }
 
 func (s configurationWorkflowSender) SendConfiguration(ctx context.Context, m queue.Message) (int64, error) {
-	return s.service.Deliver(ctx, m)
+	started := time.Now()
+	id, err := s.service.Deliver(ctx, m)
+	if err != nil {
+		s.logger.Info("configuration workflow send failed", "elapsed", time.Since(started), "deadline", errors.Is(err, context.DeadlineExceeded), "canceled", errors.Is(err, context.Canceled), "lease_lost", errors.Is(err, queue.ErrLeaseLost))
+	}
+	return id, err
 }
 
 // The real private-chat GET finishes before this local ABA. The service still
@@ -109,14 +116,14 @@ func configurationWorkflowRun(t *testing.T, ctx context.Context, s *Store, sende
 	select {
 	case result := <-observed.result:
 		if result.err != nil || result.failed != failed {
-			t.Fatal("unexpected durable configuration finalization")
+			t.Fatalf("unexpected durable configuration finalization: failed=%t finalize_error=%t", result.failed, result.err != nil)
 		}
 	case <-runCtx.Done():
 		// report queues the committed result before canceling Run.
 		select {
 		case result := <-observed.result:
 			if result.err != nil || result.failed != failed {
-				t.Fatal("unexpected durable configuration finalization")
+				t.Fatalf("unexpected durable configuration finalization: failed=%t finalize_error=%t", result.failed, result.err != nil)
 			}
 		default:
 			t.Fatal("no durable configuration finalization")
@@ -169,7 +176,22 @@ func TestConfigurationWorkflowWithSyntheticHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal("construct recurring reader")
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+		switch a.Key {
+		case "time", "level", "msg", "work_id", "attempt", "error_code", "reason_code", "elapsed", "deadline", "canceled", "lease_lost":
+			return a
+		case "error":
+			return slog.Bool("error_present", true)
+		default:
+			return slog.Attr{}
+		}
+	}}))
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log("safe workflow diagnostics:\n" + logs.String())
+		}
+	})
 	client := telegram.NewClient("SYNTHETIC")
 	providers := configdelivery.Providers{Payments: settlement, SUI: panel, Recurring: recurring}
 	makeSender := func(after func(context.Context) error) configurationWorkflowSender {
@@ -177,7 +199,7 @@ func TestConfigurationWorkflowWithSyntheticHTTP(t *testing.T) {
 		if err != nil {
 			t.Fatal("construct configuration service")
 		}
-		return configurationWorkflowSender{client, service}
+		return configurationWorkflowSender{client, service, logger}
 	}
 	// Construct/validate providers before replacing the global transport.
 	sender := makeSender(nil)
