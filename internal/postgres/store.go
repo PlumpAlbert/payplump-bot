@@ -71,8 +71,9 @@ type Client struct {
 }
 
 type Registration struct {
-	Client  Client
-	Created bool
+	Client        Client
+	Created       bool // A subscription was inserted; existing semantics are unchanged.
+	ClientCreated bool // The client itself was inserted by this transaction.
 }
 
 // RegisterPrivateClient atomically saves the identity, a single unpaid
@@ -106,11 +107,18 @@ func registerPrivateClient(ctx context.Context, tx pgx.Tx, identity TelegramIden
 	var result Registration
 	err := tx.QueryRow(ctx, `
         INSERT INTO clients (telegram_id, chat_id, display_name) VALUES ($1, $2, $3)
-        ON CONFLICT (telegram_id) DO UPDATE
-            SET chat_id = EXCLUDED.chat_id, display_name = EXCLUDED.display_name
+        ON CONFLICT (telegram_id) DO NOTHING
         RETURNING id, telegram_id, chat_id, display_name`,
 		identity.TelegramID, identity.ChatID, identity.DisplayName,
 	).Scan(&result.Client.ID, &result.Client.TelegramID, &result.Client.ChatID, &result.Client.DisplayName)
+	result.ClientCreated = err == nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `
+            UPDATE clients SET chat_id = $2, display_name = $3 WHERE telegram_id = $1
+            RETURNING id, telegram_id, chat_id, display_name`,
+			identity.TelegramID, identity.ChatID, identity.DisplayName,
+		).Scan(&result.Client.ID, &result.Client.TelegramID, &result.Client.ChatID, &result.Client.DisplayName)
+	}
 	if err != nil {
 		return Registration{}, fmt.Errorf("save client: %w", err)
 	}
