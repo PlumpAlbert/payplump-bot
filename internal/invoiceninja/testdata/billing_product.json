@@ -1,0 +1,18 @@
+{
+  "data": {
+    "id": "billing-product",
+    "product_key": "SYNTHETIC-TAX-PLAN",
+    "notes": "Synthetic product only\nSecond line",
+    "price": 12345678901234567890.123456789012345678,
+    "cost": "3.00",
+    "tax_name1": "Synthetic VAT",
+    "tax_name2": "",
+    "tax_name3": "Synthetic fee",
+    "tax_rate1": "19.600000000000000001",
+    "tax_rate2": 0,
+    "tax_rate3": "2.005",
+    "tax_id": "synthetic-tax-code",
+    "is_deleted": false,
+    "archived_at": 0
+  }
+}

@@ -31,7 +31,8 @@ func unmigratedStore(t *testing.T) (*Store, context.Context) {
 	if err != nil {
 		t.Fatal("integration tests require TEST_DATABASE_URL or PGHOST, PGUSER and PGDATABASE for a disposable database")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Fenced registration spans several transactions over a remote Neon link.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
 	admin, err := pgx.ConnectConfig(ctx, cfg.ConnConfig.Copy())
 	if err != nil {

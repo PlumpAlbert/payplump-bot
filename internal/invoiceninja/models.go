@@ -1,4 +1,5 @@
-// Package invoiceninja provides read-only Invoice Ninja v5 API access.
+// Package invoiceninja separates read-only Invoice Ninja v5 access from
+// explicitly constructed, version-pinned billing writes.
 package invoiceninja
 
 import (
@@ -27,12 +28,27 @@ type Customer struct {
 	Name         string `json:"name"`
 	Number       string `json:"number"`
 	IDNumber     string `json:"id_number"`
+	PrivateNotes string `json:"private_notes"`
 	CustomValue1 string `json:"custom_value1"`
 	CustomValue2 string `json:"custom_value2"`
 	CustomValue3 string `json:"custom_value3"`
 	CustomValue4 string `json:"custom_value4"`
 	IsDeleted    bool   `json:"is_deleted"`
 	ArchivedAt   int64  `json:"archived_at"`
+
+	fromWire, completeBillingFields bool
+}
+
+func (c *Customer) UnmarshalJSON(raw []byte) error {
+	type plain Customer
+	var decoded plain
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	*c = Customer(decoded)
+	c.fromWire = true
+	c.completeBillingFields = billingCustomerFields(raw)
+	return nil
 }
 
 func (c Customer) Active() bool { return !c.IsDeleted && c.ArchivedAt == 0 }
@@ -75,6 +91,13 @@ type Product struct {
 	ProductKey string      `json:"product_key"`
 	Notes      string      `json:"notes"`
 	Price      json.Number `json:"price"`
+	TaxName1   string      `json:"tax_name1"`
+	TaxName2   string      `json:"tax_name2"`
+	TaxName3   string      `json:"tax_name3"`
+	TaxRate1   json.Number `json:"tax_rate1"`
+	TaxRate2   json.Number `json:"tax_rate2"`
+	TaxRate3   json.Number `json:"tax_rate3"`
+	TaxID      string      `json:"tax_id"`
 	IsDeleted  bool        `json:"is_deleted"`
 	ArchivedAt int64       `json:"archived_at"`
 }
@@ -93,6 +116,41 @@ type Invoice struct {
 	Balance     json.Number `json:"balance"`
 	IsDeleted   bool        `json:"is_deleted"`
 	ArchivedAt  int64       `json:"archived_at"`
+
+	// First-invoice writes reject discounts, invoice-level taxes, surcharges,
+	// deposits and prior payments. Read-only callers may still inspect them.
+	Discount         json.Number `json:"discount"`
+	IsAmountDiscount bool        `json:"is_amount_discount"`
+	TaxRate1         json.Number `json:"tax_rate1"`
+	TaxRate2         json.Number `json:"tax_rate2"`
+	TaxRate3         json.Number `json:"tax_rate3"`
+	CustomSurcharge1 json.Number `json:"custom_surcharge1"`
+	CustomSurcharge2 json.Number `json:"custom_surcharge2"`
+	CustomSurcharge3 json.Number `json:"custom_surcharge3"`
+	CustomSurcharge4 json.Number `json:"custom_surcharge4"`
+	Partial          json.Number `json:"partial"`
+	PaidToDate       json.Number `json:"paid_to_date"`
+
+	PrivateNotes       string        `json:"private_notes"`
+	UsesInclusiveTaxes bool          `json:"uses_inclusive_taxes"`
+	LineItems          []InvoiceLine `json:"line_items"`
+	Invitations        []Invitation  `json:"invitations"`
+
+	fromWire, completeBillingFields bool
+}
+
+// Preserve strict field-presence evidence for write-side reconciliation while
+// leaving the legacy read-only decoder compatible with partial response DTOs.
+func (i *Invoice) UnmarshalJSON(raw []byte) error {
+	type plain Invoice
+	var decoded plain
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	*i = Invoice(decoded)
+	i.fromWire = true
+	i.completeBillingFields = billingInvoiceFields(raw)
+	return nil
 }
 
 type Payment struct {
