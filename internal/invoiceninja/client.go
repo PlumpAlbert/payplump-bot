@@ -65,6 +65,48 @@ func (c *Client) GetProduct(ctx context.Context, id string) (Product, error) {
 	return *envelope.Data, nil
 }
 
+// GetCustomer is read-only. The caller must bind id_number to its own
+// authenticated Telegram actor; an opaque API ID is not authorization.
+func (c *Client) GetCustomer(ctx context.Context, id string) (Customer, error) {
+	if !validID(id) {
+		return Customer{}, errors.New("invalid Invoice Ninja customer identifier")
+	}
+	var envelope struct {
+		Data *Customer `json:"data"`
+	}
+	headers, err := c.transport.Get(ctx, []string{"api", "v1", "clients", id}, nil, &envelope)
+	if err != nil {
+		return Customer{}, err
+	}
+	if _, err := appVersion(headers); err != nil {
+		return Customer{}, err
+	}
+	if envelope.Data == nil || !validCustomer(*envelope.Data) || envelope.Data.ID != id {
+		return Customer{}, errInvalidResponse
+	}
+	return *envelope.Data, nil
+}
+
+func (c *Client) GetInvoice(ctx context.Context, id string) (Invoice, error) {
+	if !validID(id) {
+		return Invoice{}, errors.New("invalid Invoice Ninja invoice identifier")
+	}
+	var envelope struct {
+		Data *Invoice `json:"data"`
+	}
+	headers, err := c.transport.Get(ctx, []string{"api", "v1", "invoices", id}, nil, &envelope)
+	if err != nil {
+		return Invoice{}, err
+	}
+	if _, err := appVersion(headers); err != nil {
+		return Invoice{}, err
+	}
+	if envelope.Data == nil || !validInvoice(*envelope.Data) || !validID(envelope.Data.ClientID) || envelope.Data.ID != id {
+		return Invoice{}, errInvalidResponse
+	}
+	return *envelope.Data, nil
+}
+
 func (c *Client) ListInvoices(ctx context.Context, page, perPage int) (Page[Invoice], error) {
 	return list[Invoice](ctx, c, "invoices", page, perPage, nil, validInvoice)
 }
