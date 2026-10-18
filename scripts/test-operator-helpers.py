@@ -45,6 +45,10 @@ class Helpers(unittest.TestCase):
 
     def test_resolved_compose_cases(self):
         self.check(config(), True)
+        normalized = config()
+        normalized["services"]["payplump"].update(command=None, entrypoint=None)
+        normalized["services"]["payplump"]["secrets"] = [{"source": "pgpass", "target": "/run/secrets/pgpass"}]
+        self.check(normalized, True)
         mutations = [
             lambda c: c["services"]["payplump"].update(image="other:latest"),
             lambda c: c["services"]["payplump"].update(privileged=True),
@@ -57,6 +61,9 @@ class Helpers(unittest.TestCase):
             lambda c: c["services"]["payplump"].update(read_only=False),
             lambda c: c["services"]["payplump"]["environment"].update(TELEGRAM_ENABLED="true"),
             lambda c: c["services"]["payplump"].update(command=["overridden"]),
+            lambda c: c["services"]["payplump"].update(command=[]),
+            lambda c: c["services"]["payplump"].update(entrypoint=[]),
+            lambda c: c["services"]["payplump"].update(secrets=[{"source": "pgpass", "target": "/run/secrets/other"}]),
             lambda c: c["services"]["payplump"].pop("read_only"),
             lambda c: c["services"].update(unused={"image": IMAGE}),
             lambda c: c["services"]["payplump"]["environment"].update(API_TOKEN="synthetic"),
@@ -95,7 +102,7 @@ class Helpers(unittest.TestCase):
             restore.chmod(0o700)
             psql = b / "psql"
             psql.write_text('#!/bin/sh\necho psql-called >>"$CALL_LOG"\nexit 99\n'); psql.chmod(0o700)
-            archive = Path(d) / "archive"; archive.write_text("synthetic"); archive.chmod(0o600)
+            archive = Path(d) / "archive"; archive.write_bytes(b"PGDMPSYNTHETIC_ONLY"); archive.chmod(0o600)
             env = fake_env(PATH=str(b) + os.pathsep + os.environ["PATH"], CALL_LOG=str(log), PGDATABASE="source_db", PGHOST="localhost", PGPORT="5432", PGPASSWORD="do-not-log")
             result = subprocess.run([str(ROOT / "scripts/restore-check.sh"), str(archive), "payplump_restore_check_test"], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -121,7 +128,7 @@ class Helpers(unittest.TestCase):
             psql = b / "psql"
             psql.write_text('#!/bin/sh\n[ "$PGHOST" = 127.0.0.1 ] || exit 91\n[ "${PGHOSTADDR-unset}" = unset ] || exit 92\n[ "${PGSERVICE-unset}" = unset ] || exit 93\n[ "${PGSERVICEFILE-unset}" = unset ] || exit 94\n[ "${PGOPTIONS-unset}" = unset ] || exit 95\n[ "$PGSSLMODE" = verify-full ] || exit 96\nprintf "%s" "$*" >"$QUERY_LOG"\nprintf "1\\n"\n')
             psql.chmod(0o700)
-            archive = Path(d) / "archive"; archive.write_text("synthetic"); archive.chmod(0o600)
+            archive = Path(d) / "archive"; archive.write_bytes(b"PGDMPSYNTHETIC_ONLY"); archive.chmod(0o600)
             query = Path(d) / "query"
             env = fake_env(PATH=str(b) + os.pathsep + os.environ["PATH"], CALL_LOG=str(log), QUERY_LOG=str(query),
                        PGDATABASE="source_db", PGHOST="localhost", PGPORT="5432", PGSSLMODE="verify-full",
@@ -156,7 +163,7 @@ class Helpers(unittest.TestCase):
             restore.chmod(0o700)
             psql = b / "psql"; psql.write_text('#!/bin/sh\necho 1\n'); psql.chmod(0o700)
             archive_name = "--dbname=production"
-            archive = Path(d) / archive_name; archive.write_text("synthetic"); archive.chmod(0o600)
+            archive = Path(d) / archive_name; archive.write_bytes(b"PGDMPSYNTHETIC_ONLY"); archive.chmod(0o600)
             env = fake_env(PATH=str(b) + os.pathsep + os.environ["PATH"], CALL_LOG=str(log), PGHOST="localhost", PGDATABASE="source_db", PGPORT="5432")
             result = subprocess.run([str(ROOT / "scripts/restore-check.sh"), "--apply", archive_name, "payplump_restore_check_test"], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, "fake option-shaped archive restore failed")
@@ -175,7 +182,7 @@ class Helpers(unittest.TestCase):
                 "pg_restore": '#!/bin/sh\necho "TABLE public.synthetic"\n',
             }.items():
                 p = b / name; p.write_text(body); p.chmod(0o700)
-            archive = Path(d) / "archive"; archive.write_text("synthetic"); archive.chmod(0o600)
+            archive = Path(d) / "archive"; archive.write_bytes(b"PGDMPSYNTHETIC_ONLY"); archive.chmod(0o600)
             env = fake_env(PATH=str(b) + os.pathsep + os.environ["PATH"], PGHOST="localhost", PGDATABASE="source_db", PGPORT="5432", FAKE_MODE="600")
             args = [str(ROOT / "scripts/restore-check.sh"), str(archive), "payplump_restore_check_test"]
             result = subprocess.run(args, cwd=d, env=env, capture_output=True, text=True)
@@ -183,6 +190,19 @@ class Helpers(unittest.TestCase):
             env["FAKE_MODE"] = "644"
             denied = subprocess.run(args, cwd=d, env=env, capture_output=True, text=True)
             self.assertNotEqual(denied.returncode, 0, "non-private archive mode was accepted")
+
+    def test_restore_rejects_noncustom_archive_before_tools(self):
+        with tempfile.TemporaryDirectory() as d:
+            b = Path(d) / "bin"; b.mkdir()
+            marker = Path(d) / "invoked"
+            restore = b / "pg_restore"
+            restore.write_text('#!/bin/sh\ntouch "$CALL_LOG"\n')
+            restore.chmod(0o700)
+            archive = Path(d) / "not-custom"; archive.write_text("SYNTHETIC_NOT_PGDMP"); archive.chmod(0o600)
+            env = fake_env(PATH=str(b) + os.pathsep + os.environ["PATH"], CALL_LOG=str(marker), PGHOST="localhost", PGDATABASE="source_db")
+            result = subprocess.run([str(ROOT / "scripts/restore-check.sh"), str(archive), "payplump_restore_check_test"], cwd=d, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists(), "noncustom archive reached pg_restore")
 
 
 if __name__ == "__main__":

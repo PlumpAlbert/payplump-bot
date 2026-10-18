@@ -31,6 +31,8 @@ private_mode() {
 }
 [ -f "$archive" ] && [ ! -L "$archive" ] && [ -r "$archive" ] || { echo "archive must be a readable regular non-symlink file" >&2; exit 2; }
 private_mode "$archive" || { echo "archive file must have mode 0600" >&2; exit 2; }
+magic=$(dd if="$archive" bs=5 count=1 2>/dev/null) || { echo "archive header unavailable" >&2; exit 2; }
+[ "$magic" = PGDMP ] || { echo "archive must use PostgreSQL custom format" >&2; exit 2; }
 if [ -n "${PGPASSFILE:-}" ]; then
   [ -f "$PGPASSFILE" ] && [ ! -L "$PGPASSFILE" ] && private_mode "$PGPASSFILE" || { echo "PGPASSFILE must be a regular mode-0600 file" >&2; exit 2; }
   export PGPASSFILE

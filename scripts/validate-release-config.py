@@ -38,7 +38,7 @@ def validate(path, expected):
         sec = s.get("security_opt", [])
         if sec != ["no-new-privileges:true"]:
             reject()
-        if any(s.get(k) for k in ("ports", "devices", "device_cgroup_rules", "env_file", "volumes_from", "sysctls")) or any(k in s for k in ("entrypoint", "command", "build", "post_start", "pre_stop")) or s.get("userns_mode") == "host":
+        if any(s.get(k) for k in ("ports", "devices", "device_cgroup_rules", "env_file", "volumes_from", "sysctls")) or any(s.get(k) is not None for k in ("entrypoint", "command", "build", "post_start", "pre_stop")) or s.get("userns_mode") == "host":
             reject()
         env = s.get("environment")
         if not isinstance(env, dict) or any(env.get(k) != "false" for k in FLAGS):
@@ -55,7 +55,7 @@ def validate(path, expected):
         if s.get("volumes") or cfg.get("volumes"):
             reject()
         secrets = s.get("secrets")
-        if not isinstance(secrets, list) or len(secrets) != 1 or not (secrets[0] == "pgpass" or isinstance(secrets[0], dict) and secrets[0].get("source") == "pgpass" and secrets[0].get("target", "pgpass") == "pgpass"):
+        if not isinstance(secrets, list) or len(secrets) != 1 or not (secrets[0] == "pgpass" or isinstance(secrets[0], dict) and secrets[0].get("source") == "pgpass" and secrets[0].get("target", "pgpass") in ("pgpass", "/run/secrets/pgpass")):
             reject()
         if set(cfg.get("secrets", {})) != {"pgpass"} or not isinstance(cfg["secrets"]["pgpass"], dict) or not isinstance(cfg["secrets"]["pgpass"].get("file"), str):
             reject()
