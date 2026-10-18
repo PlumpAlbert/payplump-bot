@@ -35,8 +35,6 @@ type Worker struct {
 
 const databaseTimeout = 8 * time.Second
 
-var errUnstableEvidence = errors.New("payment evidence changed during verification")
-
 func New(store Store, reader Reader, botID int64, admins []int64, cfg Config, logger *slog.Logger) (*Worker, error) {
 	if !cfg.Enabled {
 		return nil, errors.New("payment verification is disabled")
@@ -135,56 +133,7 @@ func (w *Worker) handle(service context.Context, claim Claim) {
 	}
 }
 func (w *Worker) observe(ctx context.Context, s Snapshot) (Decision, error) {
-	if err := ctx.Err(); err != nil {
-		return Decision{}, err
-	}
-	customer, err := w.reader.GetSettlementCustomer(ctx, s.CustomerID)
-	if err != nil {
-		return Decision{}, err
-	}
-	invoice, err := w.reader.GetSettlementInvoice(ctx, s.InvoiceID)
-	if err != nil {
-		return Decision{}, err
-	}
-	today := w.now().In(time.Local).Format(time.DateOnly)
-	if invoice.StatusID != "4" {
-		return Evaluate(s, customer, invoice, nil, w.cfg.CurrencyID, today), nil
-	}
-	first, err := w.reader.ListSettlementPayments(ctx, s.CustomerID)
-	if err != nil {
-		return Decision{}, err
-	}
-	decision := Evaluate(s, customer, invoice, first, w.cfg.CurrencyID, today)
-	if decision.Kind != Verified {
-		return decision, nil
-	}
-	// The provider has no transactional read snapshot. Require repeatable
-	// allocation evidence and unchanged surrounding customer/invoice facts.
-	second, err := w.reader.ListSettlementPayments(ctx, s.CustomerID)
-	if err != nil {
-		return Decision{}, err
-	}
-	firstHash, firstErr := inventoryHash(first)
-	secondHash, secondErr := inventoryHash(second)
-	if firstErr != nil || secondErr != nil || firstHash != secondHash {
-		return Decision{}, errUnstableEvidence
-	}
-	after, err := w.reader.GetSettlementInvoice(ctx, s.InvoiceID)
-	if err != nil {
-		return Decision{}, err
-	}
-	owner, err := w.reader.GetSettlementCustomer(ctx, s.CustomerID)
-	if err != nil {
-		return Decision{}, err
-	}
-	if !sameInvoiceFacts(after, invoice) || owner != customer {
-		return Decision{}, errUnstableEvidence
-	}
-	repeated := Evaluate(s, owner, after, second, w.cfg.CurrencyID, today)
-	if repeated.Kind != Verified || repeated.Proof.Hash != decision.Proof.Hash {
-		return Decision{}, errUnstableEvidence
-	}
-	return repeated, nil
+	return Observe(ctx, w.reader, s, w.cfg.CurrencyID, w.now().In(time.Local).Format(time.DateOnly))
 }
 func (w *Worker) deferCheck(claim Claim, cause error) {
 	code := 9000
@@ -223,10 +172,10 @@ func (w *Worker) notices(s Snapshot, d Decision) Notices {
 	}
 	if d.Kind == Verified {
 		p := d.Proof
-		body := fmt.Sprintf("Платёж по счёту №%s проверен.\nСумма: %s. Дата платежа: %s.\nРасчётная дата следующего счёта: %s.\nВыдача доступа и recurring ещё не подключены. Обратитесь к администратору.", p.InvoiceNumber, p.Amount, p.PaymentDate, p.NextInvoiceDate)
+		body := fmt.Sprintf("Платёж по счёту №%s проверен.\nСумма: %s. Дата платежа: %s.\nРасчётная дата следующего счёта: %s.\nЭто подтверждение платежа, не состояния доступа. Настройка доступа выполняется отдельно; проверьте статус в меню или обратитесь к администратору.", p.InvoiceNumber, p.Amount, p.PaymentDate, p.NextInvoiceDate)
 		notices.Confirmed = append(notices.Confirmed, queue.Draft{BotID: w.botID, ChatID: s.ChatID, Key: prefix + ":confirmed:client", Text: body})
 		for _, id := range w.admins {
-			notices.Confirmed = append(notices.Confirmed, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":confirmed:admin:" + strconv.FormatInt(id, 10), Text: fmt.Sprintf("Платёж проверен: Telegram ID %d, счёт №%s, сумма %s, Payment.date %s, следующая расчётная дата %s. Доступ и recurring не изменялись.", s.TelegramID, p.InvoiceNumber, p.Amount, p.PaymentDate, p.NextInvoiceDate)})
+			notices.Confirmed = append(notices.Confirmed, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":confirmed:admin:" + strconv.FormatInt(id, 10), Text: fmt.Sprintf("Платёж проверен: Telegram ID %d, счёт №%s, сумма %s, Payment.date %s, следующая расчётная дата %s. Это наблюдение платежа; настройка доступа и recurring учитывается отдельно.", s.TelegramID, p.InvoiceNumber, p.Amount, p.PaymentDate, p.NextInvoiceDate)})
 		}
 	}
 	return notices

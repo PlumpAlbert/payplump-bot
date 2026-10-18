@@ -433,6 +433,19 @@ func (c *RecurringClient) post(ctx context.Context, path []string, payload, resu
 }
 
 func (c *RecurringClient) CreateDraft(ctx context.Context, draft RecurringDraft) (RecurringRecord, error) {
+	return c.createDraft(ctx, draft, nil)
+}
+
+// CreateDraftAuthorized requires final authorization after the version probe and
+// before the final clock check. Rejection is unchanged and never attempts a POST.
+func (c *RecurringClient) CreateDraftAuthorized(ctx context.Context, draft RecurringDraft, authorize func(context.Context) error) (RecurringRecord, error) {
+	if authorize == nil {
+		return RecurringRecord{}, errRecurringDraft
+	}
+	return c.createDraft(ctx, draft, authorize)
+}
+
+func (c *RecurringClient) createDraft(ctx context.Context, draft RecurringDraft, authorize func(context.Context) error) (RecurringRecord, error) {
 	draft.LineItems = append([]InvoiceLine(nil), draft.LineItems...)
 	if err := ValidateRecurringDraft(draft); err != nil {
 		return RecurringRecord{}, err
@@ -443,8 +456,18 @@ func (c *RecurringClient) CreateDraft(ctx context.Context, draft RecurringDraft)
 	if err := c.probe(ctx); err != nil {
 		return RecurringRecord{}, err
 	}
+	if authorize != nil {
+		if err := authorize(ctx); err != nil {
+			return RecurringRecord{}, err
+		}
+	}
 	if err := c.futureDate(draft, c.now()); err != nil {
 		return RecurringRecord{}, err
+	}
+	if authorize != nil {
+		if err := ctx.Err(); err != nil {
+			return RecurringRecord{}, err
+		}
 	}
 	var envelope struct {
 		Data *RecurringRecord `json:"data"`
@@ -465,6 +488,19 @@ func (c *RecurringClient) CreateDraft(ctx context.Context, draft RecurringDraft)
 // in-flight work. Local dates AND the actual UTC schedule must remain future.
 // The checks are not CAS: callers must serialize intents and HOLD unknown POSTs.
 func (c *RecurringClient) StartFirst(ctx context.Context, id string, draft RecurringDraft) (RecurringRecord, error) {
+	return c.startFirst(ctx, id, draft, nil)
+}
+
+// StartFirstAuthorized requires final authorization after the exact GET and
+// version probe, before the final date/UTC schedule check. It never retries.
+func (c *RecurringClient) StartFirstAuthorized(ctx context.Context, id string, draft RecurringDraft, authorize func(context.Context) error) (RecurringRecord, error) {
+	if authorize == nil {
+		return RecurringRecord{}, errRecurringDraft
+	}
+	return c.startFirst(ctx, id, draft, authorize)
+}
+
+func (c *RecurringClient) startFirst(ctx context.Context, id string, draft RecurringDraft, authorize func(context.Context) error) (RecurringRecord, error) {
 	draft.LineItems = append([]InvoiceLine(nil), draft.LineItems...)
 	if !billingID(id) {
 		return RecurringRecord{}, errRecurringDraft
@@ -488,8 +524,18 @@ func (c *RecurringClient) StartFirst(ctx context.Context, id string, draft Recur
 	if err := c.probe(ctx); err != nil {
 		return RecurringRecord{}, err
 	}
+	if authorize != nil {
+		if err := authorize(ctx); err != nil {
+			return RecurringRecord{}, err
+		}
+	}
 	if err := c.futureFirst(before, draft, c.now()); err != nil {
 		return RecurringRecord{}, err
+	}
+	if authorize != nil {
+		if err := ctx.Err(); err != nil {
+			return RecurringRecord{}, err
+		}
 	}
 	var envelope struct {
 		Data []RecurringRecord `json:"data"`

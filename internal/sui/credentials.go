@@ -26,6 +26,7 @@ type CreateDraft struct{ record ClientRecord }
 func (CreateDraft) String() string                 { return "[sensitive SUI create draft]" }
 func (CreateDraft) GoString() string               { return "[sensitive SUI create draft]" }
 func (d CreateDraft) Name() string                 { return d.record.Name() }
+func (d CreateDraft) InboundIDs() []int64          { return d.record.InboundIDs() }
 func (d CreateDraft) CredentialsHash() [32]byte    { return d.record.CredentialsHash() }
 func (d CreateDraft) MarshalJSON() ([]byte, error) { return d.record.Raw(), nil }
 func (d *CreateDraft) UnmarshalJSON(raw []byte) error {
@@ -49,6 +50,10 @@ type EnableDraft struct {
 
 func (EnableDraft) String() string   { return "[sensitive SUI enable draft]" }
 func (EnableDraft) GoString() string { return "[sensitive SUI enable draft]" }
+
+// Binding returns a value copy of the persisted identity, not an adoption claim.
+func (d EnableDraft) Binding() Binding { return d.binding }
+
 func (d EnableDraft) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Before  ClientRecord `json:"before"`
