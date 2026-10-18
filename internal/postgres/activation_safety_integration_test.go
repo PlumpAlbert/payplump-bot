@@ -93,6 +93,9 @@ func TestActivationRecurringFactsSurviveClaimsAndConstrainFinish(t *testing.T) {
 	seedActivationAccounts(t, s, ctx, 123, 22000, 1)
 	seedActivationBatch(t, s, ctx, 123, activationAllow(22000, 1), 1)
 	op, _ := claimOneActivation(t, s, ctx, 123)
+	// A fixture spans several independent receipt checks and a reclaim; claim
+	// duration itself is covered without extension in the scoped-claim suite.
+	paymentExec(t, s, ctx, `UPDATE operations SET locked_until=clock_timestamp()+interval '4 minutes' WHERE id=$1`, op.ID)
 	snapshot := finishActivationSteps(t, s, ctx, op)
 	datetime := snapshot.Proof.NextInvoiceDate + "T12:00:00Z"
 	for _, step := range []activation.Step{activation.RecurringCreate, activation.RecurringStart} {
@@ -245,11 +248,14 @@ func TestActivationAbsoluteDeadlineRecheckedAfterFinalTransactionWait(t *testing
 	for _, finish := range []bool{false, true} {
 		t.Run(map[bool]string{false: "prepare", true: "finish"}[finish], func(t *testing.T) {
 			s, ctx := activationTestStore(t)
-			ctx, cancel := context.WithTimeout(ctx, 75*time.Second)
+			ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 			defer cancel()
 			seedActivationAccounts(t, s, ctx, 123, 25000, 1)
 			seedActivationBatch(t, s, ctx, 123, activationAllow(25000, 1), 1)
 			op, _ := claimOneActivation(t, s, ctx, 123)
+			// Keep unrelated lease age out of the absolute-deadline boundary
+			// experiment; its explicit SQL clock guard remains the assertion.
+			paymentExec(t, s, ctx, `UPDATE operations SET locked_until=clock_timestamp()+interval '4 minutes' WHERE id=$1`, op.ID)
 			steps := activation.OrderedSteps()[:2]
 			if finish {
 				steps = activation.OrderedSteps()
@@ -260,7 +266,7 @@ func TestActivationAbsoluteDeadlineRecheckedAfterFinalTransactionWait(t *testing
 				t.Fatal(err)
 			}
 			// Leave enough room for remote Neon lock setup before the deliberate
-			// boundary wait; the test is still bounded by its 75-second context.
+			// boundary wait; the test is still bounded by its three-minute context.
 			deadline := now.Add(20 * time.Second).UTC()
 			paymentExec(t, s, ctx, `UPDATE activation_steps SET recurring_datetime=$2
                 WHERE operation_id=$1 AND step IN ('recurring_create','recurring_start')`, op.ID, deadline.Format(time.RFC3339Nano))

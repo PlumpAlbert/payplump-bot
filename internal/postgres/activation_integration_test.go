@@ -35,7 +35,12 @@ func activationTestStore(t *testing.T) (*Store, context.Context) {
 	if os.Getenv("TEST_DATABASE_URL") == "" && (os.Getenv("PGHOST") == "" || os.Getenv("PGUSER") == "" || os.Getenv("PGDATABASE") == "") {
 		t.Skip("requires disposable TEST_DATABASE_URL or PGHOST/PGUSER/PGDATABASE")
 	}
-	return testStore(t)
+	s, setup := testStore(t)
+	// These multi-transaction scenarios are longer than the shared 90-second
+	// setup fixture on remote Neon. Do not change any production lease/budget.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(setup), 4*time.Minute)
+	t.Cleanup(cancel)
+	return s, ctx
 }
 
 func seedActivationAccounts(t *testing.T, s *Store, ctx context.Context, botID int64, start, count int) []int64 {
@@ -156,7 +161,42 @@ func finishActivationSteps(t *testing.T, s *Store, ctx context.Context, operatio
 	return advanceActivationSteps(t, s, ctx, operation, activation.OrderedSteps())
 }
 
+// Build known receipts through production methods without re-running every
+// negative/idempotency permutation in every unrelated scenario. The complete
+// permutation assertions are retained in TestActivationStepProtocolInvariants.
 func advanceActivationSteps(t *testing.T, s *Store, ctx context.Context, operation queue.Operation, steps []activation.Step) activation.Snapshot {
+	t.Helper()
+	for _, step := range steps {
+		snapshot := loadActivation(t, s, ctx, operation.Lease, 123)
+		payload := activationPayload(t, snapshot, step)
+		if granted, err := s.PrepareActivationWrite(ctx, operation.Lease, snapshot, step, payload, activationToday); err != nil || !granted {
+			t.Fatalf("fixture %s permission: granted=%v err=%v", step, granted, err)
+		}
+		var err error
+		if step == activation.RecurringCreate || step == activation.RecurringStart {
+			err = s.ConfirmRecurringActivationStep(ctx, operation.Lease, step, "recurring-synthetic", "125.25", snapshot.Proof.NextInvoiceDate+"T12:00:00Z")
+		} else {
+			err = s.ConfirmActivationStep(ctx, operation.Lease, step, "77")
+		}
+		if err != nil {
+			t.Fatalf("fixture %s confirmation: %v", step, err)
+		}
+	}
+	return loadActivation(t, s, ctx, operation.Lease, 123)
+}
+
+func TestActivationStepProtocolInvariants(t *testing.T) {
+	s, ctx := activationTestStore(t)
+	seedActivationAccounts(t, s, ctx, 123, 19000, 1)
+	seedActivationBatch(t, s, ctx, 123, activationAllow(19000, 1), 1)
+	op, _ := claimOneActivation(t, s, ctx, 123)
+	// This single fixture tests many independent protocol permutations. Actual
+	// claim duration and expiry fences are tested separately, with no extension.
+	paymentExec(t, s, ctx, `UPDATE operations SET locked_until=clock_timestamp()+interval '4 minutes' WHERE id=$1`, op.ID)
+	exerciseActivationStepAssertions(t, s, ctx, op, activation.OrderedSteps())
+}
+
+func exerciseActivationStepAssertions(t *testing.T, s *Store, ctx context.Context, operation queue.Operation, steps []activation.Step) activation.Snapshot {
 	t.Helper()
 	for _, step := range steps {
 		snapshot := loadActivation(t, s, ctx, operation.Lease, 123)
@@ -512,6 +552,9 @@ func TestActivationFinishAtomicBindingsOutboxAndFinalClock(t *testing.T) {
 	ids := seedActivationAccounts(t, s, ctx, 123, 15000, 1)
 	seedActivationBatch(t, s, ctx, 123, activationAllow(15000, 1), 1)
 	op, snapshot := claimOneActivation(t, s, ctx, 123)
+	// This fixture runs independent rollback/idempotency cases in one flow;
+	// production two-minute claims are asserted in the scoped-claim tests.
+	paymentExec(t, s, ctx, `UPDATE operations SET locked_until=clock_timestamp()+interval '4 minutes' WHERE id=$1`, op.ID)
 	if err := s.FinishActivation(ctx, op.Lease, snapshot, activationToday, nil); !errors.Is(err, queue.ErrConflict) {
 		t.Fatalf("completed missing steps: %v", err)
 	}
@@ -647,6 +690,9 @@ func TestActivationSnapshotOptimisticAndReviewGuards(t *testing.T) {
 	ids := seedActivationAccounts(t, s, ctx, 123, 17000, 1)
 	seedActivationBatch(t, s, ctx, 123, activationAllow(17000, 1), 1)
 	op, snapshot := claimOneActivation(t, s, ctx, 123)
+	// Each matrix entry is an independent negative authorization check, not a
+	// test of elapsed claim duration. Keep that fixture alive across the matrix.
+	paymentExec(t, s, ctx, `UPDATE operations SET locked_until=clock_timestamp()+interval '4 minutes' WHERE id=$1`, op.ID)
 	payload := activationPayload(t, snapshot, activation.SUICreate)
 	for _, mutate := range []func(*activation.Snapshot){
 		func(s *activation.Snapshot) { s.Account.ClientID++ }, func(s *activation.Snapshot) { s.Account.TelegramID++ },

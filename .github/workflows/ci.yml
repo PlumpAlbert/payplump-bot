@@ -41,7 +41,7 @@ jobs:
     needs: validate-postgres-settings
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 40
+    timeout-minutes: 45
     env:
       PGHOST: ${{ vars.PGHOST }}
       PGPORT: ${{ vars.PGPORT }}
@@ -66,7 +66,7 @@ jobs:
       - run: test -z "$(gofmt -l cmd internal)"
       - run: go mod verify
       - run: go vet ./...
-      - run: go test -race -tags=integration -count=1 -timeout=35m ./...
+      - run: go test -race -tags=integration -count=1 -timeout=40m ./...
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/payplump ./cmd/payplump
       - name: Create isolated smoke schema
         id: smoke-schema
