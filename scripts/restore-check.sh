@@ -19,10 +19,20 @@ export PGHOST=127.0.0.1 PGDATABASE="$source" PGCONNECT_TIMEOUT=5
 port=${PGPORT:-5432}
 printf '%s\n' "$port" | grep -Eq '^[0-9]{1,5}$' && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || { echo "invalid PostgreSQL port" >&2; exit 2; }
 export PGPORT=$port
+# GNU `stat -f` can print a filesystem report even when it exits with an
+# error. Never concatenate that stdout with a fallback permission value.
+private_mode() {
+  case "$(uname -s)" in
+    Linux) mode=$(stat -c '%a' -- "$1" 2>/dev/null) || return 1 ;;
+    Darwin|FreeBSD) mode=$(stat -f '%Lp' -- "$1" 2>/dev/null) || return 1 ;;
+    *) return 1 ;;
+  esac
+  [ "$mode" = 600 ]
+}
 [ -f "$archive" ] && [ ! -L "$archive" ] && [ -r "$archive" ] || { echo "archive must be a readable regular non-symlink file" >&2; exit 2; }
-[ "$(stat -f '%Lp' -- "$archive" 2>/dev/null || stat -c '%a' -- "$archive" 2>/dev/null)" = 600 ] || { echo "archive file must have mode 0600" >&2; exit 2; }
+private_mode "$archive" || { echo "archive file must have mode 0600" >&2; exit 2; }
 if [ -n "${PGPASSFILE:-}" ]; then
-  [ -f "$PGPASSFILE" ] && [ ! -L "$PGPASSFILE" ] && [ "$(stat -f '%Lp' -- "$PGPASSFILE" 2>/dev/null || stat -c '%a' -- "$PGPASSFILE" 2>/dev/null)" = 600 ] || { echo "PGPASSFILE must be a regular mode-0600 file" >&2; exit 2; }
+  [ -f "$PGPASSFILE" ] && [ ! -L "$PGPASSFILE" ] && private_mode "$PGPASSFILE" || { echo "PGPASSFILE must be a regular mode-0600 file" >&2; exit 2; }
   export PGPASSFILE
 fi
 command -v pg_restore >/dev/null 2>&1 || { echo "pg_restore is required" >&2; exit 2; }

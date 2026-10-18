@@ -166,6 +166,24 @@ class Helpers(unittest.TestCase):
                 self.assertEqual(args[-2:], ["--", archive_name])
             self.assertIn("--dbname=payplump_restore_check_test", calls[1][:-2])
 
+    def test_restore_uses_gnu_stat_without_mixed_fallback_stdout(self):
+        with tempfile.TemporaryDirectory() as d:
+            b = Path(d) / "bin"; b.mkdir()
+            for name, body in {
+                "uname": '#!/bin/sh\necho Linux\n',
+                "stat": '#!/bin/sh\nif [ "$1" = -c ] && [ "$2" = %a ]; then echo "$FAKE_MODE"; else echo GNU-filesystem-report; exit 1; fi\n',
+                "pg_restore": '#!/bin/sh\necho "TABLE public.synthetic"\n',
+            }.items():
+                p = b / name; p.write_text(body); p.chmod(0o700)
+            archive = Path(d) / "archive"; archive.write_text("synthetic"); archive.chmod(0o600)
+            env = fake_env(PATH=str(b) + os.pathsep + os.environ["PATH"], PGHOST="localhost", PGDATABASE="source_db", PGPORT="5432", FAKE_MODE="600")
+            args = [str(ROOT / "scripts/restore-check.sh"), str(archive), "payplump_restore_check_test"]
+            result = subprocess.run(args, cwd=d, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, "GNU mode-0600 archive was incorrectly denied")
+            env["FAKE_MODE"] = "644"
+            denied = subprocess.run(args, cwd=d, env=env, capture_output=True, text=True)
+            self.assertNotEqual(denied.returncode, 0, "non-private archive mode was accepted")
+
 
 if __name__ == "__main__":
     unittest.main()
