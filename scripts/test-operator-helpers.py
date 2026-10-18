@@ -147,6 +147,25 @@ class Helpers(unittest.TestCase):
             self.assertTrue(report["executed"])
             self.assertEqual(report["workload"]["kind"], "go_test")
 
+    def test_archive_name_cannot_override_restore_database(self):
+        with tempfile.TemporaryDirectory() as d:
+            b = Path(d) / "bin"; b.mkdir()
+            log = Path(d) / "arguments"
+            restore = b / "pg_restore"
+            restore.write_text('#!/bin/sh\nprintf "BEGIN\\n" >>"$CALL_LOG"\nprintf "%s\\n" "$@" >>"$CALL_LOG"\n[ "$1" != --list ] || echo "TABLE public.synthetic"\nexit 0\n')
+            restore.chmod(0o700)
+            psql = b / "psql"; psql.write_text('#!/bin/sh\necho 1\n'); psql.chmod(0o700)
+            archive_name = "--dbname=production"
+            archive = Path(d) / archive_name; archive.write_text("synthetic"); archive.chmod(0o600)
+            env = fake_env(PATH=str(b) + os.pathsep + os.environ["PATH"], CALL_LOG=str(log), PGHOST="localhost", PGDATABASE="source_db", PGPORT="5432")
+            result = subprocess.run([str(ROOT / "scripts/restore-check.sh"), "--apply", archive_name, "payplump_restore_check_test"], cwd=d, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, "fake option-shaped archive restore failed")
+            calls = [x.splitlines() for x in log.read_text().split("BEGIN\n") if x]
+            self.assertEqual(len(calls), 2)
+            for args in calls:
+                self.assertEqual(args[-2:], ["--", archive_name])
+            self.assertIn("--dbname=payplump_restore_check_test", calls[1][:-2])
+
 
 if __name__ == "__main__":
     unittest.main()

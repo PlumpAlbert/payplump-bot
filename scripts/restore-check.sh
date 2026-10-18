@@ -20,15 +20,15 @@ port=${PGPORT:-5432}
 printf '%s\n' "$port" | grep -Eq '^[0-9]{1,5}$' && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || { echo "invalid PostgreSQL port" >&2; exit 2; }
 export PGPORT=$port
 [ -f "$archive" ] && [ ! -L "$archive" ] && [ -r "$archive" ] || { echo "archive must be a readable regular non-symlink file" >&2; exit 2; }
-[ "$(stat -f '%Lp' "$archive" 2>/dev/null || stat -c '%a' "$archive" 2>/dev/null)" = 600 ] || { echo "archive file must have mode 0600" >&2; exit 2; }
+[ "$(stat -f '%Lp' -- "$archive" 2>/dev/null || stat -c '%a' -- "$archive" 2>/dev/null)" = 600 ] || { echo "archive file must have mode 0600" >&2; exit 2; }
 if [ -n "${PGPASSFILE:-}" ]; then
-  [ -f "$PGPASSFILE" ] && [ ! -L "$PGPASSFILE" ] && [ "$(stat -f '%Lp' "$PGPASSFILE" 2>/dev/null || stat -c '%a' "$PGPASSFILE" 2>/dev/null)" = 600 ] || { echo "PGPASSFILE must be a regular mode-0600 file" >&2; exit 2; }
+  [ -f "$PGPASSFILE" ] && [ ! -L "$PGPASSFILE" ] && [ "$(stat -f '%Lp' -- "$PGPASSFILE" 2>/dev/null || stat -c '%a' -- "$PGPASSFILE" 2>/dev/null)" = 600 ] || { echo "PGPASSFILE must be a regular mode-0600 file" >&2; exit 2; }
   export PGPASSFILE
 fi
 command -v pg_restore >/dev/null 2>&1 || { echo "pg_restore is required" >&2; exit 2; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
-if ! (ulimit -f 2048; exec pg_restore --list --no-password "$archive") >"$tmp/list.raw" 2>/dev/null; then echo "archive preflight failed" >&2; exit 1; fi
+if ! (ulimit -f 2048; exec pg_restore --list --no-password -- "$archive") >"$tmp/list.raw" 2>/dev/null; then echo "archive preflight failed" >&2; exit 1; fi
 [ "$(wc -c <"$tmp/list.raw" | tr -d ' ')" -le 1048576 ] || { echo "archive listing exceeds 1 MiB" >&2; exit 1; }
 awk '/ EXTENSION - / && $NF != "plpgsql" { bad=1 }
      / EVENT TRIGGER / { bad=1 }
@@ -41,5 +41,5 @@ query="SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n
 if ! psql -X --no-password -A -t -v ON_ERROR_STOP=1 --host=127.0.0.1 --port="$PGPORT" --dbname="$target" -c "$query" >"$tmp/query.out" 2>/dev/null; then echo "target preflight failed" >&2; exit 1; fi
 empty=$(tr -d '[:space:]' <"$tmp/query.out")
 [ "$empty" = 1 ] || { echo "target database is not empty" >&2; exit 1; }
-if ! pg_restore --no-password --exit-on-error --no-owner --no-acl --single-transaction --host=127.0.0.1 --port="$PGPORT" --dbname="$target" "$archive" >/dev/null 2>"$tmp/restore-error"; then echo "restore failed; inspect disposable target privately" >&2; exit 1; fi
+if ! pg_restore --no-password --exit-on-error --no-owner --no-acl --single-transaction --host=127.0.0.1 --port="$PGPORT" --dbname="$target" -- "$archive" >/dev/null 2>"$tmp/restore-error"; then echo "restore failed; inspect disposable target privately" >&2; exit 1; fi
 printf 'restore completed into disposable database %s; application was not started\n' "$target"
