@@ -25,7 +25,7 @@ GET. Контракты изучаем по закреплённым публи�
 
 ## Рабочая очередь
 
-- [ ] 8a: source-pinned disable / closeSessions, recurring pause / schedule / resume,
+- [x] 8a: source-pinned disable / closeSessions, recurring pause / schedule / resume,
   GET-only discovery управляемых recurring-счетов, синтетические контракты.
 - [ ] 8b: журнал периодов, новые счета, срок оплаты до конца дня,
   fresh-unpaid overdue workflow и отдельные подтверждения внешних шагов.
@@ -45,6 +45,25 @@ GET. Контракты изучаем по закреплённым публи�
 Отметки ставятся после реальных проверок, не по результатам намерения агента.
 Отчёт завершённого прохода перечислит PR, точные проверенные commits, результаты
 и оставшиеся действия владельца.
+
+## Проверенные срезы
+
+- PR [#12](https://github.com/PlumpAlbert/payplump-bot/pull/12), squash
+  `de18ff0ce1f1a6dad389523bce8205cfcb3ff35d`: lifecycle-адаптеры и общий
+  immutable dispatch anchor `010`. Проверенный HEAD
+  `dc88789b4b42821ed6eb4f534b47ab26cf1f42be`; push и PR CI успешны, включая
+  Neon/race, обязательный loopback workflow, smoke и Docker build/start/restart.
+  Это не runtime-исполнитель продлений/просрочки.
+- Рассылки реализованы отдельным срезом: полный локальный unfiltered Neon/race
+  успешен (PostgreSQL 1071.857s), семь новых DB-тестов прошли. До успешного
+  exact-head CI и merge пункт 10 остаётся незакрытым.
+- Операторский план/инертный staging и read-only recovery проверяются отдельно.
+  Они не завершают управляемый импорт и не дают доступа/конфигураций.
+
+Работа по 8b/9 ещё не готова. Узкий per-invoice API прекращения собственных
+email-напоминаний Ninja не доказан; чужие company/client-wide настройки не
+меняем. Source-проверка также показала, что recurring может создавать draft,
+поэтому будущий workflow не должен предполагать issued invoice без проверки.
 
 ## Остаётся владельцу
 
