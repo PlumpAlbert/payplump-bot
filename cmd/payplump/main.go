@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/broadcast"
 	"github.com/PlumpAlbert/payplump-bot/internal/configdelivery"
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
@@ -54,6 +55,10 @@ func run(logger *slog.Logger, args []string) error {
 		return errors.New("usage: payplump [healthcheck | check-integrations | resume-registration OPERATION_ID]")
 	}
 	telegramConfig, err := telegram.ConfigFromEnv()
+	if err != nil {
+		return err
+	}
+	broadcastConfig, err := broadcast.ConfigFromEnv(telegramConfig.Enabled, telegramConfig.AdminIDs)
 	if err != nil {
 		return err
 	}
@@ -130,6 +135,11 @@ func run(logger *slog.Logger, args []string) error {
 	if err := store.Migrate(startupCtx); err != nil {
 		return fmt.Errorf("database migrations: %w", err)
 	}
+	if !broadcastConfig.Enabled {
+		if err := store.DisableBroadcastPolicies(startupCtx); err != nil {
+			return fmt.Errorf("broadcast startup fence: %w", err)
+		}
+	}
 	if err := fenceConfigurationStartup(startupCtx, store, configurationConfig); err != nil {
 		return err
 	}
@@ -148,10 +158,11 @@ func run(logger *slog.Logger, args []string) error {
 	var initialize func(context.Context) error
 	var background func(context.Context) error
 	if telegramConfig.Enabled {
-		gateway, err := newMenuGatewayWithConfiguration(store, configurationConfig)
+		menu, err := newMenuGatewayWithConfiguration(store, configurationConfig)
 		if err != nil {
 			return err
 		}
+		gateway := newBroadcastGateway(menu, store, broadcastConfig)
 		endpoint, err = telegram.NewWebhookHandler(telegramConfig.WebhookSecret, gateway)
 		if err != nil {
 			return err
@@ -165,6 +176,11 @@ func run(logger *slog.Logger, args []string) error {
 				return err
 			}
 			botID = bot.ID
+			if broadcastConfig.Enabled {
+				if err := store.InstallBroadcastPolicy(ctx, botID, broadcastConfig.Policy()); err != nil {
+					return err
+				}
+			}
 			if err := store.InstallConfigurationPolicy(ctx, botID, configurationConfig.Policy()); err != nil {
 				return err
 			}
@@ -186,6 +202,13 @@ func run(logger *slog.Logger, args []string) error {
 				return err
 			}
 			workers := []func(context.Context) error{worker.Run}
+			if broadcastConfig.Enabled {
+				broadcastWorker, err := broadcast.New(store, botID, broadcastConfig, logger)
+				if err != nil {
+					return err
+				}
+				workers = append(workers, broadcastWorker.Run)
+			}
 			if registrationConfig.Enabled {
 				var admins []int64
 				for id := range telegramConfig.AdminIDs {

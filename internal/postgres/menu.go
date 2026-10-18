@@ -81,6 +81,11 @@ func (s *Store) ApplyMenuUpdate(ctx context.Context, botID int64, botUsername st
 	if actual != prepared.Snapshot {
 		return clientmenu.ErrStaleSnapshot
 	}
+	if actual.Known {
+		if err := recordBroadcastMembership(ctx, tx, botID, identity.TelegramID); err != nil {
+			return menuStageError("record broadcast membership", err)
+		}
+	}
 	if prepared.ProtectedConfiguration {
 		if err := enqueueConfigurationIntent(ctx, tx, prepared); err != nil {
 			return err
@@ -113,6 +118,9 @@ func (s *Store) ApplyMenuUpdate(ctx context.Context, botID int64, botUsername st
 			// the new client; both inserts must belong to this transaction.
 			if !registered.ClientCreated || !registered.Created {
 				return clientmenu.ErrStaleSnapshot
+			}
+			if err := recordBroadcastMembership(ctx, tx, botID, identity.TelegramID); err != nil {
+				return menuStageError("record broadcast membership", err)
 			}
 		} else {
 			if _, err := tx.Exec(ctx, `UPDATE clients SET chat_id = $2, display_name = $3 WHERE telegram_id = $1`,
