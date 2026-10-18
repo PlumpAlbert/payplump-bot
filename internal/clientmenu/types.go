@@ -48,6 +48,7 @@ type Snapshot struct {
 	CustomerID, InvoiceID, SUIID string
 	State                        string
 	DesiredAccess                bool
+	PaymentReview                bool
 	PaymentDate, NextInvoiceDate string
 }
 

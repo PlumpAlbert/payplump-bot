@@ -118,6 +118,12 @@ func statusText(s Snapshot) string {
 	if state == "" {
 		state = "требует проверки администратора"
 	}
+	if s.State == "awaiting_payment" && date(s.PaymentDate) {
+		state = "оплата проверена; выдача доступа ещё не подключена"
+	}
+	if s.PaymentReview {
+		state = "подтверждение оплаты требует ручной перепроверки"
+	}
 	message := "Последнее сохранённое состояние подписки: " + state + ".\n"
 	if s.DesiredAccess {
 		message += "В базе запрошен активный доступ. Это не проверка текущего подключения S-UI.\n"
@@ -130,7 +136,7 @@ func statusText(s Snapshot) string {
 	if date(s.NextInvoiceDate) {
 		message += "Следующий счёт по сохранённым данным: " + s.NextInvoiceDate + ".\n"
 	}
-	return message + "Сведения о платеже и доступе автоматически ещё не сверяются. Текущий счёт и реквизиты: /invoice."
+	return message + "Это последнее сохранённое наблюдение; актуальный доступ S-UI здесь не проверяется. Текущий счёт и реквизиты: /invoice."
 }
 
 func (s *Service) invoice(ctx context.Context, r Request, local Snapshot) string {
