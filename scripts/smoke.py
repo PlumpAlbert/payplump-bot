@@ -20,6 +20,7 @@ def check_cycle():
         "HEALTHCHECK_URL": base + "/readyz",
         "TELEGRAM_ENABLED": "false",
         "REGISTRATION_ENABLED": "false",
+        "PAYMENTS_ENABLED": "false",
     }
     binary = os.environ.get("PAYPLUMP_BINARY", "./bin/payplump")
     process = subprocess.Popen(

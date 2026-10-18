@@ -124,11 +124,13 @@ func readMenuSnapshot(ctx context.Context, reader menuSnapshotReader, actorTG in
         SELECT c.id, c.chat_id, COALESCE(c.invoice_ninja_id, ''),
             COALESCE(s.current_invoice_id, ''), COALESCE(c.sui_id, ''),
             s.client_id IS NOT NULL, COALESCE(s.state, ''), COALESCE(s.desired_access, false),
-            COALESCE(s.payment_date::text, ''), COALESCE(s.next_invoice_date::text, '')
+            COALESCE(s.payment_date::text, ''), COALESCE(s.next_invoice_date::text, ''),
+            EXISTS (SELECT 1 FROM payment_confirmations pc WHERE pc.client_id=c.id
+                AND pc.invoice_id=s.current_invoice_id AND pc.review_required)
         FROM clients c LEFT JOIN subscriptions s ON s.client_id = c.id
         WHERE c.telegram_id = $1`, actorTG).Scan(
 		&snapshot.ClientID, &chatID, &snapshot.CustomerID, &snapshot.InvoiceID, &snapshot.SUIID,
-		&subscriptionExists, &snapshot.State, &snapshot.DesiredAccess, &snapshot.PaymentDate, &snapshot.NextInvoiceDate,
+		&subscriptionExists, &snapshot.State, &snapshot.DesiredAccess, &snapshot.PaymentDate, &snapshot.NextInvoiceDate, &snapshot.PaymentReview,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return clientmenu.Snapshot{}, nil

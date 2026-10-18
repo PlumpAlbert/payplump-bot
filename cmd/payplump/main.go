@@ -16,6 +16,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/outbox"
+	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/postgres"
 	"github.com/PlumpAlbert/payplump-bot/internal/registration"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
@@ -68,6 +69,20 @@ func run(logger *slog.Logger, args []string) error {
 			return errors.New("invalid registration API configuration")
 		}
 	}
+	paymentConfig, err := payments.ConfigFromEnv(telegramConfig.Enabled)
+	if err != nil {
+		return err
+	}
+	var paymentAPI *invoiceninja.SettlementClient
+	if paymentConfig.Enabled {
+		if len(telegramConfig.AdminIDs) > 99 {
+			return errors.New("payment verification requires at most 99 administrators")
+		}
+		paymentAPI, err = invoiceninja.NewSettlementClient(paymentConfig.BaseURL, paymentConfig.Token, paymentConfig.HTTPTimeout, paymentConfig.PageSize, paymentConfig.MaxPages)
+		if err != nil {
+			return errors.New("invalid payment verification API configuration")
+		}
+	}
 	var deliveryConfig outbox.Config
 	if telegramConfig.Enabled {
 		deliveryConfig, err = outbox.ConfigFromEnv()
@@ -92,6 +107,15 @@ func run(logger *slog.Logger, args []string) error {
 		return fmt.Errorf("database migrations: %w", err)
 	}
 	cancelStartup()
+	var paymentEndpoint *payments.WebhookHandler
+	var paymentHandler http.Handler
+	if paymentConfig.Enabled {
+		paymentEndpoint, err = payments.NewWebhook(paymentConfig.WebhookSecret, store)
+		if err != nil {
+			return err
+		}
+		paymentHandler = paymentEndpoint
+	}
 	var endpoint *telegram.WebhookHandler
 	var handler http.Handler
 	var initialize func(context.Context) error
@@ -114,6 +138,11 @@ func run(logger *slog.Logger, args []string) error {
 				return err
 			}
 			botID = bot.ID
+			if paymentEndpoint != nil {
+				if err := paymentEndpoint.Activate(botID); err != nil {
+					return err
+				}
+			}
 			return endpoint.Activate(bot)
 		}
 		background = func(ctx context.Context) error {
@@ -133,6 +162,17 @@ func run(logger *slog.Logger, args []string) error {
 				}
 				workers = append(workers, onboarding.Run)
 			}
+			if paymentConfig.Enabled {
+				var admins []int64
+				for id := range telegramConfig.AdminIDs {
+					admins = append(admins, id)
+				}
+				verifier, err := payments.New(store, paymentAPI, botID, admins, paymentConfig, logger)
+				if err != nil {
+					return err
+				}
+				workers = append(workers, verifier.Run)
+			}
 			return runWorkers(ctx, workers...)
 		}
 	}
@@ -142,7 +182,7 @@ func run(logger *slog.Logger, args []string) error {
 		}
 		return store.Ping(ctx)
 	}
-	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), ready, handler)
+	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), ready, handler, paymentHandler)
 	return serve(ctx, logger, srv, initialize, background)
 }
 
