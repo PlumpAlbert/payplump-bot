@@ -1,0 +1,45 @@
+services:
+  payplump:
+    image: ${PAYPLUMP_IMAGE:?set an immutable image@sha256 digest}
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=16m,noexec,nosuid,nodev"]
+    restart: unless-stopped
+    mem_limit: 512m # Example only; unmeasured, choose from target-host measurements.
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    environment:
+      HTTP_ADDR: ":8080"
+      DB_MAX_CONNS: "4"
+      TELEGRAM_ENABLED: "false"
+      REGISTRATION_ENABLED: "false"
+      PAYMENTS_ENABLED: "false"
+      ACTIVATION_ENABLED: "false"
+      CONFIGURATION_DELIVERY_ENABLED: "false"
+      BROADCAST_ENABLED: "false"
+      LIFECYCLE_ENABLED: "false"
+      PGHOST: ${PGHOST:?set externally}
+      PGPORT: ${PGPORT:-5432}
+      PGUSER: ${PGUSER:?set externally}
+      PGDATABASE: ${PGDATABASE:?set externally}
+      PGSSLMODE: ${PGSSLMODE:-verify-full}
+      PGPASSFILE: /run/secrets/pgpass
+    secrets:
+      - pgpass
+    healthcheck:
+      test: ["CMD", "/payplump", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0" # Example only; unmeasured.
+          memory: 512M
+secrets:
+  pgpass:
+    file: ${PGPASSFILE:?provide a private PGPASSFILE outside this repository}
