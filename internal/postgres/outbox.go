@@ -59,10 +59,11 @@ func enqueueOutbox(ctx context.Context, tx pgx.Tx, message queue.Draft) (int64, 
 	}
 	var id int64
 	err := tx.QueryRow(ctx, `
-        INSERT INTO outbox (bot_id, chat_id, message_key, body) VALUES ($1, $2, $3, $4)
+        INSERT INTO outbox (bot_id, chat_id, message_key, body, client_menu) VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (bot_id, message_key) DO UPDATE SET message_key = outbox.message_key
             WHERE outbox.chat_id = EXCLUDED.chat_id AND outbox.body = EXCLUDED.body
-        RETURNING id`, message.BotID, message.ChatID, message.Key, message.Text).Scan(&id)
+              AND outbox.client_menu = EXCLUDED.client_menu
+        RETURNING id`, message.BotID, message.ChatID, message.Key, message.Text, message.ClientMenu).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, queue.ErrConflict
 	}
@@ -109,14 +110,14 @@ func (s *Store) ClaimOutbox(ctx context.Context, botID int64, limit int, lease t
         FROM due WHERE o.id = due.id
             AND ((o.status = 'pending' AND o.next_attempt_at <= clock_timestamp())
                 OR (o.status = 'running' AND o.locked_until <= clock_timestamp()))
-        RETURNING o.id, o.attempts, o.bot_id, o.chat_id, o.body`, botID, limit, lease.Milliseconds())
+        RETURNING o.id, o.attempts, o.bot_id, o.chat_id, o.body, o.client_menu`, botID, limit, lease.Milliseconds())
 	if err != nil {
 		return nil, err
 	}
 	var messages []queue.Message
 	for rows.Next() {
 		var message queue.Message
-		if err := rows.Scan(&message.ID, &message.Attempt, &message.BotID, &message.ChatID, &message.Text); err != nil {
+		if err := rows.Scan(&message.ID, &message.Attempt, &message.BotID, &message.ChatID, &message.Text, &message.ClientMenu); err != nil {
 			rows.Close()
 			return nil, err
 		}
