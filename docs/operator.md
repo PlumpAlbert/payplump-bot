@@ -59,19 +59,17 @@ access without placing secrets in Git.
 
 `restore-check.sh` defaults to dry run and accepts only PostgreSQL custom-format
 archives with a regular non-symlink mode-0600 archive, loopback connection,
-a source `PGDATABASE`, and a target named
-`payplump_restore_check_[A-Za-z0-9_]+` different from the source. It clears
-libpq service/host-address/options overrides and forces loopback with a
-validated port.
-Dry run uses `pg_restore --list` and caps captured listing output at 1 MiB; it
-never prints archive object names. For a manually created, empty disposable DB,
-`restore-check.sh --apply ARCHIVE TARGET` uses
-`pg_restore --no-owner --no-acl --single-transaction` with password
-environment/0600 non-symlink `PGPASSFILE`, suppresses private tool output, and
-never starts the application. Treat only a trusted owner-produced archive as
-safe: PostgreSQL custom archives can execute DDL and functions. If interrupted,
-inspect/destroy the disposable target manually. The helper does not create/drop
-databases or touch a production source.
+a simple canonical source database name, and a target named
+`payplump_restore_check_[A-Za-z0-9_]+` (at most 63 characters) different from
+the source. It clears libpq routing overrides, enforces a five-second connection
+timeout, and forces IPv4 loopback with a validated port. Dry run invokes only
+`pg_restore --list`; it never connects to PostgreSQL. Apply is explicit, requires
+a privately protected password file if needed, and checks that the target has no
+user objects. Built-in `pg_*` objects and the empty built-in `public` schema are
+permitted. The archive filters are guardrails, not proof that an archive is safe:
+PostgreSQL archive DDL and functions can execute code, so use only a trusted,
+owner-produced archive. If interrupted, inspect/destroy the disposable target
+manually. The helper does not create/drop databases or touch a production source.
 
 After restore, inspect `schema_migrations` checksums against the intended binary.
 The application refuses unknown migration versions and checksum changes; do not
@@ -88,10 +86,16 @@ not create a PostgreSQL server, host networking, publish ports, or deploy.
 All feature flags, including future broadcast/lifecycle placeholders, are false.
 The image runs nonroot, read-only with dropped capabilities, no-new-privileges,
 log rotation, and sample memory/CPU values explicitly marked unmeasured.
-Run `scripts/validate-release-config.sh REGISTRY/IMAGE@sha256:DIGEST` for static
-validation. No registry login, build publication, deployment, or workflow run is
-part of this change. A future release workflow must be workflow_dispatch only,
-with publication default-off, digest-pinned actions, and protected approval.
+Run `scripts/validate-release-config.sh REGISTRY/IMAGE@sha256:DIGEST` to resolve
+Compose configuration with an explicit empty env file and validate its JSON
+structure. This checks the supplied resolved config, not remote secret ownership
+or host state. Compose file-backed secrets may ignore configured UID/mode: the
+host pgpass file must be readable by container UID 65532 (for example, mode 0600
+owned by that UID), or mapped through an owner-approved secret mechanism. The
+helper never changes ownership or permissions. No registry login, build
+publication, deployment, or workflow run is part of this change. A future release
+workflow must be workflow_dispatch only, with publication default-off,
+digest-pinned actions, and protected approval.
 
 ## Safe resource measurements
 
