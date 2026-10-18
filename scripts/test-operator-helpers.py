@@ -132,7 +132,7 @@ class Helpers(unittest.TestCase):
             self.assertIn("!~ '^pg_'", query.read_text())
             self.assertNotIn("synthetic-private", result.stdout + result.stderr)
 
-    def test_measurement_strips_goflags_and_disables_downloads(self):
+    def test_measurement_strips_goflags_and_disables_module_downloads(self):
         with tempfile.TemporaryDirectory() as d:
             b = Path(d) / "bin"; b.mkdir()
             captured = Path(d) / "environment"
@@ -142,7 +142,7 @@ class Helpers(unittest.TestCase):
             env = fake_env(PATH=str(b) + os.pathsep + os.environ["PATH"], GOFLAGS="-exec=SYNTHETIC_UNSAFE")
             result = subprocess.run([str(ROOT / "scripts/measure-safe.py"), "--run", "--packages", "./internal/importplan"], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0)
-            self.assertEqual(captured.read_text().splitlines(), ["unset", "off", "off"])
+            self.assertEqual(captured.read_text().splitlines(), ["unset", "off", "sum.golang.org"])
             report = json.loads(result.stdout)
             self.assertTrue(report["executed"])
             self.assertEqual(report["workload"]["kind"], "go_test")
