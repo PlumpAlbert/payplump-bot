@@ -21,7 +21,7 @@ def main():
     if a.run:
         allowed={"PATH","HOME","GOROOT","GOPATH","GOCACHE","GOMODCACHE","CGO_ENABLED","GOOS","GOARCH","TMPDIR","SSL_CERT_FILE"}
         env={k:v for k,v in os.environ.items() if k in allowed}
-        env.update({"GOPROXY":"off","GOSUMDB":"off","GOTOOLCHAIN":"local"})
+        env.update({"GOPROXY":"off","GOSUMDB":"off","GOTOOLCHAIN":"auto"})
         before=resource.getrusage(resource.RUSAGE_CHILDREN)
         start=time.monotonic()
         result=subprocess.run(["go","test","-count=1",*a.packages],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env)
