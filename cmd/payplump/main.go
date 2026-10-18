@@ -27,7 +27,7 @@ import (
 
 func main() {
 	logOutput := os.Stdout
-	if len(os.Args) > 1 && (os.Args[1] == "check-integrations" || os.Args[1] == "resume-registration") {
+	if len(os.Args) > 1 && (os.Args[1] == "check-integrations" || os.Args[1] == "resume-registration" || os.Args[1] == "recovery-report" || os.Args[1] == "import-plan" || os.Args[1] == "import-stage") {
 		logOutput = os.Stderr // Keep the command's stdout a single JSON report.
 	}
 	logger := slog.New(slog.NewJSONHandler(logOutput, nil))
@@ -41,6 +41,15 @@ func run(logger *slog.Logger, args []string) error {
 	if len(args) == 1 && args[0] == "healthcheck" {
 		return healthcheck(envOr("HEALTHCHECK_URL", "http://127.0.0.1:8080/readyz"))
 	}
+	if len(args) > 0 && args[0] == "recovery-report" {
+		return recoveryReportCommand(args[1:], os.Stdout)
+	}
+	if len(args) > 0 && args[0] == "import-plan" {
+		return importPlanCommand(args[1:], os.Stdout)
+	}
+	if len(args) > 0 && args[0] == "import-stage" {
+		return importStageCommand(args[1:], os.Stdout)
+	}
 	if len(args) == 1 && args[0] == "check-integrations" {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
@@ -52,7 +61,7 @@ func run(logger *slog.Logger, args []string) error {
 		return resumeRegistration(ctx, args[1], os.Stdout)
 	}
 	if len(args) != 0 {
-		return errors.New("usage: payplump [healthcheck | check-integrations | resume-registration OPERATION_ID]")
+		return errors.New("usage: payplump [healthcheck | check-integrations | resume-registration OPERATION_ID | recovery-report [--operation LOCAL_ID] | import-plan --file PATH | import-stage --file PATH --expected-hash HASH --apply]")
 	}
 	telegramConfig, err := telegram.ConfigFromEnv()
 	if err != nil {
