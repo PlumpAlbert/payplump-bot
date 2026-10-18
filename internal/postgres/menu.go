@@ -81,6 +81,25 @@ func (s *Store) ApplyMenuUpdate(ctx context.Context, botID int64, botUsername st
 	if actual != prepared.Snapshot {
 		return clientmenu.ErrStaleSnapshot
 	}
+	if prepared.ProtectedConfiguration {
+		if err := enqueueConfigurationIntent(ctx, tx, prepared); err != nil {
+			return err
+		}
+		return menuStageError("commit protected configuration request", tx.Commit(ctx))
+	}
+	if prepared.Text == queue.ConfigurationIntentBody {
+		return errors.New("invalid protected configuration intent")
+	}
+	if action == clientmenu.Configuration {
+		// Configuration bodies are never accepted as ordinary prepared text.
+		// A disabled/ineligible request gets only this fixed, nonsensitive reply.
+		if _, err := enqueueOutbox(ctx, tx, queue.Draft{
+			BotID: botID, ChatID: identity.ChatID, Key: request.Key(), Text: configurationDeniedText, ClientMenu: true,
+		}); err != nil {
+			return menuStageError("enqueue configuration denial", err)
+		}
+		return menuStageError("commit configuration denial", tx.Commit(ctx))
+	}
 	if action == clientmenu.Start {
 		if !actual.Known {
 			registered, err := registerPrivateClient(ctx, tx, TelegramIdentity{
@@ -123,6 +142,7 @@ func readMenuSnapshot(ctx context.Context, reader menuSnapshotReader, actorTG in
 	err := reader.QueryRow(ctx, `
         SELECT c.id, c.chat_id, COALESCE(c.invoice_ninja_id, ''),
             COALESCE(s.current_invoice_id, ''), COALESCE(c.sui_id, ''),
+            COALESCE(s.recurring_id, ''), c.configuration_revision,
             s.client_id IS NOT NULL, COALESCE(s.state, ''), COALESCE(s.desired_access, false),
             COALESCE(s.payment_date::text, ''), COALESCE(s.next_invoice_date::text, ''),
             EXISTS (SELECT 1 FROM payment_confirmations pc WHERE pc.client_id=c.id
@@ -130,6 +150,7 @@ func readMenuSnapshot(ctx context.Context, reader menuSnapshotReader, actorTG in
         FROM clients c LEFT JOIN subscriptions s ON s.client_id = c.id
         WHERE c.telegram_id = $1`, actorTG).Scan(
 		&snapshot.ClientID, &chatID, &snapshot.CustomerID, &snapshot.InvoiceID, &snapshot.SUIID,
+		&snapshot.RecurringID, &snapshot.ConfigurationRevision,
 		&subscriptionExists, &snapshot.State, &snapshot.DesiredAccess, &snapshot.PaymentDate, &snapshot.NextInvoiceDate, &snapshot.PaymentReview,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

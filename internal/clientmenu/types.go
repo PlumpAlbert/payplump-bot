@@ -1,5 +1,6 @@
 // Package clientmenu provides read-only, actor-scoped client replies. It never
-// creates billing records, grants access or returns subscription credentials.
+// creates billing records or grants access. Configuration requests enqueue only
+// a nonsensitive protected intent; its separate dispatcher resolves credentials.
 package clientmenu
 
 import (
@@ -46,16 +47,25 @@ type Snapshot struct {
 	Known                        bool
 	ClientID                     int64
 	CustomerID, InvoiceID, SUIID string
+	RecurringID                  string
+	ConfigurationRevision        int64
 	State                        string
 	DesiredAccess                bool
 	PaymentReview                bool
 	PaymentDate, NextInvoiceDate string
 }
 
+// ConfigurationUnavailableText is deliberately fixed: an ordinary outbox
+// message must never accept a rendered personal URL from prepared text.
+const ConfigurationUnavailableText = "Персональная конфигурация доступна только после полной проверенной оплаты и завершённой настройки доступа. Сейчас безопасная выдача недоступна. Если вы ещё не зарегистрированы, отправьте /start. Проверьте /status или обратитесь к администратору. Инструкция: /help. Ранее выданную подписку не удаляйте."
+
 type Prepared struct {
-	Request  Request
-	Snapshot Snapshot
-	Text     string
+	Request                     Request
+	Snapshot                    Snapshot
+	Text                        string
+	ProtectedConfiguration      bool
+	ConfigurationPolicyRevision int64
+	ConfigurationPolicyHash     [32]byte
 }
 type Reader interface {
 	GetCustomer(context.Context, string) (invoiceninja.Customer, error)

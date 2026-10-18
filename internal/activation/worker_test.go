@@ -493,7 +493,7 @@ func TestWorkerFourClaimsThenFreshFinalization(t *testing.T) {
 			t.Fatal("sensitive/invalid completion notice")
 		}
 	}
-	if len(f.s.notices) != 3 || !strings.Contains(f.s.notices[0].Text, "закрыта") || !strings.Contains(f.s.notices[0].Text, "не проверена") {
+	if len(f.s.notices) != 3 || !strings.Contains(f.s.notices[0].Text, "/config") || !strings.Contains(f.s.notices[0].Text, "требует отдельных проверок") || !strings.Contains(f.s.notices[0].Text, "не проверена") {
 		t.Fatal("completion overclaims configuration delivery or core health")
 	}
 }

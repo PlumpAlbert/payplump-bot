@@ -56,6 +56,7 @@ jobs:
       REGISTRATION_ENABLED: "false"
       PAYMENTS_ENABLED: "false"
       ACTIVATION_ENABLED: "false"
+      CONFIGURATION_DELIVERY_ENABLED: "false"
       SMOKE_SCHEMA: ci_smoke_${{ github.run_id }}_${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

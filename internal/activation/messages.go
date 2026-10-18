@@ -20,9 +20,9 @@ func reviewMessages(botID, operationID int64, admins []int64) []queue.Draft {
 
 func completionMessages(s Snapshot, operationID int64, admins []int64) []queue.Draft {
 	prefix := "activation:" + strconv.FormatInt(operationID, 10) + ":complete:"
-	text := "Учётная запись и расписание подписки настроены. Следующая дата счёта: " + s.Proof.NextInvoiceDate + ". Выдача конфигурации пока закрыта. Работоспособность подключения не проверена."
+	text := "Учётная запись и расписание подписки настроены. Следующая дата счёта: " + s.Proof.NextInvoiceDate + ". Запросить персональную подписку: /config. Выдача требует отдельных проверок. Работоспособность подключения не проверена."
 	messages := []queue.Draft{{BotID: s.Account.BotID, ChatID: s.Account.ChatID, Key: prefix + "client", Text: text}}
-	adminText := fmt.Sprintf("Активация (задание %d), Telegram ID %d: учётная запись и расписание настроены. Следующая дата счёта: %s. Выдача конфигурации закрыта; работоспособность подключения не проверена.", operationID, s.Account.TelegramID, s.Proof.NextInvoiceDate)
+	adminText := fmt.Sprintf("Активация (задание %d), Telegram ID %d: учётная запись и расписание настроены. Следующая дата счёта: %s. Выдача через /config требует отдельного включения и проверок; работоспособность подключения не проверена.", operationID, s.Account.TelegramID, s.Proof.NextInvoiceDate)
 	for _, id := range admins {
 		messages = append(messages, queue.Draft{BotID: s.Account.BotID, ChatID: id, Key: prefix + "admin:" + strconv.FormatInt(id, 10), Text: adminText})
 	}

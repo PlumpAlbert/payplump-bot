@@ -31,7 +31,20 @@ type MenuSender interface {
 	SendMenuMessage(context.Context, int64, string) (int64, error)
 }
 
+// ConfigurationSender never receives a rendered secret in message.Text. It
+// resolves a typed intent and performs final durable authorization itself.
+type ConfigurationSender interface {
+	SendConfiguration(context.Context, queue.Message) (int64, error)
+}
+
+// Terminal protected failures cannot be blindly replayed. Validated Telegram
+// rejection may clear its secret reservation; an unknown outcome never does.
+type ConfigurationStore interface {
+	FailConfigurationOutbox(context.Context, queue.Lease, int, time.Duration, bool) error
+}
+
 var errUnsupportedMenu = errors.New("sender does not support client menus")
+var errUnsupportedConfiguration = errors.New("protected configuration capability unavailable")
 
 type Worker struct {
 	store  Store
@@ -42,12 +55,13 @@ type Worker struct {
 }
 
 const (
-	leaseDuration   = 45 * time.Second
-	claimTimeout    = 5 * time.Second
-	sendTimeout     = 10 * time.Second
-	finalizeTimeout = 5 * time.Second
-	maxRetryDelay   = 5 * time.Minute
-	retryJitter     = 250 * time.Millisecond
+	leaseDuration        = 45 * time.Second
+	claimTimeout         = 5 * time.Second
+	sendTimeout          = 10 * time.Second
+	protectedSendTimeout = 30 * time.Second
+	finalizeTimeout      = 5 * time.Second
+	maxRetryDelay        = 5 * time.Minute
+	retryJitter          = 250 * time.Millisecond
 )
 
 // New uses the default logger when logger is nil.
@@ -108,14 +122,25 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) deliver(ctx context.Context, message queue.Message) {
-	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
+	budget := sendTimeout
+	if message.ProtectedConfiguration {
+		budget = protectedSendTimeout
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, budget)
 	if sendCtx.Err() != nil {
 		cancel()
 		return
 	}
 	var messageID int64
 	var err error
-	if message.ClientMenu {
+	if message.ProtectedConfiguration {
+		_, stored := w.store.(ConfigurationStore)
+		if sender, ok := w.sender.(ConfigurationSender); ok && stored && !message.ClientMenu && message.Text == queue.ConfigurationIntentBody {
+			messageID, err = sender.SendConfiguration(sendCtx, message)
+		} else {
+			err = errUnsupportedConfiguration
+		}
+	} else if message.ClientMenu {
 		if sender, ok := w.sender.(MenuSender); ok {
 			messageID, err = sender.SendMenuMessage(sendCtx, message.ChatID, message.Text)
 		} else {
@@ -144,16 +169,29 @@ func (w *Worker) deliver(ctx context.Context, message queue.Message) {
 
 	code := 0
 	minimum := time.Duration(0)
-	permanent := errors.Is(err, errUnsupportedMenu)
+	permanent := message.ProtectedConfiguration || errors.Is(err, errUnsupportedMenu)
 	if knownAPIError {
 		code = apiErr.Code
 		minimum = apiErr.RetryAfter
 		// Credentials can recover after configuration changes. Do not discard
 		// every pending recipient because the current token is unauthorized.
-		permanent = code != 401 && apiErr.Permanent()
+		permanent = message.ProtectedConfiguration || (code != 401 && apiErr.Permanent())
 	}
 	w.logger.Warn("outbox send failed", "work_id", message.ID, "error_code", code)
-	if permanent {
+	if message.ProtectedConfiguration {
+		if store, ok := w.store.(ConfigurationStore); ok {
+			cooldown := time.Duration(0)
+			if code == 429 {
+				if minimum < time.Minute {
+					minimum = time.Minute
+				}
+				cooldown = retryDelay(message.Attempt, minimum)
+			}
+			err = store.FailConfigurationOutbox(finalizeCtx, message.Lease, code, cooldown, knownAPIError && apiErr.Rejected)
+		} else {
+			err = w.store.FailOutbox(finalizeCtx, message.Lease, code)
+		}
+	} else if permanent {
 		err = w.store.FailOutbox(finalizeCtx, message.Lease, code)
 	} else {
 		err = w.store.RetryOutbox(finalizeCtx, message.Lease, retryDelay(message.Attempt, minimum), code)
