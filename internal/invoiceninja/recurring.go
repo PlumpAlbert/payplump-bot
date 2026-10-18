@@ -202,6 +202,9 @@ func (record *RecurringRecord) UnmarshalJSON(raw []byte) error {
 }
 
 func recurringFields(raw []byte, names ...string) (map[string]json.RawMessage, error) {
+	if !uniqueNinjaJSON(raw) {
+		return nil, errInvalidResponse
+	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return nil, errInvalidResponse
@@ -339,16 +342,22 @@ func recurringVersion(headers http.Header) error {
 	return nil
 }
 
+type recurringGetter func(context.Context, []string, url.Values, any) error
+
 func (c *RecurringClient) get(ctx context.Context, path []string, query url.Values, result any) error {
+	return getRecurring(ctx, c.reader, path, query, result)
+}
+
+func getRecurring(ctx context.Context, reader *integrationhttp.Client, path []string, query url.Values, result any) error {
 	var raw json.RawMessage
-	headers, err := c.reader.Get(ctx, path, query, &raw)
+	headers, err := reader.Get(ctx, path, query, &raw)
 	if err != nil {
 		return err
 	}
 	if err := recurringVersion(headers); err != nil {
 		return err
 	}
-	if json.Unmarshal(raw, result) != nil {
+	if !uniqueNinjaJSON(raw) || json.Unmarshal(raw, result) != nil {
 		return errInvalidResponse
 	}
 	return nil
@@ -362,13 +371,17 @@ func (c *RecurringClient) probe(ctx context.Context) error {
 // Get includes archived/deleted entities at the source pin and checks the exact
 // requested ID. It is for explicit receipt/reconciliation reads, never adoption.
 func (c *RecurringClient) Get(ctx context.Context, id string) (RecurringRecord, error) {
+	return getRecurringRecord(ctx, c.get, id)
+}
+
+func getRecurringRecord(ctx context.Context, get recurringGetter, id string) (RecurringRecord, error) {
 	if !billingID(id) {
 		return RecurringRecord{}, errRecurringDraft
 	}
 	var envelope struct {
 		Data *RecurringRecord `json:"data"`
 	}
-	if err := c.get(ctx, []string{"api", "v1", "recurring_invoices", id}, nil, &envelope); err != nil {
+	if err := get(ctx, []string{"api", "v1", "recurring_invoices", id}, nil, &envelope); err != nil {
 		return RecurringRecord{}, err
 	}
 	if envelope.Data == nil || envelope.Data.ID != id {
@@ -442,7 +455,7 @@ func (c *RecurringClient) post(ctx context.Context, path []string, payload, resu
 	if err := recurringVersion(headers); err != nil {
 		return errors.Join(ErrRecurringUnknown, err)
 	}
-	if json.Unmarshal(raw, result) != nil {
+	if !uniqueNinjaJSON(raw) || json.Unmarshal(raw, result) != nil {
 		return errors.Join(ErrRecurringUnknown, errInvalidResponse)
 	}
 	return nil

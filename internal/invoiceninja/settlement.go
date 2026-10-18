@@ -204,7 +204,7 @@ func (c *SettlementClient) get(ctx context.Context, path []string, query url.Val
 	if len(versions) != 1 || versions[0] != SupportedSettlementVersion {
 		return ErrSettlementVersion
 	}
-	if json.Unmarshal(raw, result) != nil {
+	if !uniqueNinjaJSON(raw) || json.Unmarshal(raw, result) != nil {
 		return errInvalidResponse
 	}
 	return nil
@@ -213,6 +213,9 @@ func (c *SettlementClient) get(ctx context.Context, path []string, query url.Val
 // Strict settlement decoding is independent of the permissive legacy DTOs.
 // Raw fields distinguish absent/null from explicit false, zero and empty strings.
 func settlementFields(raw []byte, result any, required ...string) (map[string]json.RawMessage, error) {
+	if !uniqueNinjaJSON(raw) {
+		return nil, errInvalidResponse
+	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return nil, errInvalidResponse
