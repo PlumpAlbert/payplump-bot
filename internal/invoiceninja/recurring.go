@@ -27,6 +27,9 @@ const SupportedRecurringVersion = "5.13.47"
 var (
 	errRecurringDraft   = errors.New("invalid Invoice Ninja recurring draft")
 	ErrRecurringExpired = errors.New("Invoice Ninja recurring first-cycle schedule is no longer safely in the future")
+	// ErrRecurringReceipt is a preflight rejection: the original receipt is
+	// invalid or no longer matches the last GET. No authorization or POST ran.
+	ErrRecurringReceipt = errors.New("Invoice Ninja recurring receipt does not match")
 	// ErrRecurringUnknown requires HOLD, not replay, even after a later GET shows
 	// status 2. The caller must journal BEFORE writing; there is no server-side
 	// exactly-once, compare-and-swap or atomic cross-system activation guarantee.
@@ -123,6 +126,13 @@ func ValidateRecurringDraft(draft RecurringDraft) error {
 		return errRecurringDraft
 	}
 	return nil
+}
+
+// RecurringReceipt binds first start to the original confirmed creation facts.
+// Amount is compared exactly and NextSendDatetime by its UTC instant.
+type RecurringReceipt struct {
+	Amount           json.Number
+	NextSendDatetime string
 }
 
 // RecurringRecord is strict and independent of the permissive read-only DTO.
@@ -297,6 +307,12 @@ func recurringUTC(value string) (time.Time, error) {
 	return time.Time{}, errInvalidResponse
 }
 
+func recurringReceiptMatches(record RecurringRecord, receipt RecurringReceipt) bool {
+	actual, actualErr := recurringUTC(record.NextSendDatetime)
+	expected, expectedErr := recurringUTC(receipt.NextSendDatetime)
+	return actualErr == nil && expectedErr == nil && actual.Equal(expected) && recurringEqual(record.Amount, receipt.Amount)
+}
+
 func (c *RecurringClient) futureDate(draft RecurringDraft, now time.Time) error {
 	if draft.NextSendDate <= now.In(time.Local).Format(time.DateOnly) {
 		return ErrRecurringExpired
@@ -433,6 +449,19 @@ func (c *RecurringClient) post(ctx context.Context, path []string, payload, resu
 }
 
 func (c *RecurringClient) CreateDraft(ctx context.Context, draft RecurringDraft) (RecurringRecord, error) {
+	return c.createDraft(ctx, draft, nil)
+}
+
+// CreateDraftAuthorized requires final authorization after the version probe and
+// before the final clock check. Rejection is unchanged and never attempts a POST.
+func (c *RecurringClient) CreateDraftAuthorized(ctx context.Context, draft RecurringDraft, authorize func(context.Context) error) (RecurringRecord, error) {
+	if authorize == nil {
+		return RecurringRecord{}, errRecurringDraft
+	}
+	return c.createDraft(ctx, draft, authorize)
+}
+
+func (c *RecurringClient) createDraft(ctx context.Context, draft RecurringDraft, authorize func(context.Context) error) (RecurringRecord, error) {
 	draft.LineItems = append([]InvoiceLine(nil), draft.LineItems...)
 	if err := ValidateRecurringDraft(draft); err != nil {
 		return RecurringRecord{}, err
@@ -443,8 +472,18 @@ func (c *RecurringClient) CreateDraft(ctx context.Context, draft RecurringDraft)
 	if err := c.probe(ctx); err != nil {
 		return RecurringRecord{}, err
 	}
+	if authorize != nil {
+		if err := authorize(ctx); err != nil {
+			return RecurringRecord{}, err
+		}
+	}
 	if err := c.futureDate(draft, c.now()); err != nil {
 		return RecurringRecord{}, err
+	}
+	if authorize != nil {
+		if err := ctx.Err(); err != nil {
+			return RecurringRecord{}, err
+		}
 	}
 	var envelope struct {
 		Data *RecurringRecord `json:"data"`
@@ -465,7 +504,37 @@ func (c *RecurringClient) CreateDraft(ctx context.Context, draft RecurringDraft)
 // in-flight work. Local dates AND the actual UTC schedule must remain future.
 // The checks are not CAS: callers must serialize intents and HOLD unknown POSTs.
 func (c *RecurringClient) StartFirst(ctx context.Context, id string, draft RecurringDraft) (RecurringRecord, error) {
+	return c.startFirst(ctx, id, draft, nil, nil)
+}
+
+// StartFirstAuthorized requires final authorization after the exact GET and
+// version probe, before the final date/UTC schedule check. It never retries.
+func (c *RecurringClient) StartFirstAuthorized(ctx context.Context, id string, draft RecurringDraft, authorize func(context.Context) error) (RecurringRecord, error) {
+	if authorize == nil {
+		return RecurringRecord{}, errRecurringDraft
+	}
+	return c.startFirst(ctx, id, draft, nil, authorize)
+}
+
+// StartFirstBoundAuthorized additionally binds the last GET and POST receipt to
+// the caller's original creation receipt, never to refreshed provider facts.
+// Invalid arguments fail before I/O; a changed GET cannot reserve a write.
+func (c *RecurringClient) StartFirstBoundAuthorized(ctx context.Context, id string, draft RecurringDraft, receipt RecurringReceipt, authorize func(context.Context) error) (RecurringRecord, error) {
+	if authorize == nil {
+		return RecurringRecord{}, errRecurringDraft
+	}
+	return c.startFirst(ctx, id, draft, &receipt, authorize)
+}
+
+func (c *RecurringClient) startFirst(ctx context.Context, id string, draft RecurringDraft, receipt *RecurringReceipt, authorize func(context.Context) error) (RecurringRecord, error) {
 	draft.LineItems = append([]InvoiceLine(nil), draft.LineItems...)
+	if receipt != nil {
+		amount, ok := billingNumber(receipt.Amount)
+		_, err := recurringUTC(receipt.NextSendDatetime)
+		if !ok || amount.Sign() <= 0 || err != nil {
+			return RecurringRecord{}, ErrRecurringReceipt
+		}
+	}
 	if !billingID(id) {
 		return RecurringRecord{}, errRecurringDraft
 	}
@@ -479,6 +548,9 @@ func (c *RecurringClient) StartFirst(ctx context.Context, id string, draft Recur
 	if err != nil {
 		return RecurringRecord{}, err
 	}
+	if receipt != nil && !recurringReceiptMatches(before, *receipt) {
+		return RecurringRecord{}, ErrRecurringReceipt
+	}
 	if before.StatusID != "1" || before.IsDeleted || before.ArchivedAt != 0 || ValidateRecurringForDraft(before, draft) != nil {
 		return RecurringRecord{}, errInvalidResponse
 	}
@@ -488,8 +560,18 @@ func (c *RecurringClient) StartFirst(ctx context.Context, id string, draft Recur
 	if err := c.probe(ctx); err != nil {
 		return RecurringRecord{}, err
 	}
+	if authorize != nil {
+		if err := authorize(ctx); err != nil {
+			return RecurringRecord{}, err
+		}
+	}
 	if err := c.futureFirst(before, draft, c.now()); err != nil {
 		return RecurringRecord{}, err
+	}
+	if authorize != nil {
+		if err := ctx.Err(); err != nil {
+			return RecurringRecord{}, err
+		}
 	}
 	var envelope struct {
 		Data []RecurringRecord `json:"data"`
@@ -505,7 +587,7 @@ func (c *RecurringClient) StartFirst(ctx context.Context, id string, draft Recur
 		return RecurringRecord{}, errors.Join(ErrRecurringUnknown, errInvalidResponse)
 	}
 	after := envelope.Data[0]
-	if after.ID != id || after.StatusID != "2" || after.IsDeleted || after.ArchivedAt != 0 || ValidateRecurringForDraft(after, draft) != nil || after.NextSendDatetime != before.NextSendDatetime || !recurringEqual(after.Amount, before.Amount) {
+	if after.ID != id || after.StatusID != "2" || after.IsDeleted || after.ArchivedAt != 0 || ValidateRecurringForDraft(after, draft) != nil || !recurringReceiptMatches(after, RecurringReceipt{Amount: before.Amount, NextSendDatetime: before.NextSendDatetime}) || receipt != nil && !recurringReceiptMatches(after, *receipt) {
 		return RecurringRecord{}, errors.Join(ErrRecurringUnknown, errInvalidResponse)
 	}
 	if err := c.futureFirst(after, draft, c.now()); err != nil {

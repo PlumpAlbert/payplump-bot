@@ -279,6 +279,28 @@ func safeNumber(n json.Number) (json.Number, bool) {
 	return json.Number(r.Num().String()), true
 }
 
+// ValidateRecordForDraft checks a full snapshot against a valid disabled intent,
+// allowing only server-managed counters/timestamps and local link regeneration.
+// It does not authorize adoption: the caller must bind the exact persisted ID.
+func ValidateRecordForDraft(record ClientRecord, draft CreateDraft, enabled bool) error {
+	actual, err := cloneRecord(record, false)
+	if err != nil {
+		return err
+	}
+	expected, err := cloneRecord(draft.record, true)
+	if err != nil {
+		return ErrManagedInvalid
+	}
+	if err = validateCreate(expected); err != nil {
+		return err
+	}
+	expected.wire.Enable = enabled
+	if actual.ID() <= 0 || actual.Name() != expected.Name() || actual.CredentialsHash() != expected.CredentialsHash() || !sameStatic(expected, actual, true) {
+		return ErrManagedConflict
+	}
+	return nil
+}
+
 func cloneRecord(r ClientRecord, draft bool) (ClientRecord, error) {
 	return parseRecord(r.Raw(), draft)
 }

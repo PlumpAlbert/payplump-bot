@@ -336,6 +336,19 @@ func (c *ManagedClient) FindCreated(ctx context.Context, draft CreateDraft) (Cli
 }
 
 func (c *ManagedClient) CreateDisabled(ctx context.Context, draft CreateDraft) (ClientRecord, error) {
+	return c.createDisabled(ctx, draft, nil)
+}
+
+// CreateDisabledAuthorized requires final authorization after all GET preflights.
+// Rejection is returned unchanged without a POST; authorization is never retried.
+func (c *ManagedClient) CreateDisabledAuthorized(ctx context.Context, draft CreateDraft, authorize func(context.Context) error) (ClientRecord, error) {
+	if authorize == nil {
+		return ClientRecord{}, ErrManagedInvalid
+	}
+	return c.createDisabled(ctx, draft, authorize)
+}
+
+func (c *ManagedClient) createDisabled(ctx context.Context, draft CreateDraft, authorize func(context.Context) error) (ClientRecord, error) {
 	// Snapshot all caller-owned bytes/slices before I/O or waiting on the lock.
 	r, err := cloneRecord(draft.record, true)
 	if err != nil {
@@ -367,6 +380,14 @@ func (c *ManagedClient) CreateDisabled(ctx context.Context, draft CreateDraft) (
 	if err = c.checkVersion(ctx); err != nil {
 		return ClientRecord{}, err
 	}
+	if authorize != nil {
+		if err = authorize(ctx); err != nil {
+			return ClientRecord{}, err
+		}
+		if err = ctx.Err(); err != nil {
+			return ClientRecord{}, err
+		}
+	}
 	postErr := c.save(ctx, "new", r)
 	// The receipt is global obj.clients, not a new ID. The source's commit
 	// errors are not propagated reliably, so even success needs NEW GETs.
@@ -382,6 +403,19 @@ func (c *ManagedClient) CreateDisabled(ctx context.Context, draft CreateDraft) (
 }
 
 func (c *ManagedClient) Enable(ctx context.Context, draft EnableDraft) (ClientRecord, error) {
+	return c.enable(ctx, draft, nil)
+}
+
+// EnableAuthorized requires final authorization after all GET preflights.
+// It retains Enable's mandatory full readback and unknown-write hold policy.
+func (c *ManagedClient) EnableAuthorized(ctx context.Context, draft EnableDraft, authorize func(context.Context) error) (ClientRecord, error) {
+	if authorize == nil {
+		return ClientRecord{}, ErrManagedInvalid
+	}
+	return c.enable(ctx, draft, authorize)
+}
+
+func (c *ManagedClient) enable(ctx context.Context, draft EnableDraft, authorize func(context.Context) error) (ClientRecord, error) {
 	prepared, err := PrepareEnable(draft.before, draft.binding)
 	if err != nil {
 		return ClientRecord{}, err
@@ -425,6 +459,14 @@ func (c *ManagedClient) Enable(ctx context.Context, draft EnableDraft) (ClientRe
 	// Only enable changes. Preserve fresh counters, all nested config keys and
 	// all links in the payload; only local link regeneration is tolerated.
 	current.wire.Enable = true
+	if authorize != nil {
+		if err = authorize(ctx); err != nil {
+			return ClientRecord{}, err
+		}
+		if err = ctx.Err(); err != nil {
+			return ClientRecord{}, err
+		}
+	}
 	postErr := c.save(ctx, "edit", current)
 	after, readErr := c.inventory(ctx)
 	if postErr != nil || readErr != nil {

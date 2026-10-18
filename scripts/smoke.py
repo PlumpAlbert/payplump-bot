@@ -21,6 +21,7 @@ def check_cycle():
         "TELEGRAM_ENABLED": "false",
         "REGISTRATION_ENABLED": "false",
         "PAYMENTS_ENABLED": "false",
+        "ACTIVATION_ENABLED": "false",
     }
     binary = os.environ.get("PAYPLUMP_BINARY", "./bin/payplump")
     process = subprocess.Popen(

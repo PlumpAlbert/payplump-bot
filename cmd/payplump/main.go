@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/PlumpAlbert/payplump-bot/internal/activation"
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/outbox"
@@ -81,6 +82,20 @@ func run(logger *slog.Logger, args []string) error {
 		paymentAPI, err = invoiceninja.NewSettlementClient(paymentConfig.BaseURL, paymentConfig.Token, paymentConfig.HTTPTimeout, paymentConfig.PageSize, paymentConfig.MaxPages)
 		if err != nil {
 			return errors.New("invalid payment verification API configuration")
+		}
+	}
+	activationConfig, err := activation.ConfigFromEnv(telegramConfig.Enabled, paymentConfig.Enabled)
+	if err != nil {
+		return err
+	}
+	var activationAPIs activation.Providers
+	if activationConfig.Enabled {
+		if len(telegramConfig.AdminIDs) > 99 {
+			return errors.New("activation requires at most 99 administrators")
+		}
+		activationAPIs, err = newActivationProviders(activationConfig)
+		if err != nil {
+			return err
 		}
 	}
 	var deliveryConfig outbox.Config
@@ -172,6 +187,17 @@ func run(logger *slog.Logger, args []string) error {
 					return err
 				}
 				workers = append(workers, verifier.Run)
+			}
+			if activationConfig.Enabled {
+				var admins []int64
+				for id := range telegramConfig.AdminIDs {
+					admins = append(admins, id)
+				}
+				provisioner, err := activation.New(store, activationAPIs, botID, admins, activationConfig, logger)
+				if err != nil {
+					return err
+				}
+				workers = append(workers, provisioner.Run)
 			}
 			return runWorkers(ctx, workers...)
 		}
