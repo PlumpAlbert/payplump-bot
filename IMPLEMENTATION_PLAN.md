@@ -197,6 +197,16 @@ synchronous intent и неистекающий барьер неизвестно
 
 ## 8. Продление и просрочка
 
+Этап 8a (`feat/subscription-lifecycle`) добавляет только source-pinned адаптеры:
+полный S-UI disable / отдельный closeSessions, recurring pause / sparse schedule /
+resume и GET-only inventory обычных счетов. Миграция `010` сохраняет один общий
+неистекающий guard и epoch, расширяя его постоянные intent-якоря для будущего
+lifecycle. Исполнитель продлений этим контрактным срезом ещё не включён.
+Источники, ограничения email-напоминаний и оставшиеся живые проверки:
+[docs/lifecycle-adapters.md](docs/lifecycle-adapters.md).
+
+- [x] Добавить отдельные guarded lifecycle-адаптеры и не-replaying PUT, frozen facts / UTC receipts, bound disable / closeSessions, полный ограниченный GET invoice inventory; проверить синтетическими HTTP без вызовов production.
+- [x] Обобщить только FK-якорь общего external-write guard, сохранив старые неизвестные записи и epoch; проверить backfill, fencing другого workflow и запрет удаления/rearm intent на изолированном PostgreSQL.
 - [ ] Распознавать только новые счета управляемого recurring, связывать их с подпиской и отправлять одно уведомление клиенту и администратору.
 - [ ] Настроить due date в день выставления счёта; сохранять действующий доступ до конца этого дня в таймзоне сервера, с fallback на UTC.
 - [ ] В 00:00 следующего дня проверять актуальное состояние счёта и фиксировать один переход в просрочку с долговечными операциями.
