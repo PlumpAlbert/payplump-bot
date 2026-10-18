@@ -86,6 +86,10 @@ func (c *Client) Get(ctx context.Context, segments []string, query url.Values, r
 }
 
 func (c *Client) request(ctx context.Context, method string, segments []string, query url.Values, body io.Reader, result any) (http.Header, error) {
+	return c.requestType(ctx, method, segments, query, body, result, "application/json")
+}
+
+func (c *Client) requestType(ctx context.Context, method string, segments []string, query url.Values, body io.Reader, result any, contentType string) (http.Header, error) {
 	u := *c.base
 	escaped := strings.TrimRight(u.EscapedPath(), "/")
 	decoded, err := url.PathUnescape(escaped)
@@ -107,7 +111,7 @@ func (c *Client) request(ctx context.Context, method string, segments []string, 
 	req.Header = c.headers.Clone()
 	req.Header.Set("Accept", "application/json")
 	if method != http.MethodGet {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 		// A write must not be transparently replayed after an unknown result.
 		req.GetBody = nil
 	}

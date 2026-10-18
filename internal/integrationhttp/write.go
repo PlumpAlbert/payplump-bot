@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -22,6 +23,21 @@ func NewWriter(baseURL string, headers http.Header, timeout time.Duration) (*Wri
 		return nil, err
 	}
 	return &Writer{client: client}, nil
+}
+
+// PostForm sends one form-urlencoded mutation, needed by the source-pinned
+// S-UI API. Encoding snapshots the caller's values before networking. It has
+// the same redirect/body-replay restrictions as Post; unknown results are not
+// permission to call it again.
+func (w *Writer) PostForm(ctx context.Context, segments []string, query, payload url.Values, result any) (http.Header, error) {
+	if result == nil {
+		return nil, errors.New("integration write requires a response destination")
+	}
+	body := payload.Encode()
+	if len(body) == 0 || len(body) > MaxResponseBytes {
+		return nil, errors.New("invalid or oversized integration form payload")
+	}
+	return w.client.requestType(ctx, http.MethodPost, segments, query, strings.NewReader(body), result, "application/x-www-form-urlencoded")
 }
 
 // Post sends one JSON write without redirects or automatic body replay. Any
