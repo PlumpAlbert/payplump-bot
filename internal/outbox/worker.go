@@ -25,6 +25,14 @@ type Sender interface {
 	SendMessage(ctx context.Context, chatID int64, text string) (int64, error)
 }
 
+// MenuSender is optional for legacy senders; menu messages never silently lose
+// their durable keyboard intent when a sender lacks this capability.
+type MenuSender interface {
+	SendMenuMessage(context.Context, int64, string) (int64, error)
+}
+
+var errUnsupportedMenu = errors.New("sender does not support client menus")
+
 type Worker struct {
 	store  Store
 	sender Sender
@@ -105,7 +113,17 @@ func (w *Worker) deliver(ctx context.Context, message queue.Message) {
 		cancel()
 		return
 	}
-	messageID, err := w.sender.SendMessage(sendCtx, message.ChatID, message.Text)
+	var messageID int64
+	var err error
+	if message.ClientMenu {
+		if sender, ok := w.sender.(MenuSender); ok {
+			messageID, err = sender.SendMenuMessage(sendCtx, message.ChatID, message.Text)
+		} else {
+			err = errUnsupportedMenu
+		}
+	} else {
+		messageID, err = w.sender.SendMessage(sendCtx, message.ChatID, message.Text)
+	}
 	cancel()
 
 	// Persist known responses during shutdown, including bot-wide cooldowns.
@@ -126,7 +144,7 @@ func (w *Worker) deliver(ctx context.Context, message queue.Message) {
 
 	code := 0
 	minimum := time.Duration(0)
-	permanent := false
+	permanent := errors.Is(err, errUnsupportedMenu)
 	if knownAPIError {
 		code = apiErr.Code
 		minimum = apiErr.RetryAfter

@@ -28,10 +28,11 @@ type Operation struct {
 // Draft keys are scoped to a bot and must identify the business notification,
 // not a delivery attempt. Text and destination become immutable on insertion.
 type Draft struct {
-	BotID  int64
-	ChatID int64
-	Key    string
-	Text   string
+	BotID      int64
+	ChatID     int64
+	Key        string
+	Text       string
+	ClientMenu bool
 }
 
 func (d Draft) Validate() error {
@@ -43,7 +44,8 @@ func (d Draft) Validate() error {
 
 type Message struct {
 	Lease
-	BotID  int64
-	ChatID int64
-	Text   string
+	BotID      int64
+	ChatID     int64
+	Text       string
+	ClientMenu bool
 }
