@@ -28,7 +28,12 @@ const configActor int64 = 33000
 // the local active transition and exact persisted SUI binding.
 func configFixture(t *testing.T) (*Store, context.Context, int64, configdelivery.Policy) {
 	t.Helper()
-	s, ctx := activationTestStore(t)
+	s, _ := activationTestStore(t)
+	// Eleven database protocol cases share this audit fixture. The aggregate WAN
+	// budget is independent of activation's per-operation test context; runtime
+	// request/lease/transport permissions retain their original deadlines.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	t.Cleanup(cancel)
 	ids := seedActivationAccounts(t, s, ctx, 123, int(configActor), 1)
 	seedActivationBatch(t, s, ctx, 123, []int64{configActor}, 1)
 	op, snapshot := claimOneActivation(t, s, ctx, 123)

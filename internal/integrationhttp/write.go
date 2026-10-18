@@ -44,6 +44,17 @@ func (w *Writer) PostForm(ctx context.Context, segments []string, query, payload
 // error after this method begins must be treated as an unknown external result
 // unless the caller can independently prove that no request was issued.
 func (w *Writer) Post(ctx context.Context, segments []string, query url.Values, payload, result any) (http.Header, error) {
+	return w.jsonWrite(ctx, http.MethodPost, segments, query, payload, result)
+}
+
+// Put is the explicit non-replaying update capability. HTTP's idempotent PUT
+// semantics do not make a paused sender safe to replay against a mutable record;
+// callers still need a durable one-shot reservation and a fresh bound snapshot.
+func (w *Writer) Put(ctx context.Context, segments []string, query url.Values, payload, result any) (http.Header, error) {
+	return w.jsonWrite(ctx, http.MethodPut, segments, query, payload, result)
+}
+
+func (w *Writer) jsonWrite(ctx context.Context, method string, segments []string, query url.Values, payload, result any) (http.Header, error) {
 	if result == nil {
 		return nil, errors.New("integration write requires a response destination")
 	}
@@ -51,5 +62,5 @@ func (w *Writer) Post(ctx context.Context, segments []string, query url.Values, 
 	if err != nil || len(body) > MaxResponseBytes {
 		return nil, errors.New("invalid or oversized integration write payload")
 	}
-	return w.client.request(ctx, http.MethodPost, segments, query, bytes.NewReader(body), result)
+	return w.client.request(ctx, method, segments, query, bytes.NewReader(body), result)
 }

@@ -293,6 +293,15 @@ allocation, полностью покрывающие сумму в соглас
 развёртывание пока небезопасно: нет просрочки / отключения.
 Протокол, настройки и ограничения: [docs/activation.md](docs/activation.md).
 
+## Контракты продления и просрочки
+
+Отдельные lifecycle-адаптеры поддерживают bound S-UI disable / closeSessions и
+recurring pause / sparse reschedule / resume. Новые счета читает отдельный
+GET-only inventory. Общий неистекающий writer-guard и epoch сохраняются;
+неизвестные отправки не переигрываются. Этот контрактный срез ещё не включает
+runtime-исполнитель продлений и не вызывает рабочие сервисы.
+Источники и границы: [docs/lifecycle-adapters.md](docs/lifecycle-adapters.md).
+
 ## Защищённая выдача конфигурации
 
 `CONFIGURATION_DELIVERY_ENABLED=false` по умолчанию. `/config` может отправить
