@@ -19,14 +19,15 @@ def main():
         try: report["image_file_bytes"]=os.path.getsize(a.image_file)
         except OSError: report["image_file_reason"]="specified image file unavailable"
     if a.run:
-        allowed={"PATH","HOME","GOROOT","GOPATH","GOCACHE","GOMODCACHE","GOFLAGS","CGO_ENABLED","GOOS","GOARCH","TMPDIR","SSL_CERT_FILE"}
+        allowed={"PATH","HOME","GOROOT","GOPATH","GOCACHE","GOMODCACHE","CGO_ENABLED","GOOS","GOARCH","TMPDIR","SSL_CERT_FILE"}
         env={k:v for k,v in os.environ.items() if k in allowed}
-        env.update({"GOPROXY":"off","GOSUMDB":"sum.golang.org","GOTOOLCHAIN":"auto"})
+        env.update({"GOPROXY":"off","GOSUMDB":"off","GOTOOLCHAIN":"local"})
+        before=resource.getrusage(resource.RUSAGE_CHILDREN)
         start=time.monotonic()
         result=subprocess.run(["go","test","-count=1",*a.packages],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env)
         report["duration_seconds"]=round(time.monotonic()-start,3);report["executed"]=True;report["exit_code"]=result.returncode
         usage=resource.getrusage(resource.RUSAGE_CHILDREN)
-        report["child_cpu_seconds"]=round(usage.ru_utime+usage.ru_stime,3)
+        report["child_cpu_seconds"]=round((usage.ru_utime-before.ru_utime)+(usage.ru_stime-before.ru_stime),3)
         report["child_max_rss_bytes"]=int(usage.ru_maxrss*(1 if sys.platform=="darwin" else 1024))
         try:
             with open("/sys/fs/cgroup/memory.current",encoding="ascii") as f: report["container_memory_bytes"]=int(f.read().strip())

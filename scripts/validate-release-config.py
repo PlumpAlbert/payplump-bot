@@ -16,6 +16,8 @@ def reject():
 
 def validate(path, expected):
     try:
+        if not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9._/-]+@sha256:[a-f0-9]{64}", expected):
+            reject()
         with open(path, "rb") as f:
             data = f.read(1_048_577)
         if len(data) > 1_048_576:
@@ -31,17 +33,18 @@ def validate(path, expected):
             reject()
         if s.get("pid") == "host" or s.get("ipc") == "host" or s.get("network_mode") == "host":
             reject()
-        if s.get("cap_drop") != ["ALL"]:
+        if s.get("cap_drop") != ["ALL"] or s.get("cap_add"):
             reject()
         sec = s.get("security_opt", [])
-        if not isinstance(sec, list) or not any(x == "no-new-privileges:true" for x in sec):
+        if sec != ["no-new-privileges:true"]:
             reject()
-        if s.get("ports") or s.get("devices") or s.get("env_file") or "entrypoint" in s or "command" in s:
+        if any(s.get(k) for k in ("ports", "devices", "device_cgroup_rules", "env_file", "volumes_from", "sysctls")) or any(k in s for k in ("entrypoint", "command", "build", "post_start", "pre_stop")) or s.get("userns_mode") == "host":
             reject()
         env = s.get("environment")
         if not isinstance(env, dict) or any(env.get(k) != "false" for k in FLAGS):
             reject()
-        if any(FORBIDDEN_ENV.search(str(k)) for k in env):
+        allowed_env = set(FLAGS) | {"HTTP_ADDR", "DB_MAX_CONNS", "PGHOST", "PGPORT", "PGUSER", "PGDATABASE", "PGSSLMODE", "PGPASSFILE"}
+        if set(env) - allowed_env or any(FORBIDDEN_ENV.search(str(k)) for k in env):
             reject()
         if not all(isinstance(env.get(k), str) and env[k] for k in ("PGHOST", "PGUSER", "PGDATABASE")):
             reject()
@@ -49,16 +52,12 @@ def validate(path, expected):
             reject()
         if s.get("logging", {}).get("driver") != "json-file" or s["logging"].get("options", {}).get("max-size") != "10m" or s["logging"].get("options", {}).get("max-file") != "3":
             reject()
-        volumes = s.get("volumes", [])
-        if not isinstance(volumes, list):
+        if s.get("volumes") or cfg.get("volumes"):
             reject()
-        for v in volumes:
-            if not isinstance(v, dict) or v.get("type") != "volume" or v.get("source") == "/var/run/docker.sock":
-                reject()
         secrets = s.get("secrets")
-        if not isinstance(secrets, list) or not any((x == "pgpass" or isinstance(x, dict) and x.get("source") == "pgpass" and x.get("target", "pgpass") == "pgpass") for x in secrets):
+        if not isinstance(secrets, list) or len(secrets) != 1 or not (secrets[0] == "pgpass" or isinstance(secrets[0], dict) and secrets[0].get("source") == "pgpass" and secrets[0].get("target", "pgpass") == "pgpass"):
             reject()
-        if not isinstance(cfg.get("secrets", {}).get("pgpass"), dict):
+        if set(cfg.get("secrets", {})) != {"pgpass"} or not isinstance(cfg["secrets"]["pgpass"], dict) or not isinstance(cfg["secrets"]["pgpass"].get("file"), str):
             reject()
     except Exception:
         reject()

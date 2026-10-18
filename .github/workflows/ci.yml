@@ -88,6 +88,21 @@ jobs:
       - run: test -z "$(gofmt -l cmd internal)"
       - run: go mod verify
       - run: go vet ./...
+      - name: Operator helper tests without external services
+        run: |
+          sh -n scripts/restore-check.sh scripts/validate-release-config.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-operator-helpers.py
+      - name: Validate release Compose without pulling an image
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset PGPASSWORD
+          private_file="$RUNNER_TEMP/payplump-release-synthetic.pgpass"
+          trap 'rm -f "$private_file"' EXIT
+          (umask 077; printf 'synthetic.invalid:5432:synthetic:synthetic:SYNTHETIC_ONLY\n' > "$private_file")
+          digest=$(printf 'a%.0s' {1..64})
+          PGHOST=synthetic.invalid PGPORT=5432 PGUSER=synthetic PGDATABASE=synthetic PGSSLMODE=verify-full PGPASSFILE="$private_file" \
+            scripts/validate-release-config.sh "ghcr.io/example/payplump@sha256:$digest"
       - name: Deadline-sensitive workflow E2E against loopback PostgreSQL
         env:
           # Only this step uses the disposable service, never the Neon settings.

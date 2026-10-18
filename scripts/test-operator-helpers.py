@@ -15,6 +15,13 @@ spec.loader.exec_module(validator)
 IMAGE = "registry.example/payplump@sha256:" + "a" * 64
 
 
+def fake_env(**extra):
+    # CI may carry live database credentials: fake executables never inherit them.
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tempfile.gettempdir()}
+    env.update(extra)
+    return env
+
+
 def config():
     return {"services": {"payplump": {"image": IMAGE, "user": "65532:65532", "read_only": True,
         "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"], "privileged": False,
@@ -40,6 +47,12 @@ class Helpers(unittest.TestCase):
         mutations = [
             lambda c: c["services"]["payplump"].update(image="other:latest"),
             lambda c: c["services"]["payplump"].update(privileged=True),
+            lambda c: c["services"]["payplump"].update(cap_add=["SYS_ADMIN"]),
+            lambda c: c["services"]["payplump"].update(security_opt=["no-new-privileges:true", "seccomp:unconfined"]),
+            lambda c: c["services"]["payplump"].update(volumes=[{"type": "volume", "source": "host-root", "target": "/x"}]),
+            lambda c: c["services"]["payplump"].update(build={"context": "."}),
+            lambda c: c["services"]["payplump"].update(post_start=[{"command": "unsafe"}]),
+            lambda c: c["services"]["payplump"]["environment"].update(UNREVIEWED_SETTING="true"),
             lambda c: c["services"]["payplump"].update(read_only=False),
             lambda c: c["services"]["payplump"]["environment"].update(TELEGRAM_ENABLED="true"),
             lambda c: c["services"]["payplump"].update(command=["overridden"]),
@@ -64,7 +77,7 @@ class Helpers(unittest.TestCase):
             fake.chmod(0o700)
             c = Path(d) / "config.json"; c.write_text(json.dumps(config()))
             log = Path(d) / "args"
-            env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"], FAKE_LOG=str(log), FAKE_CONFIG=str(c))
+            env = fake_env(PATH=str(bindir) + os.pathsep + os.environ["PATH"], FAKE_LOG=str(log), FAKE_CONFIG=str(c))
             result = subprocess.run([str(ROOT / "scripts/validate-release-config.sh"), IMAGE], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             args = log.read_text()
@@ -82,7 +95,7 @@ class Helpers(unittest.TestCase):
             psql = b / "psql"
             psql.write_text('#!/bin/sh\necho psql-called >>"$CALL_LOG"\nexit 99\n'); psql.chmod(0o700)
             archive = Path(d) / "archive"; archive.write_text("synthetic"); archive.chmod(0o600)
-            env = dict(os.environ, PATH=str(b) + os.pathsep + os.environ["PATH"], CALL_LOG=str(log), PGDATABASE="source_db", PGHOST="localhost", PGPORT="5432", PGPASSWORD="do-not-log")
+            env = fake_env(PATH=str(b) + os.pathsep + os.environ["PATH"], CALL_LOG=str(log), PGDATABASE="source_db", PGHOST="localhost", PGPORT="5432", PGPASSWORD="do-not-log")
             result = subprocess.run([str(ROOT / "scripts/restore-check.sh"), str(archive), "payplump_restore_check_test"], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn("TABLE", result.stdout + result.stderr)
@@ -95,6 +108,28 @@ class Helpers(unittest.TestCase):
             env["PGDATABASE"] = "source_db"; env["PGHOST"] = "remote.example"
             bad = subprocess.run([str(ROOT / "scripts/restore-check.sh"), str(archive), "payplump_restore_check_test"], cwd=ROOT, env=env, capture_output=True)
             self.assertNotEqual(bad.returncode, 0)
+
+    def test_restore_apply_uses_private_preflight_result(self):
+        # Executables below are local stubs. No PostgreSQL or Docker is contacted.
+        with tempfile.TemporaryDirectory() as d:
+            b = Path(d) / "bin"; b.mkdir()
+            log = Path(d) / "calls"
+            restore = b / "pg_restore"
+            restore.write_text('#!/bin/sh\ncase "$1" in --list) echo "TABLE public.synthetic";; *) echo restore-apply >>"$CALL_LOG";; esac\n')
+            restore.chmod(0o700)
+            psql = b / "psql"
+            psql.write_text('#!/bin/sh\n[ "$PGHOST" = 127.0.0.1 ] || exit 91\n[ "${PGHOSTADDR-unset}" = unset ] || exit 92\n[ "${PGSERVICE-unset}" = unset ] || exit 93\n[ "${PGSERVICEFILE-unset}" = unset ] || exit 94\n[ "${PGOPTIONS-unset}" = unset ] || exit 95\n[ "$PGSSLMODE" = verify-full ] || exit 96\nprintf "%s" "$*" >"$QUERY_LOG"\nprintf "1\\n"\n')
+            psql.chmod(0o700)
+            archive = Path(d) / "archive"; archive.write_text("synthetic"); archive.chmod(0o600)
+            query = Path(d) / "query"
+            env = fake_env(PATH=str(b) + os.pathsep + os.environ["PATH"], CALL_LOG=str(log), QUERY_LOG=str(query),
+                       PGDATABASE="source_db", PGHOST="localhost", PGPORT="5432", PGSSLMODE="verify-full",
+                       PGHOSTADDR="198.51.100.9", PGSERVICE="synthetic-private", PGSERVICEFILE="synthetic-private", PGOPTIONS="synthetic-private")
+            result = subprocess.run([str(ROOT / "scripts/restore-check.sh"), "--apply", str(archive), "payplump_restore_check_test"], cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, "fake restore apply failed")
+            self.assertEqual(log.read_text().strip(), "restore-apply")
+            self.assertIn("!~ '^pg_'", query.read_text())
+            self.assertNotIn("synthetic-private", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
