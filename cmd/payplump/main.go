@@ -97,7 +97,11 @@ func run(logger *slog.Logger, args []string) error {
 	var initialize func(context.Context) error
 	var background func(context.Context) error
 	if telegramConfig.Enabled {
-		endpoint, err = telegram.NewWebhookHandler(telegramConfig.WebhookSecret, store)
+		gateway, err := newMenuGateway(store)
+		if err != nil {
+			return err
+		}
+		endpoint, err = telegram.NewWebhookHandler(telegramConfig.WebhookSecret, gateway)
 		if err != nil {
 			return err
 		}
