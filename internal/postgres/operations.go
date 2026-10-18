@@ -154,7 +154,7 @@ func (s *Store) CompleteOperation(ctx context.Context, lease queue.Lease, messag
         SET status = 'completed', locked_until = NULL,
             completed_at = clock_timestamp(), last_error_code = 0
         WHERE id = $1 AND attempts = $2 AND status = 'running'
-          AND kind <> 'register_client' AND locked_until > clock_timestamp()`, lease.ID, lease.Attempt)
+          AND kind NOT IN ('register_client', 'activate_first_subscription') AND locked_until > clock_timestamp()`, lease.ID, lease.Attempt)
 	if err != nil {
 		return fmt.Errorf("complete operation: %w", err)
 	}
