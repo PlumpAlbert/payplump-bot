@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/billing"
+	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 )
 
 var ErrStaleSnapshot = errors.New("client menu snapshot changed")
@@ -20,6 +22,10 @@ var ErrStaleSnapshot = errors.New("client menu snapshot changed")
 type Config struct {
 	PaymentPhone, PaymentBank, PaymentRecipient string
 	ExcludedTelegramIDs                         []int64
+	ConfigurationEnabled                        bool
+	ConfigurationPolicyRevision                 int64
+	ConfigurationPolicyHash                     [32]byte
+	ConfigurationAllowedTelegramIDs             []int64
 }
 
 func (c Config) Validate() error {
@@ -41,6 +47,18 @@ func (c Config) Validate() error {
 		}
 		seen[id] = true
 	}
+	if c.ConfigurationEnabled {
+		if c.ConfigurationPolicyRevision < 1 || c.ConfigurationPolicyHash == ([32]byte{}) || len(c.ConfigurationAllowedTelegramIDs) < 1 || len(c.ConfigurationAllowedTelegramIDs) > 20 {
+			return errors.New("invalid client menu configuration policy")
+		}
+		allowed := map[int64]bool{}
+		for _, id := range c.ConfigurationAllowedTelegramIDs {
+			if id <= 0 || allowed[id] {
+				return errors.New("invalid client menu configuration allowlist")
+			}
+			allowed[id] = true
+		}
+	}
 	return nil
 }
 
@@ -54,6 +72,7 @@ func New(cfg Config, reader Reader) (*Service, error) {
 		return nil, err
 	}
 	cfg.ExcludedTelegramIDs = append([]int64(nil), cfg.ExcludedTelegramIDs...)
+	cfg.ConfigurationAllowedTelegramIDs = slices.Clone(cfg.ConfigurationAllowedTelegramIDs)
 	return &Service{cfg, reader}, nil
 }
 
@@ -67,7 +86,7 @@ const instructions = `Инструкция подключения
 
 Не публикуйте персональную ссылку. После продления или восстановления доступа прежнюю подписку не нужно удалять и импортировать заново. Если ваш клиент не поддерживает такой способ добавления, уточните настройку у администратора.
 
-Автоматическая выдача конфигурации в боте ещё не подключена. До подтверждения оплаты работающая подписка не выдаётся.`
+Персональная подписка доступна только при отдельно включённой выдаче и после проверки оплаты и доступа. Если выдача недоступна, обратитесь к администратору.`
 
 func (s *Service) Prepare(ctx context.Context, r Request, snapshot Snapshot) (Prepared, error) {
 	result := Prepared{Request: r, Snapshot: snapshot}
@@ -102,7 +121,15 @@ func (s *Service) Prepare(ctx context.Context, r Request, snapshot Snapshot) (Pr
 	case Status:
 		result.Text = statusText(snapshot)
 	case Configuration:
-		result.Text = "Автоматическая выдача конфигурации в боте ещё не подключена. До подтверждения полной оплаты работающая подписка не выдаётся. Если оплата уже подтверждена, обратитесь к администратору.\n\nИнструкция подключения: /help. Ранее выданную подписку не удаляйте."
+		result.Text = ConfigurationUnavailableText
+		if s.cfg.ConfigurationEnabled {
+			if slices.Contains(s.cfg.ConfigurationAllowedTelegramIDs, r.TelegramID) && snapshot.Known && snapshot.State == "active" && snapshot.DesiredAccess && !snapshot.PaymentReview && snapshot.SUIID != "" && snapshot.RecurringID != "" {
+				result.ProtectedConfiguration = true
+				result.ConfigurationPolicyRevision = s.cfg.ConfigurationPolicyRevision
+				result.ConfigurationPolicyHash = s.cfg.ConfigurationPolicyHash
+				result.Text = queue.ConfigurationIntentBody
+			}
+		}
 	case Invoice:
 		if snapshot.CustomerID == "" || snapshot.InvoiceID == "" {
 			result.Text = "Текущий счёт пока не сформирован или регистрация требует проверки. Повторное обращение не создаёт новый счёт. Если ожидание затянулось, обратитесь к администратору."
@@ -119,7 +146,7 @@ func statusText(s Snapshot) string {
 		state = "требует проверки администратора"
 	}
 	if s.State == "awaiting_payment" && date(s.PaymentDate) {
-		state = "оплата проверена; выдача доступа ещё не подключена"
+		state = "оплата проверена; настройка доступа ещё не завершена"
 	}
 	if s.PaymentReview {
 		state = "подтверждение оплаты требует ручной перепроверки"

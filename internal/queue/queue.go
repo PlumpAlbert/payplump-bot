@@ -25,27 +25,35 @@ type Operation struct {
 	Kind     string
 }
 
+// ConfigurationIntentBody is a nonsensitive marker, never a rendered URL.
+const ConfigurationIntentBody = "[protected_configuration_v1]"
+
 // Draft keys are scoped to a bot and must identify the business notification,
 // not a delivery attempt. Text and destination become immutable on insertion.
 type Draft struct {
-	BotID      int64
-	ChatID     int64
-	Key        string
-	Text       string
-	ClientMenu bool
+	BotID                  int64
+	ChatID                 int64
+	Key                    string
+	Text                   string
+	ClientMenu             bool
+	ProtectedConfiguration bool
 }
 
 func (d Draft) Validate() error {
 	if d.BotID <= 0 || d.ChatID <= 0 || d.Key == "" || len(d.Key) > 256 || !utf8.ValidString(d.Key) || strings.ContainsRune(d.Key, '\x00') || d.Text == "" || !utf8.ValidString(d.Text) || strings.ContainsRune(d.Text, '\x00') || utf8.RuneCountInString(d.Text) > 4096 {
 		return errors.New("invalid outbox message")
 	}
+	if d.ProtectedConfiguration && (d.ClientMenu || d.Text != ConfigurationIntentBody) {
+		return errors.New("invalid protected configuration intent")
+	}
 	return nil
 }
 
 type Message struct {
 	Lease
-	BotID      int64
-	ChatID     int64
-	Text       string
-	ClientMenu bool
+	BotID                  int64
+	ChatID                 int64
+	Text                   string
+	ClientMenu             bool
+	ProtectedConfiguration bool
 }

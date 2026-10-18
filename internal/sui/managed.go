@@ -70,9 +70,15 @@ func NewManagedClient(base, token, declaredVersion string, timeout time.Duration
 	return &ManagedClient{http: reader.http, writer: writer, declaredVersion: declaredVersion, maxAccounts: maxAccounts}, nil
 }
 
+type managedGetter func(context.Context, string, url.Values) (map[string]any, error)
+
 func (c *ManagedClient) get(ctx context.Context, endpoint string, query url.Values) (map[string]any, error) {
+	return getManaged(ctx, c.http, endpoint, query)
+}
+
+func getManaged(ctx context.Context, reader *integrationhttp.Client, endpoint string, query url.Values) (map[string]any, error) {
 	var raw json.RawMessage
-	if _, err := c.http.Get(ctx, []string{"apiv2", endpoint}, query, &raw); err != nil {
+	if _, err := reader.Get(ctx, []string{"apiv2", endpoint}, query, &raw); err != nil {
 		return nil, err
 	}
 	return managedEnvelope(raw)
@@ -100,12 +106,16 @@ func managedEnvelope(raw []byte) (map[string]any, error) {
 	return obj, nil
 }
 func (c *ManagedClient) checkVersion(ctx context.Context) error {
-	obj, err := c.get(ctx, "status", url.Values{"r": {"sys"}})
+	return checkManagedVersion(ctx, c.get, c.declaredVersion)
+}
+
+func checkManagedVersion(ctx context.Context, get managedGetter, declaredVersion string) error {
+	obj, err := get(ctx, "status", url.Values{"r": {"sys"}})
 	if err != nil {
 		return err
 	}
 	sys, ok := obj["sys"].(map[string]any)
-	if !ok || sys["appVersion"] != c.declaredVersion {
+	if !ok || sys["appVersion"] != declaredVersion {
 		return ErrManagedVersion
 	}
 	return nil
@@ -151,6 +161,10 @@ func (c *ManagedClient) summaries(ctx context.Context) ([]managedSummary, error)
 	return out, nil
 }
 func (c *ManagedClient) full(ctx context.Context, ids []int64) ([]ClientRecord, error) {
+	return fullManagedRecords(ctx, c.get, ids)
+}
+
+func fullManagedRecords(ctx context.Context, get managedGetter, ids []int64) ([]ClientRecord, error) {
 	if len(ids) == 0 || len(ids) > 50 {
 		return nil, ErrManagedInvalid
 	}
@@ -163,7 +177,7 @@ func (c *ManagedClient) full(ctx context.Context, ids []int64) ([]ClientRecord, 
 		requested[id] = true
 		query[i] = strconv.FormatInt(id, 10)
 	}
-	obj, err := c.get(ctx, "clients", url.Values{"id": {strings.Join(query, ",")}})
+	obj, err := get(ctx, "clients", url.Values{"id": {strings.Join(query, ",")}})
 	if err != nil {
 		return nil, err
 	}

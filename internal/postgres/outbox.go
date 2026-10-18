@@ -11,6 +11,9 @@ import (
 )
 
 func (s *Store) EnqueueOutbox(ctx context.Context, message queue.Draft) (int64, error) {
+	if message.ProtectedConfiguration || message.Text == queue.ConfigurationIntentBody {
+		return 0, errors.New("protected configuration requires a private request")
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, err
@@ -51,6 +54,15 @@ func prepareOutboxBots(ctx context.Context, tx pgx.Tx, messages []queue.Draft) e
 // The same helper is used when completing an operation, so notification intent
 // and business progress cannot commit separately. Conflicts never replace text.
 func enqueueOutbox(ctx context.Context, tx pgx.Tx, message queue.Draft) (int64, error) {
+	if message.ProtectedConfiguration || message.Text == queue.ConfigurationIntentBody {
+		return 0, errors.New("protected configuration requires a private request")
+	}
+	return insertOutbox(ctx, tx, message)
+}
+
+// Private configuration requests are the sole protected caller; their metadata
+// must be inserted in the same transaction (also enforced at COMMIT).
+func insertOutbox(ctx context.Context, tx pgx.Tx, message queue.Draft) (int64, error) {
 	if err := message.Validate(); err != nil {
 		return 0, err
 	}
@@ -59,11 +71,12 @@ func enqueueOutbox(ctx context.Context, tx pgx.Tx, message queue.Draft) (int64, 
 	}
 	var id int64
 	err := tx.QueryRow(ctx, `
-        INSERT INTO outbox (bot_id, chat_id, message_key, body, client_menu) VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO outbox (bot_id, chat_id, message_key, body, client_menu, protected_configuration) VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (bot_id, message_key) DO UPDATE SET message_key = outbox.message_key
             WHERE outbox.chat_id = EXCLUDED.chat_id AND outbox.body = EXCLUDED.body
               AND outbox.client_menu = EXCLUDED.client_menu
-        RETURNING id`, message.BotID, message.ChatID, message.Key, message.Text, message.ClientMenu).Scan(&id)
+              AND outbox.protected_configuration = EXCLUDED.protected_configuration
+        RETURNING id`, message.BotID, message.ChatID, message.Key, message.Text, message.ClientMenu, message.ProtectedConfiguration).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, queue.ErrConflict
 	}
@@ -110,14 +123,14 @@ func (s *Store) ClaimOutbox(ctx context.Context, botID int64, limit int, lease t
         FROM due WHERE o.id = due.id
             AND ((o.status = 'pending' AND o.next_attempt_at <= clock_timestamp())
                 OR (o.status = 'running' AND o.locked_until <= clock_timestamp()))
-        RETURNING o.id, o.attempts, o.bot_id, o.chat_id, o.body, o.client_menu`, botID, limit, lease.Milliseconds())
+        RETURNING o.id, o.attempts, o.bot_id, o.chat_id, o.body, o.client_menu, o.protected_configuration`, botID, limit, lease.Milliseconds())
 	if err != nil {
 		return nil, err
 	}
 	var messages []queue.Message
 	for rows.Next() {
 		var message queue.Message
-		if err := rows.Scan(&message.ID, &message.Attempt, &message.BotID, &message.ChatID, &message.Text, &message.ClientMenu); err != nil {
+		if err := rows.Scan(&message.ID, &message.Attempt, &message.BotID, &message.ChatID, &message.Text, &message.ClientMenu, &message.ProtectedConfiguration); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -137,10 +150,17 @@ func (s *Store) CompleteOutbox(ctx context.Context, lease queue.Lease, telegramM
 	if telegramMessageID <= 0 {
 		return errors.New("invalid delivered Telegram message identity")
 	}
+	var protected bool
+	if err := s.pool.QueryRow(ctx, `SELECT protected_configuration FROM outbox WHERE id=$1`, lease.ID).Scan(&protected); err != nil {
+		return configurationError(queue.ErrLeaseLost)
+	}
+	if protected {
+		return s.completeConfigurationOutbox(ctx, lease, telegramMessageID)
+	}
 	tag, err := s.pool.Exec(ctx, `UPDATE outbox
         SET status = 'sent', telegram_message_id = $3, finished_at = clock_timestamp(),
             locked_until = NULL, last_error_code = 0
-        WHERE id = $1 AND attempts = $2 AND status = 'running' AND locked_until > clock_timestamp()`,
+        WHERE id = $1 AND attempts = $2 AND status = 'running' AND locked_until > clock_timestamp() AND NOT protected_configuration`,
 		lease.ID, lease.Attempt, telegramMessageID)
 	if err != nil {
 		return err
@@ -161,11 +181,15 @@ func (s *Store) RetryOutbox(ctx context.Context, lease queue.Lease, delay time.D
 	}
 	defer rollback(tx)
 	var botID int64
-	if err := tx.QueryRow(ctx, `SELECT bot_id FROM outbox WHERE id = $1`, lease.ID).Scan(&botID); err != nil {
+	var protected bool
+	if err := tx.QueryRow(ctx, `SELECT bot_id, protected_configuration FROM outbox WHERE id = $1`, lease.ID).Scan(&botID, &protected); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return queue.ErrLeaseLost
 		}
 		return err
+	}
+	if protected {
+		return errors.New("protected configuration cannot be retried")
 	}
 	// Match the claim lock order before touching either the lease or cooldown.
 	if _, err := tx.Exec(ctx, `SELECT bot_id FROM telegram_bots WHERE bot_id = $1 FOR NO KEY UPDATE`, botID); err != nil {
@@ -192,9 +216,16 @@ func (s *Store) RetryOutbox(ctx context.Context, lease queue.Lease, delay time.D
 }
 
 func (s *Store) FailOutbox(ctx context.Context, lease queue.Lease, errorCode int) error {
+	var protected bool
+	if err := s.pool.QueryRow(ctx, `SELECT protected_configuration FROM outbox WHERE id=$1`, lease.ID).Scan(&protected); err != nil {
+		return configurationError(queue.ErrLeaseLost)
+	}
+	if protected {
+		return s.FailConfigurationOutbox(ctx, lease, errorCode, 0, false)
+	}
 	tag, err := s.pool.Exec(ctx, `UPDATE outbox SET status = 'failed', locked_until = NULL,
         finished_at = clock_timestamp(), last_error_code = $3
-        WHERE id = $1 AND attempts = $2 AND status = 'running' AND locked_until > clock_timestamp()`,
+        WHERE id = $1 AND attempts = $2 AND status = 'running' AND locked_until > clock_timestamp() AND NOT protected_configuration`,
 		lease.ID, lease.Attempt, errorCode)
 	if err != nil {
 		return err

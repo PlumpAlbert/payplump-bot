@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+	"unicode"
 )
 
 const maxResponseBytes = 4 << 20
@@ -35,6 +36,10 @@ type APIError struct {
 	HTTPStatus int
 	Code       int
 	RetryAfter time.Duration
+	// Rejected is evidence of a validated, explicit 4xx rejection, not merely
+	// a permanent error. False means delivery may have happened; never replay
+	// automatically. A 429 is a rejection but still requires bot-wide cooldown.
+	Rejected bool
 }
 
 func (e *APIError) Error() string {
@@ -45,6 +50,13 @@ func (e *APIError) Permanent() bool {
 }
 
 func (c *Client) call(ctx context.Context, method string, payload any, result any) error {
+	return c.callRequest(ctx, method, payload, result, false)
+}
+
+func (c *Client) callRequest(ctx context.Context, method string, payload any, result any, strict bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return errors.New("invalid Telegram request")
@@ -55,6 +67,12 @@ func (c *Client) call(ctx context.Context, method string, payload any, result an
 		return errors.New("invalid Telegram request")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// A nonempty write must not be replayed by net/http after an unknown
+	// outcome. Redirects are separately disabled by NewClient.
+	req.GetBody = nil
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	response, err := c.http.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -81,7 +99,7 @@ func (c *Client) call(ctx context.Context, method string, payload any, result an
 			RetryAfter int64 `json:"retry_after"`
 		} `json:"parameters"`
 	}
-	if json.Unmarshal(body, &envelope) != nil || envelope.OK == nil {
+	if (strict && !uniqueTelegramJSON(body)) || json.Unmarshal(body, &envelope) != nil || envelope.OK == nil {
 		// HTTP authentication/conflict errors remain terminal even with a broken body.
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			return &APIError{HTTPStatus: response.StatusCode, Code: response.StatusCode}
@@ -97,12 +115,96 @@ func (c *Client) call(ctx context.Context, method string, payload any, result an
 		if delay < 0 || delay > math.MaxInt64/int64(time.Second) {
 			return errors.New("invalid Telegram retry_after")
 		}
-		return &APIError{HTTPStatus: response.StatusCode, Code: code, RetryAfter: time.Duration(delay) * time.Second}
+		// HTTP 408 and all 5xx responses are ambiguous even if their body
+		// claims a terminal error. Never infer rejection from the fallback code.
+		saneHTTP := response.StatusCode == http.StatusOK || (response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusRequestTimeout)
+		// Even a null result contradicts definitive rejection. The raw field
+		// also detects encoding/json aliases of result, not just its exact spelling.
+		rejected := !*envelope.OK && len(envelope.Result) == 0 && envelope.Code >= 400 && envelope.Code < 500 && envelope.Code != http.StatusRequestTimeout && saneHTTP && uniqueTelegramJSON(body)
+		return &APIError{HTTPStatus: response.StatusCode, Code: code, RetryAfter: time.Duration(delay) * time.Second, Rejected: rejected}
+	}
+	if strict {
+		// Presence matters even for zero/null retry_after. Keep ordinary calls'
+		// historical decoding/error behavior, but never accept contradictory
+		// error facts as a protected-send or private-chat success.
+		var facts struct {
+			Parameters struct {
+				RetryAfter json.RawMessage `json:"retry_after"`
+			} `json:"parameters"`
+		}
+		if envelope.Code != 0 || json.Unmarshal(body, &facts) != nil || len(facts.Parameters.RetryAfter) != 0 {
+			return errors.New("invalid Telegram response")
+		}
 	}
 	if len(envelope.Result) == 0 || bytes.Equal(envelope.Result, []byte("null")) || json.Unmarshal(envelope.Result, result) != nil {
 		return errors.New("invalid Telegram result")
 	}
 	return nil
+}
+
+// uniqueTelegramJSON rejects duplicate (including case-folded) object keys at
+// every depth before encoding/json can erase conflicting identity/error facts.
+func uniqueTelegramJSON(raw []byte) bool {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	if !telegramJSONValue(d, 0) {
+		return false
+	}
+	_, err := d.Token()
+	return err == io.EOF
+}
+
+func telegramJSONValue(d *json.Decoder, depth int) bool {
+	if depth > 128 {
+		return false
+	}
+	token, err := d.Token()
+	if err != nil {
+		return false
+	}
+	switch token {
+	case json.Delim('{'):
+		seen := map[string]bool{}
+		for d.More() {
+			key, err := d.Token()
+			name, ok := key.(string)
+			name = telegramJSONFold(name)
+			if err != nil || !ok || seen[name] {
+				return false
+			}
+			seen[name] = true
+			if !telegramJSONValue(d, depth+1) {
+				return false
+			}
+		}
+		token, err = d.Token()
+		return err == nil && token == json.Delim('}')
+	case json.Delim('['):
+		for d.More() {
+			if !telegramJSONValue(d, depth+1) {
+				return false
+			}
+		}
+		token, err = d.Token()
+		return err == nil && token == json.Delim(']')
+	default:
+		_, delimiter := token.(json.Delim)
+		return !delimiter
+	}
+}
+
+// Match encoding/json's Unicode simple-fold equivalence, including ſ/S and
+// K/K. Lowercasing alone misses aliases that could overwrite decoded fields.
+func telegramJSONFold(name string) string {
+	folded := []rune(name)
+	for i, r := range folded {
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			if next < folded[i] {
+				folded[i] = next
+			}
+		}
+	}
+	return string(folded)
 }
 
 func (c *Client) GetMe(ctx context.Context) (User, error) {

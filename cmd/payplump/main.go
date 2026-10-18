@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/configdelivery"
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/outbox"
@@ -98,6 +99,14 @@ func run(logger *slog.Logger, args []string) error {
 			return err
 		}
 	}
+	configurationConfig, err := configdelivery.ConfigFromEnv(telegramConfig.Enabled, paymentConfig.Enabled)
+	if err != nil {
+		return err
+	}
+	configurationAPIs, err := newConfigurationProviders(configurationConfig)
+	if err != nil {
+		return err
+	}
 	var deliveryConfig outbox.Config
 	if telegramConfig.Enabled {
 		deliveryConfig, err = outbox.ConfigFromEnv()
@@ -121,6 +130,9 @@ func run(logger *slog.Logger, args []string) error {
 	if err := store.Migrate(startupCtx); err != nil {
 		return fmt.Errorf("database migrations: %w", err)
 	}
+	if err := fenceConfigurationStartup(startupCtx, store, configurationConfig); err != nil {
+		return err
+	}
 	cancelStartup()
 	var paymentEndpoint *payments.WebhookHandler
 	var paymentHandler http.Handler
@@ -136,7 +148,7 @@ func run(logger *slog.Logger, args []string) error {
 	var initialize func(context.Context) error
 	var background func(context.Context) error
 	if telegramConfig.Enabled {
-		gateway, err := newMenuGateway(store)
+		gateway, err := newMenuGatewayWithConfiguration(store, configurationConfig)
 		if err != nil {
 			return err
 		}
@@ -153,6 +165,9 @@ func run(logger *slog.Logger, args []string) error {
 				return err
 			}
 			botID = bot.ID
+			if err := store.InstallConfigurationPolicy(ctx, botID, configurationConfig.Policy()); err != nil {
+				return err
+			}
 			if paymentEndpoint != nil {
 				if err := paymentEndpoint.Activate(botID); err != nil {
 					return err
@@ -161,7 +176,12 @@ func run(logger *slog.Logger, args []string) error {
 			return endpoint.Activate(bot)
 		}
 		background = func(ctx context.Context) error {
-			worker, err := outbox.New(store, client, botID, deliveryConfig, logger)
+			configuration, err := configdelivery.New(store, configurationAPIs, client, botID, configurationConfig, logger)
+			if err != nil {
+				return err
+			}
+			sender := &configurationGateway{Client: client, delivery: configuration}
+			worker, err := outbox.New(store, sender, botID, deliveryConfig, logger)
 			if err != nil {
 				return err
 			}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/clientmenu"
+	"github.com/PlumpAlbert/payplump-bot/internal/configdelivery"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
 )
@@ -46,7 +47,17 @@ func (g *menuGateway) ApplyTelegramUpdate(ctx context.Context, botID int64, user
 }
 
 func newMenuGateway(store menuStore) (*menuGateway, error) {
-	cfg := clientmenu.Config{PaymentPhone: os.Getenv("PAYMENT_PHONE"), PaymentBank: os.Getenv("PAYMENT_BANK"), PaymentRecipient: os.Getenv("PAYMENT_RECIPIENT")}
+	return newMenuGatewayWithConfiguration(store, configdelivery.Config{})
+}
+
+func newMenuGatewayWithConfiguration(store menuStore, delivery configdelivery.Config) (*menuGateway, error) {
+	if err := delivery.Validate(); err != nil {
+		return nil, err
+	}
+	policy := delivery.Policy()
+	cfg := clientmenu.Config{PaymentPhone: os.Getenv("PAYMENT_PHONE"), PaymentBank: os.Getenv("PAYMENT_BANK"), PaymentRecipient: os.Getenv("PAYMENT_RECIPIENT"),
+		ConfigurationEnabled: delivery.Enabled, ConfigurationPolicyRevision: policy.Revision, ConfigurationPolicyHash: policy.Hash,
+		ConfigurationAllowedTelegramIDs: append([]int64(nil), delivery.AllowedTelegramIDs...)}
 	if raw := strings.TrimSpace(os.Getenv("REGISTRATION_EXCLUDED_TELEGRAM_IDS")); raw != "" {
 		for _, part := range strings.Split(raw, ",") {
 			part = strings.TrimSpace(part)

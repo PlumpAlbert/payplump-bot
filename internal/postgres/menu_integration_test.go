@@ -151,14 +151,18 @@ func TestMenuSnapshotRevalidationRollbackAndHeldFIFO(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `UPDATE clients SET invoice_ninja_id = 'customer-old', sui_id = 'sui-old' WHERE id = $1`, registered.Client.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE subscriptions SET current_invoice_id = 'invoice-old', state = 'active',
+	if _, err := s.pool.Exec(ctx, `UPDATE subscriptions SET current_invoice_id = 'invoice-old', recurring_id = 'recurring-old', state = 'active',
         desired_access = true, payment_date = '2026-04-01', next_invoice_date = '2026-05-01' WHERE client_id = $1`, registered.Client.ID); err != nil {
 		t.Fatal(err)
 	}
 	invoice := menuTestUpdate(10, 7101, "/invoice")
 	prepared := prepareMenuTest(t, s, ctx, invoice, "Старый счёт")
+	var revision int64
+	if err := s.pool.QueryRow(ctx, `SELECT configuration_revision FROM clients WHERE id=$1`, registered.Client.ID).Scan(&revision); err != nil || revision <= 0 {
+		t.Fatal("authorization revision was not advanced")
+	}
 	want := clientmenu.Snapshot{Known: true, ClientID: registered.Client.ID, CustomerID: "customer-old", InvoiceID: "invoice-old",
-		SUIID: "sui-old", State: "active", DesiredAccess: true, PaymentDate: "2026-04-01", NextInvoiceDate: "2026-05-01"}
+		SUIID: "sui-old", RecurringID: "recurring-old", ConfigurationRevision: revision, State: "active", DesiredAccess: true, PaymentDate: "2026-04-01", NextInvoiceDate: "2026-05-01"}
 	if prepared.Snapshot != want {
 		t.Fatal("menu snapshot did not project every account field")
 	}

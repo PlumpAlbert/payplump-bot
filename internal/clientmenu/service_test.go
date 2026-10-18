@@ -229,7 +229,7 @@ func TestMenuKnownAndUnknownActionsAreLocal(t *testing.T) {
 				assertNoMenuText(t, p.Text, snapshot.CustomerID, snapshot.InvoiceID, "<b>", "</", "**", "```", "[Инструкция](")
 				switch {
 				case action == clientmenu.Help:
-					assertMenuContains(t, p.Text, "sing-box", "https://sing-box.sagernet.org/clients/", "JSON", "не подключена")
+					assertMenuContains(t, p.Text, "sing-box", "https://sing-box.sagernet.org/clients/", "JSON", "отдельно включённой выдаче")
 				case !known && action != clientmenu.Start:
 					assertMenuContains(t, p.Text, "/start", "/help")
 				case !known:
@@ -239,7 +239,7 @@ func TestMenuKnownAndUnknownActionsAreLocal(t *testing.T) {
 				case action == clientmenu.Status:
 					assertMenuContains(t, p.Text, "сохранённое состояние", "не разрешён", snapshot.PaymentDate, snapshot.NextInvoiceDate)
 				case action == clientmenu.Configuration:
-					assertMenuContains(t, p.Text, "не подключена", "До подтверждения полной оплаты", "/help")
+					assertMenuContains(t, p.Text, "безопасная выдача недоступна", "полной проверенной оплаты", "/help")
 				}
 			})
 		}
@@ -271,7 +271,7 @@ func TestMenuStatusAndConfigurationNeverClaimLiveSUIAccess(t *testing.T) {
 				assertNoMenuText(t, status, state)
 			}
 			configuration := prepareMenu(t, s, clientmenu.Configuration, snapshot).Text
-			assertMenuContains(t, configuration, "не подключена")
+			assertMenuContains(t, configuration, "безопасная выдача недоступна", "полной проверенной оплаты")
 			assertNoMenuText(t, configuration, "https://", "ss://", "vmess://", "vless://", "trojan://", "password", "token=")
 			assertMenuCalls(t, f)
 		}
