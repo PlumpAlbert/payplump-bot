@@ -18,6 +18,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/configdelivery"
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
+	"github.com/PlumpAlbert/payplump-bot/internal/lifecycle"
 	"github.com/PlumpAlbert/payplump-bot/internal/outbox"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/postgres"
@@ -99,6 +100,17 @@ func run(logger *slog.Logger, args []string) error {
 			return errors.New("invalid payment verification API configuration")
 		}
 	}
+	lifecycleConfig, err := lifecycle.ConfigFromEnv(telegramConfig.Enabled, paymentConfig.Enabled, paymentConfig.WebhookSecret, telegramConfig.WebhookSecret, telegramConfig.Token)
+	if err != nil {
+		return err
+	}
+	var lifecycleAPI *invoiceninja.CycleReader
+	if lifecycleConfig.Enabled {
+		lifecycleAPI, err = invoiceninja.NewCycleReader(lifecycleConfig.BaseURL, lifecycleConfig.Token, lifecycleConfig.HTTPTimeout, lifecycleConfig.PageSize, lifecycleConfig.MaxPages)
+		if err != nil {
+			return errors.New("invalid invoice lifecycle API configuration")
+		}
+	}
 	activationConfig, err := activation.ConfigFromEnv(telegramConfig.Enabled, paymentConfig.Enabled)
 	if err != nil {
 		return err
@@ -162,6 +174,15 @@ func run(logger *slog.Logger, args []string) error {
 		}
 		paymentHandler = paymentEndpoint
 	}
+	var lifecycleEndpoint *lifecycle.WebhookHandler
+	var lifecycleHandler http.Handler
+	if lifecycleConfig.Enabled {
+		lifecycleEndpoint, err = lifecycle.NewWebhook(lifecycleConfig.WebhookSecret, store)
+		if err != nil {
+			return err
+		}
+		lifecycleHandler = lifecycleEndpoint
+	}
 	var endpoint *telegram.WebhookHandler
 	var handler http.Handler
 	var initialize func(context.Context) error
@@ -195,6 +216,11 @@ func run(logger *slog.Logger, args []string) error {
 			}
 			if paymentEndpoint != nil {
 				if err := paymentEndpoint.Activate(botID); err != nil {
+					return err
+				}
+			}
+			if lifecycleEndpoint != nil {
+				if err := lifecycleEndpoint.Activate(botID); err != nil {
 					return err
 				}
 			}
@@ -240,6 +266,17 @@ func run(logger *slog.Logger, args []string) error {
 				}
 				workers = append(workers, verifier.Run)
 			}
+			if lifecycleConfig.Enabled {
+				var admins []int64
+				for id := range telegramConfig.AdminIDs {
+					admins = append(admins, id)
+				}
+				worker, err := lifecycle.New(store, lifecycleAPI, botID, admins, lifecycleConfig, logger)
+				if err != nil {
+					return err
+				}
+				workers = append(workers, worker.Run)
+			}
 			if activationConfig.Enabled {
 				var admins []int64
 				for id := range telegramConfig.AdminIDs {
@@ -258,9 +295,12 @@ func run(logger *slog.Logger, args []string) error {
 		if endpoint != nil && !endpoint.Ready() {
 			return errors.New("Telegram webhook setup pending")
 		}
+		if lifecycleEndpoint != nil && !lifecycleEndpoint.Ready() {
+			return errors.New("invoice lifecycle webhook setup pending")
+		}
 		return store.Ping(ctx)
 	}
-	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), ready, handler, paymentHandler)
+	srv := httpserver.New(envOr("HTTP_ADDR", ":8080"), ready, handler, paymentHandler, lifecycleHandler)
 	return serve(ctx, logger, srv, initialize, background)
 }
 

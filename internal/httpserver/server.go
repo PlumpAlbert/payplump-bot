@@ -5,12 +5,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/PlumpAlbert/payplump-bot/internal/lifecycle"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
 )
 
 // New exposes process liveness separately from dependency readiness.
-func New(addr string, ready func(context.Context) error, webhook http.Handler, paymentWebhook ...http.Handler) *http.Server {
+func New(addr string, ready func(context.Context) error, webhook http.Handler, optionalWebhook ...http.Handler) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -19,8 +20,11 @@ func New(addr string, ready func(context.Context) error, webhook http.Handler, p
 	if webhook != nil {
 		mux.Handle("POST "+telegram.WebhookPath, webhook)
 	}
-	if len(paymentWebhook) == 1 && paymentWebhook[0] != nil {
-		mux.Handle("POST "+payments.WebhookPath, paymentWebhook[0])
+	if len(optionalWebhook) >= 1 && optionalWebhook[0] != nil {
+		mux.Handle("POST "+payments.WebhookPath, optionalWebhook[0])
+	}
+	if len(optionalWebhook) >= 2 && optionalWebhook[1] != nil {
+		mux.Handle("POST "+lifecycle.WebhookPath, optionalWebhook[1])
 	}
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)

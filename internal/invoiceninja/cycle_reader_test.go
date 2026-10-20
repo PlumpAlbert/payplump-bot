@@ -14,7 +14,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 )
 
-const cycleInvoiceJSON = `{"id":"inv-1","client_id":"customer-1","recurring_id":"","number":"N-1","private_notes":"","status_id":"2","date":"2025-01-01","due_date":"2025-02-01","amount":12345678901234567890.123456789,"balance":0,"paid_to_date":0,"exchange_rate":1,"is_deleted":false,"archived_at":0,"updated_at":0}`
+const cycleInvoiceJSON = `{"id":"inv-1","client_id":"customer-1","recurring_id":"","number":"N-1","private_notes":"","status_id":"2","date":"2025-01-01","due_date":"2025-02-01","amount":12345678901234567890.123456789,"balance":0,"paid_to_date":0,"exchange_rate":1,"is_deleted":false,"archived_at":0,"updated_at":0,"invitations":[]}`
 
 func cyclePage(rows []string, total, page, pageSize int) string {
 	pages := 0
@@ -92,6 +92,10 @@ func TestCycleInvoiceStrictFields(t *testing.T) {
 	if err := json.Unmarshal([]byte(cycleInvoiceJSON), &invoice); err != nil {
 		t.Fatal(err)
 	}
+	withSentDate := strings.Replace(cycleInvoiceJSON, `"invitations":[]`, `"invitations":[{"id":"invite-1","sent_date":"2025-04-02 08:15:00"}]`, 1)
+	if err := json.Unmarshal([]byte(withSentDate), &invoice); err != nil || len(invoice.Invitations) != 1 || invoice.Invitations[0].ID != "invite-1" || invoice.Invitations[0].SentDate != "2025-04-02 08:15:00" {
+		t.Fatalf("lost invitation sent date: %#v, %v", invoice, err)
+	}
 	if invoice.PrivateNotes != "" || invoice.UpdatedAt != 0 || invoice.Amount.String() != "12345678901234567890.123456789" {
 		t.Fatalf("lost wire facts: %#v", invoice)
 	}
@@ -99,6 +103,10 @@ func TestCycleInvoiceStrictFields(t *testing.T) {
 		strings.Replace(cycleInvoiceJSON, `,"private_notes":""`, "", 1),
 		strings.Replace(cycleInvoiceJSON, `"id":"inv-1"`, `"id":"inv-1","ID":"inv-1"`, 1),
 		strings.Replace(cycleInvoiceJSON, `"updated_at":0`, `"updated_at":null`, 1),
+		strings.Replace(cycleInvoiceJSON, `,"invitations":[]`, "", 1),
+		strings.Replace(cycleInvoiceJSON, `"invitations":[]`, `"invitations":null`, 1),
+		strings.Replace(cycleInvoiceJSON, `"invitations":[]`, `"invitations":[{"id":"invite-1","sent_date":""},{"id":"invite-1","sent_date":""}]`, 1),
+		strings.Replace(cycleInvoiceJSON, `"invitations":[]`, `"invitations":[{"id":"invite-1","sent_date":null}]`, 1),
 		strings.Replace(cycleInvoiceJSON, `"date":"2025-01-01"`, `"date":"2025-02-30"`, 1),
 		strings.Replace(cycleInvoiceJSON, `"amount":12345678901234567890.123456789`, `"amount":1e10000`, 1),
 	} {

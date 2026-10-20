@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
@@ -13,33 +14,62 @@ import (
 
 var ErrCycleLookupIncomplete = errors.New("Invoice Ninja cycle invoice inventory is incomplete")
 
-type CycleInvoice struct {
-	ID           string      `json:"id"`
-	ClientID     string      `json:"client_id"`
-	RecurringID  string      `json:"recurring_id"`
-	Number       string      `json:"number"`
-	PrivateNotes string      `json:"private_notes"`
-	StatusID     string      `json:"status_id"`
-	Date         string      `json:"date"`
-	DueDate      string      `json:"due_date"`
-	Amount       json.Number `json:"amount"`
-	Balance      json.Number `json:"balance"`
-	PaidToDate   json.Number `json:"paid_to_date"`
-	ExchangeRate json.Number `json:"exchange_rate"`
-	IsDeleted    bool        `json:"is_deleted"`
-	ArchivedAt   int64       `json:"archived_at"`
-	UpdatedAt    int64       `json:"updated_at"`
+type CycleInvitation struct {
+	ID       string `json:"id"`
+	SentDate string `json:"sent_date"`
 }
+
+func (invitation *CycleInvitation) UnmarshalJSON(raw []byte) error {
+	type plain CycleInvitation
+	var decoded plain
+	if _, err := settlementFields(raw, &decoded, "id", "sent_date"); err != nil {
+		return err
+	}
+	if !settlementID(decoded.ID) || len(decoded.SentDate) > 128 || strings.TrimSpace(decoded.SentDate) != decoded.SentDate {
+		return errInvalidResponse
+	}
+	*invitation = CycleInvitation(decoded)
+	return nil
+}
+
+type CycleInvoice struct {
+	ID           string            `json:"id"`
+	ClientID     string            `json:"client_id"`
+	RecurringID  string            `json:"recurring_id"`
+	Number       string            `json:"number"`
+	PrivateNotes string            `json:"private_notes"`
+	StatusID     string            `json:"status_id"`
+	Date         string            `json:"date"`
+	DueDate      string            `json:"due_date"`
+	Amount       json.Number       `json:"amount"`
+	Balance      json.Number       `json:"balance"`
+	PaidToDate   json.Number       `json:"paid_to_date"`
+	ExchangeRate json.Number       `json:"exchange_rate"`
+	IsDeleted    bool              `json:"is_deleted"`
+	ArchivedAt   int64             `json:"archived_at"`
+	UpdatedAt    int64             `json:"updated_at"`
+	Invitations  []CycleInvitation `json:"invitations"`
+}
+
+func (CycleInvoice) String() string   { return "[Invoice Ninja cycle invoice]" }
+func (CycleInvoice) GoString() string { return "[Invoice Ninja cycle invoice]" }
 
 func (invoice *CycleInvoice) UnmarshalJSON(raw []byte) error {
 	type plain CycleInvoice
 	var decoded plain
-	_, err := settlementFields(raw, &decoded, "id", "client_id", "recurring_id", "number", "private_notes", "status_id", "date", "due_date", "amount", "balance", "paid_to_date", "exchange_rate", "is_deleted", "archived_at", "updated_at")
+	_, err := settlementFields(raw, &decoded, "id", "client_id", "recurring_id", "number", "private_notes", "status_id", "date", "due_date", "amount", "balance", "paid_to_date", "exchange_rate", "is_deleted", "archived_at", "updated_at", "invitations")
 	if err != nil {
 		return err
 	}
-	if !settlementID(decoded.ID) || !settlementID(decoded.ClientID) || !settlementOptionalID(decoded.RecurringID) || !settlementID(decoded.StatusID) || !validCycleDate(decoded.Date) || !validCycleDate(decoded.DueDate) || decoded.ArchivedAt < 0 || decoded.UpdatedAt < 0 || !settlementNumbers(decoded.Amount, decoded.Balance, decoded.PaidToDate, decoded.ExchangeRate) {
+	if !settlementID(decoded.ID) || !settlementID(decoded.ClientID) || !settlementOptionalID(decoded.RecurringID) || !settlementID(decoded.StatusID) || !validCycleDate(decoded.Date) || !validCycleDate(decoded.DueDate) || decoded.ArchivedAt < 0 || decoded.UpdatedAt < 0 || decoded.Invitations == nil || !settlementNumbers(decoded.Amount, decoded.Balance, decoded.PaidToDate, decoded.ExchangeRate) {
 		return errInvalidResponse
+	}
+	seenInvitations := make(map[string]struct{}, len(decoded.Invitations))
+	for _, invitation := range decoded.Invitations {
+		if _, duplicate := seenInvitations[invitation.ID]; duplicate {
+			return errInvalidResponse
+		}
+		seenInvitations[invitation.ID] = struct{}{}
 	}
 	*invoice = CycleInvoice(decoded)
 	return nil
@@ -55,7 +85,7 @@ func validCycleDate(value string) bool {
 	return err == nil && parsed.Format("2006-01-02") == value
 }
 
-// CycleReader is a read-only Invoice Ninja capability for renewal discovery.
+// CycleReader is a read-only Invoice Ninja capability for invoice lifecycle discovery.
 type CycleReader struct {
 	transport *integrationhttp.Client
 	pageSize  int
