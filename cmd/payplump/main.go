@@ -23,6 +23,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/postgres"
 	"github.com/PlumpAlbert/payplump-bot/internal/registration"
+	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
 )
 
@@ -109,6 +110,22 @@ func run(logger *slog.Logger, args []string) error {
 		lifecycleAPI, err = invoiceninja.NewCycleReader(lifecycleConfig.BaseURL, lifecycleConfig.Token, lifecycleConfig.HTTPTimeout, lifecycleConfig.PageSize, lifecycleConfig.MaxPages)
 		if err != nil {
 			return errors.New("invalid invoice lifecycle API configuration")
+		}
+	}
+	enforcementConfig, err := lifecycle.EnforcementConfigFromEnv(lifecycleConfig.Enabled, telegramConfig.Enabled, paymentConfig.Enabled)
+	if err != nil {
+		return err
+	}
+	var enforcementRecurring *invoiceninja.RecurringClient
+	var enforcementSUI *sui.ManagedClient
+	if enforcementConfig.Enabled {
+		enforcementRecurring, err = invoiceninja.NewRecurringClient(enforcementConfig.BaseURL, enforcementConfig.Token, enforcementConfig.HTTPTimeout, 50, 20)
+		if err != nil {
+			return errors.New("invalid invoice overdue recurring writer configuration")
+		}
+		enforcementSUI, err = sui.NewManagedClient(enforcementConfig.SUIBaseURL, enforcementConfig.SUIToken, enforcementConfig.SUIVersion, enforcementConfig.HTTPTimeout, enforcementConfig.MaxAccounts)
+		if err != nil {
+			return errors.New("invalid invoice overdue S-UI writer configuration")
 		}
 	}
 	activationConfig, err := activation.ConfigFromEnv(telegramConfig.Enabled, paymentConfig.Enabled)
@@ -272,6 +289,17 @@ func run(logger *slog.Logger, args []string) error {
 					admins = append(admins, id)
 				}
 				worker, err := lifecycle.New(store, lifecycleAPI, botID, admins, lifecycleConfig, logger)
+				if err != nil {
+					return err
+				}
+				workers = append(workers, worker.Run)
+			}
+			if enforcementConfig.Enabled {
+				var admins []int64
+				for id := range telegramConfig.AdminIDs {
+					admins = append(admins, id)
+				}
+				worker, err := lifecycle.NewEnforcementWorker(store, lifecycleAPI, enforcementRecurring, enforcementSUI, botID, admins, enforcementConfig, logger)
 				if err != nil {
 					return err
 				}
