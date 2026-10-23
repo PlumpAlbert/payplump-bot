@@ -128,20 +128,41 @@ scope; не снимать и не обходить их и не расширя�
   11b.6.1 imported paid renewal supports ordinary lifecycle-ledger invoices.
   PR #31 merged as `a92198b`; exact code HEAD
   `012e1249a0720b79993ce55206413ecae06b178b` passed required CI `40024818619`
-  and post-merge CI `40025798271` is green. The 11b.6.2 production/domain/unit
-  slice adds the explicit initial-paused current-debt mode, generated conditional
-  FK boundaries, and no-fake-ledger restoration through the existing renewal
-  worker. PR #32 is open at `2078c682df1d5538040b71fc429f7e9392cb0e48`. Review P1 on
-  initial-mode claim locking was fixed and rechecked against current actions
-  570–660; final review has zero findings. Normal-import IFF rejection and the
-  SQL double-batch bound were also verified. Local normal/race/vet/build/module/
-  gofmt/diff and PostgreSQL compile checks passed; code and three PG workflows
-  are ready. First CI `40029673909` passed fast and old SQL cases but new workflows
-  hit a missing fake GET `/ninja/api/v1/ping` version-preflight route. A test-only
-  fixture fix is underway; new CI is pending and runtime is unverified. Protected
-  imported configuration/menu/current proof, apply CLI, and default-off startup
-  wiring remain future work. Stage 11 remains incomplete. No live API access or
-  deployment was done.
+  and post-merge CI `40025798271`. 11b.6.2 merged at
+  `57a6e09d1bd06b806e79145aba065c870b023934`; exact final code HEAD
+  `cd0ff229ed6ecb6ee0f81d5ceeee1c7cc7769502` passed required CI `40031643624`
+  (all three jobs, including PG17/race/smoke/Docker), and post-merge CI
+  `40032288658` completed successfully on the exact base. Runtime passed
+  `TestImportedInitialRestorationPaymentProofTargetsCurrentDebt` and all three
+  `TestImportedInitialPausedDebtRestorationWorker` cases: expired/empty original
+  schedules and resume mutation followed by 503/revision-2/restart without replay.
+  The expired case also completed new normal-cycle GET adoption, paid proof and
+  ledger renewal seed/load while preserving immutable origin lifecycle/audit.
+  No fake ledger/first invoice, OWN activation or overdue prefix was created.
+  Review P1 on initial-mode claim locking was fixed and rechecked; final findings
+  zero. Parent-mode IFF/batch-bound checks were verified. CI `40029673909` and
+  `40030663139` exposed test-only fixture issues; fixes preserved production
+  checks. No live API, Telegram, payment, working DB, publish or deploy occurred.
+  11b.7.1 code/tests are ready in 15 files; PR #33 is open and exact-HEAD required CI is pending. It covers only
+  the ORIGINAL ACTIVE imported baseline: current invoice equals immutable origin
+  current invoice and paid anchor; current normal proof, strictly future UTC date,
+  static binding/inbounds, legacy price/notes, source-scope/public-base GET
+  fences; legitimate origin FK/mode, current configuration/admission/runtime
+  revisions, SQL NULL first invoice/no fake OWN history. OWN first/renewal paths
+  stay unchanged. GET-only consumers do not require billing-effects permission;
+  configuration policy separately must explicitly allow secret Telegram delivery.
+  No auto-enable; preserve the per-chat unknown-send barrier. Partial/new-current,
+  paused/restored-initial and imported-renewal delivery are denied pending 11b.7.2.
+  Independent review `34c46fce-9abc-42a` completed across production, both
+  domain/unit tests and the PG workflow: two P2 findings (currency-policy drift,
+  test-worker bot scope) were fixed and reviewer-confirmed; final P1/P2/P3 count
+  is zero. Full local unit/race/vet/CGO0 build/module/gofmt/diff passed; PG
+  integration compile-only passed. Three DB workflows are implemented, not run:
+  actual GET/verify/admit/observe/menu/outbox/protected-service/TG success and
+  guard release, pre-GET policy/source-scope/public-base/currency denial, GET-verified changed-payment sticky review (2007), runtime permission ABA, and unknown
+  send 503 with durable chat barrier after revocation/new request/restart. SQL
+  runtime and exact-HEAD PR CI remain pending; no consumer-readiness claim. Apply
+  CLI/default-off startup wiring and 11b.7.2 remain future work; Stage 11 is incomplete.
 
   Непереговорные TODO: actor/pilot ограничения сохраняются; будущий managed
   consumer обязан подавлять устаревшие операции/уведомления. Неоплаченные долги
@@ -168,7 +189,12 @@ and post-merge CI `40015300957`, including the full PostgreSQL runtime workflow.
 11b.5 overdue-only code and tests merged in PR #30 as
 `19d45cf7f85c784b74cdc0cb2b71f5d15cddb758`; exact code HEAD
 `b8efc247fe09b78e078b0c115c52317d47311939` passed required CI `40019995948`
-and post-merge CI `40020785993`, all green. The 11b.6.1 merge and CI evidence is recorded above. Remaining 11b work includes protected imported configuration/menu/current proof, apply CLI, and default-off startup wiring. Stage 11 is incomplete. No live verification/admission or deployment was done.
+and post-merge CI `40020785993`, all green. 11b.6.1/11b.6.2 merge, runtime
+and CI evidence is recorded above. 11b.7.1 code/tests are ready, independently reviewed with final findings zero,
+and PR #33 is open; exact-HEAD required CI is pending. Local checks passed and the PG workflow compiles; SQL
+runtime/exact-HEAD CI remain pending. Remaining 11b includes 11b.7.2, apply CLI
+and default-off startup wiring. Stage 11 is incomplete.
+No live verification/admission or deployment was done.
 
 ## Проверенные срезы
 

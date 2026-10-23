@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
+	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
@@ -37,21 +39,31 @@ type Policy struct {
 	Hash     [32]byte
 }
 
+type OriginKind string
+
+const (
+	OwnedOrigin    OriginKind = "owned"
+	ImportedOrigin OriginKind = "imported"
+)
+
 type PeriodKind string
 
 const (
-	FirstPeriod   PeriodKind = "first"
-	RenewalPeriod PeriodKind = "renewal"
+	FirstPeriod            PeriodKind = "first"
+	RenewalPeriod          PeriodKind = "renewal"
+	ImportedBaselinePeriod PeriodKind = "imported_baseline"
 )
 
 type Request struct {
-	OutboxID, BotID, ClientID, ActorID, ChatID, ActivationID int64
-	RenewalID                                                int64
-	Period                                                   PeriodKind
-	ClientRevision, PolicyRevision                           int64
-	PolicyHash, ProofHash, EntitlementHash                   [32]byte
-	InvoiceID                                                string
-	CreatedAt, ExpiresAt                                     time.Time
+	OutboxID, BotID, ClientID, ActorID, ChatID, ActivationID                             int64
+	RenewalID                                                                            int64
+	Period                                                                               PeriodKind
+	Origin                                                                               OriginKind
+	ImportedOriginClientID, ImportedAdmissionPermissionRevision, ImportedRuntimeRevision int64
+	ClientRevision, PolicyRevision                                                       int64
+	PolicyHash, ProofHash, EntitlementHash                                               [32]byte
+	InvoiceID                                                                            string
+	CreatedAt, ExpiresAt                                                                 time.Time
 }
 
 type RenewalAudit struct {
@@ -68,7 +80,22 @@ type RenewalAudit struct {
 func (Request) String() string   { return "[protected configuration request]" }
 func (Request) GoString() string { return "[protected configuration request]" }
 
+type ImportedBaseline struct {
+	Origin                                    importorigin.Ref
+	AdmissionPermissionRevision               int64
+	InvoiceID, PaidAnchorInvoiceID, Lifecycle string
+	ProofHash                                 [32]byte
+	PublicBaseHash                            [32]byte
+	Profile                                   invoiceninja.ImportedRecurringProfile
+	InboundIDs                                []int64
+	NextSendUTC                               time.Time
+}
+
+func (ImportedBaseline) String() string   { return "[private imported configuration baseline]" }
+func (ImportedBaseline) GoString() string { return "[private imported configuration baseline]" }
+
 type Entitlement struct {
+	Imported     *ImportedBaseline
 	Activation   activation.Snapshot // immutable first-activation audit
 	ActivationID int64
 	Revision     int64

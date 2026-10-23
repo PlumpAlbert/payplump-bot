@@ -3,6 +3,7 @@ package configdelivery
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
@@ -20,13 +21,21 @@ func (d Decision) Validate() error {
 	return ErrDenied
 }
 func (r Request) Validate() error {
-	periodValid := (r.Period == FirstPeriod && r.RenewalID == 0) || (r.Period == RenewalPeriod && r.RenewalID > 0)
-	if r.OutboxID <= 0 || r.BotID <= 0 || r.ClientID <= 0 || r.ActorID <= 0 || r.ChatID != r.ActorID || r.ActivationID <= 0 || !periodValid || r.ClientRevision < 0 || r.PolicyRevision < 1 || r.PolicyHash == ([32]byte{}) || r.ProofHash == ([32]byte{}) || r.EntitlementHash == ([32]byte{}) || !activation.ValidID(r.InvoiceID) || r.CreatedAt.IsZero() || !r.ExpiresAt.After(r.CreatedAt) || r.ExpiresAt.Sub(r.CreatedAt) > RequestTTL {
+	origin := r.Origin
+	if origin == "" {
+		origin = OwnedOrigin
+	} // legacy fixtures and callers remain owned.
+	periodValid := (origin == OwnedOrigin && ((r.Period == FirstPeriod && r.RenewalID == 0) || (r.Period == RenewalPeriod && r.RenewalID > 0)) && r.ActivationID > 0 && r.ImportedOriginClientID == 0 && r.ImportedAdmissionPermissionRevision == 0 && r.ImportedRuntimeRevision == 0) ||
+		(origin == ImportedOrigin && r.Period == ImportedBaselinePeriod && r.RenewalID == 0 && r.ActivationID == 0 && r.ImportedOriginClientID == r.ClientID && r.ImportedAdmissionPermissionRevision > 0 && r.ImportedRuntimeRevision > 0)
+	if r.OutboxID <= 0 || r.BotID <= 0 || r.ClientID <= 0 || r.ActorID <= 0 || r.ChatID != r.ActorID || !periodValid || r.ClientRevision < 0 || r.PolicyRevision < 1 || r.PolicyHash == ([32]byte{}) || r.ProofHash == ([32]byte{}) || r.EntitlementHash == ([32]byte{}) || !activation.ValidID(r.InvoiceID) || r.CreatedAt.IsZero() || !r.ExpiresAt.After(r.CreatedAt) || r.ExpiresAt.Sub(r.CreatedAt) > RequestTTL {
 		return ErrDenied
 	}
 	return nil
 }
 func (e Entitlement) Validate() error {
+	if e.Imported != nil {
+		return e.validateImportedBaseline()
+	}
 	if e.ActivationID <= 0 || e.Revision < 0 || activation.ValidateCompletedSnapshot(e.Activation, e.Binding) != nil {
 		return ErrDenied
 	}
@@ -60,6 +69,34 @@ func (e Entitlement) Validate() error {
 	return nil
 }
 
+func (e Entitlement) validateImportedBaseline() error {
+	b, c, p := e.Imported, e.Current, e.CurrentProof
+	if b == nil || e.Period != ImportedBaselinePeriod || e.ActivationID != 0 || !emptyActivationSnapshot(e.Activation) || e.Renewal != (RenewalAudit{}) || e.Revision <= 0 || !b.Origin.Valid() || b.Origin.ConfigurationRevision != e.Revision || b.Origin.RuntimeRevision <= 0 || b.Origin.ClientID != c.ClientID || b.Origin.BotID != c.BotID || b.AdmissionPermissionRevision <= 0 || b.Origin.AdmissionRevision <= 0 || b.InvoiceID == "" || b.PaidAnchorInvoiceID != b.InvoiceID || b.Lifecycle != "active" || b.ProofHash == ([32]byte{}) || b.PublicBaseHash == ([32]byte{}) || b.Profile.Hash() == "" || len(b.InboundIDs) == 0 || !validPositiveIDs(b.InboundIDs) || b.NextSendUTC.IsZero() ||
+		c.ClientID <= 0 || c.TelegramID <= 0 || c.ChatID != c.TelegramID || c.BotID <= 0 || c.CustomerID == "" || c.InvoiceID != b.InvoiceID || c.FirstInvoiceID != "" || c.State != "active" || !c.DesiredAccess || c.SUIID == "" || c.RecurringID == "" || c.ImportedOrigin != b.Origin || c.ImportedBaselineProofHash != b.ProofHash ||
+		p.Validate() != nil || p.Hash != b.ProofHash || p.InvoiceID != b.InvoiceID || p.CustomerID != c.CustomerID || p.PaymentDate != c.PaymentDate || p.NextInvoiceDate != c.NextInvoiceDate {
+		return ErrDenied
+	}
+	if e.Binding.ID <= 0 || e.Binding.Name != strconv.FormatInt(c.TelegramID, 10) || e.Binding.CredentialsHash == ([32]byte{}) || c.SUIID != strconv.FormatInt(e.Binding.ID, 10) {
+		return ErrDenied
+	}
+	return nil
+}
+
+func emptyActivationSnapshot(s activation.Snapshot) bool {
+	return s.Account == (payments.Snapshot{}) && s.Token == "" && s.PolicyHash == ([32]byte{}) && emptyProof(s.Proof) && !s.PaymentReview && s.WriteEpoch == 0 && !s.WriterBusy && s.ReviewCode == 0 && len(s.Steps) == 0
+}
+
+func validPositiveIDs(ids []int64) bool {
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if id <= 0 || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
+}
+
 func emptyProof(p payments.Proof) bool {
 	e := p.Evidence
 	return e.InvoiceID == "" && e.CustomerID == "" && e.Amount == "" && e.CurrencyID == "" && e.PaymentDate == "" && e.NextInvoiceDate == "" && len(e.Allocations) == 0 && p.InvoiceNumber == "" && p.Hash == ([32]byte{}) && len(p.JSON) == 0
@@ -75,6 +112,9 @@ func instantTimeEqual(canonical string, instant time.Time) bool {
 func (e Entitlement) Fingerprint() ([32]byte, error) {
 	if e.Validate() != nil {
 		return [32]byte{}, ErrDenied
+	}
+	if e.Imported != nil {
+		return e.importedFingerprint()
 	}
 	s := e.Activation
 	s.WriteEpoch, s.WriterBusy = 0, false // unrelated clients' dispatches are irrelevant.
@@ -95,9 +135,59 @@ func (e Entitlement) Fingerprint() ([32]byte, error) {
 	}
 	return sha256.Sum256(raw), nil
 }
+func (e Entitlement) importedFingerprint() ([32]byte, error) {
+	b := e.Imported
+	raw, err := json.Marshal(struct {
+		ActivationID, Revision int64
+		Origin                 struct {
+			ClientID, BotID, AdmissionRevision, RuntimeRevision, ConfigurationRevision int64
+			StableHash, PolicyHash, SourceScopeHash                                    [32]byte
+		}
+		AdmissionPermissionRevision               int64
+		InvoiceID, PaidAnchorInvoiceID, Lifecycle string
+		ProofHash                                 [32]byte
+		PublicBaseHash                            [32]byte
+		ProfileHash                               string
+		InboundIDs                                []int64
+		NextSendUTC                               time.Time
+		BindingID                                 int64
+		BindingName                               string
+		BindingHash                               [32]byte
+		Period                                    PeriodKind
+		Current                                   payments.Snapshot
+		CurrentProof                              payments.Proof
+	}{
+		e.ActivationID, e.Revision,
+		struct {
+			ClientID, BotID, AdmissionRevision, RuntimeRevision, ConfigurationRevision int64
+			StableHash, PolicyHash, SourceScopeHash                                    [32]byte
+		}{b.Origin.ClientID, b.Origin.BotID, b.Origin.AdmissionRevision, b.Origin.RuntimeRevision, b.Origin.ConfigurationRevision, b.Origin.StableHash, b.Origin.PolicyHash, b.Origin.SourceScopeHash},
+		b.AdmissionPermissionRevision, b.InvoiceID, b.PaidAnchorInvoiceID, b.Lifecycle, b.ProofHash, b.PublicBaseHash, b.Profile.Hash(), b.InboundIDs, b.NextSendUTC,
+		e.Binding.ID, e.Binding.Name, e.Binding.CredentialsHash, e.Period, e.Current, e.CurrentProof,
+	})
+	if err != nil {
+		return [32]byte{}, ErrDenied
+	}
+	return sha256.Sum256(raw), nil
+}
+
 func (e Entitlement) Deadline() (time.Time, error) {
 	if e.Validate() != nil {
 		return time.Time{}, ErrDenied
+	}
+	if e.Imported != nil {
+		previous, err := time.Parse(time.DateOnly, e.Current.NextInvoiceDate)
+		if err != nil {
+			return time.Time{}, ErrDenied
+		}
+		deadline, err := billing.PaymentDeadline(previous.AddDate(0, 0, -1).Format(time.DateOnly))
+		if err != nil {
+			return time.Time{}, ErrDenied
+		}
+		if e.Imported.NextSendUTC.Before(deadline) {
+			deadline = e.Imported.NextSendUTC
+		}
+		return deadline, nil
 	}
 	proof := e.Activation.Proof
 	var instant time.Time
@@ -146,8 +236,16 @@ func (v View) Matches() bool {
 		return false
 	}
 	r, e := v.Request, v.Entitlement
-	a := e.Activation.Account
 	hash, err := e.Fingerprint()
+	if e.Imported != nil {
+		b, c := e.Imported, e.Current
+		origin := r.Origin
+		if origin == "" {
+			origin = OwnedOrigin
+		}
+		return err == nil && origin == ImportedOrigin && r.ClientID == c.ClientID && r.BotID == c.BotID && r.ActorID == c.TelegramID && r.ChatID == c.ChatID && r.ActivationID == 0 && r.ClientRevision == e.Revision && r.Period == ImportedBaselinePeriod && r.RenewalID == 0 && r.ImportedOriginClientID == b.Origin.ClientID && r.ImportedAdmissionPermissionRevision == b.AdmissionPermissionRevision && r.ImportedRuntimeRevision == b.Origin.RuntimeRevision && r.ProofHash == b.ProofHash && r.InvoiceID == b.InvoiceID && r.EntitlementHash == hash
+	}
+	a := e.Activation.Account
 	period := e.Period
 	invoice, proof := a.InvoiceID, e.Activation.Proof
 	if period == RenewalPeriod {
