@@ -189,6 +189,18 @@ func lifecycleBase(r RecurringRecord, d RecurringDraft, status string) error {
 	}
 	return nil
 }
+
+// ValidateLifecycleRecurringForDraft verifies the existing managed recurring
+// record after one or more billing cycles. Unlike ValidateRecurringForDraft,
+// it allows the historical LastSentDate and requires the caller's current
+// target date to match the record. It remains a pure GET-snapshot validator.
+func ValidateLifecycleRecurringForDraft(record RecurringRecord, draft RecurringDraft, targetDate, today string) error {
+	if !billingDate(targetDate) || !billingDate(today) || targetDate <= today || record.NextSendDate != targetDate ||
+		lifecycleBase(record, draft, "2") != nil {
+		return ErrRecurringReceipt
+	}
+	return nil
+}
 func PreparePause(r RecurringRecord, d RecurringDraft) (PauseDraft, error) {
 	if e := lifecycleBase(r, d, "2"); e != nil {
 		return PauseDraft{}, e
