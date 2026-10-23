@@ -37,12 +37,13 @@ scope; не снимать и не обходить их и не расширя�
   GET-only discovery управляемых recurring-счетов, синтетические контракты.
 - [x] 8b: Stage 1/2 — ledger, notices, overdue workflow и подтверждения внешних
   шагов; runtime integration проверен полным CI PR #18 на disposable PG17.
-- [x] 9a: код durable renewal/reactivation и синтетические тестовые сценарии добавлены
-  в draft PR [#20](https://github.com/PlumpAlbert/payplump-bot/pull/20); ожидается
-  required CI на окончательном HEAD до merge. Локальный SQL integration runtime
-  не запускался и успешный SQL runtime результат не заявляется.
-- [ ] 9b: расширить protected config delivery на следующие оплаченные периоды;
-  текущая выдача ограничена первым циклом.
+- [x] 9a: durable renewal/reactivation PR #20 merged in base `94095a8`; its
+  final HEAD `952bce4063065c71462d936f71507ee151d557f3` passed required Actions
+  run `39961598201`, including PG17/race, normal/late/unknown renewal and smoke.
+- [ ] 9b: implementation and unit tests are in the current checkout; standard and
+  race suites, vet/build, and integration compile-only pass locally. PostgreSQL
+  runtime and a combined renewal-worker → real-adapter → protected-Telegram E2E
+  still require implementation/review and required CI. No local SQL runtime.
 - [x] 10: приватная административная рассылка с неизменяемым подтверждением,
   снимком получателей, долговечным прогрессом и ограниченной доставкой.
 - [ ] 11: далее — проверенная capability admission и managed import. Инертный
@@ -89,10 +90,9 @@ scope; не снимать и не обходить их и не расширя�
 Stage 8a/8b реализованы. Финансовая проверка уже принимает non-first текущий
 invoice только с точным recurring ID; подтверждения хранятся per invoice, а
 `FinishPaymentCheck` сохраняет доказательство и наблюдаемые даты без выдачи доступа.
-Stage 9a реализован в коде draft PR [#20](https://github.com/PlumpAlbert/payplump-bot/pull/20)
-и ждёт обязательный CI; stage 9b, выдача конфигурации следующего периода, остаётся
-в очереди. Локальный runtime SQL не запускался, результаты CI на изменённом HEAD
-не подтверждены. Использовать существующий payment-check pipeline, не создавать
+Stage 9a merged at base `94095a8`; its tested PR HEAD and green Actions run are
+recorded above. Stage 9b is being implemented in this checkout. Its changed-HEAD
+CI is pending; local PostgreSQL runtime is prohibited. Использовать существующий payment-check pipeline, не создавать
 новый verifier-worker. Автоматизация не получает разрешение на production API даже
 GET. Recurring может создавать draft, поэтому workflow проверяет фактическое
 состояние и не предполагает issued invoice. Не менять чужие company/client-wide

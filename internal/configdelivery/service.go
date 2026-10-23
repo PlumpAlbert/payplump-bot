@@ -223,11 +223,16 @@ func (s *Service) evaluate(ctx context.Context, m queue.Message, v View) Decisio
 	if result := s.readBound(ctx, e, suiDraft, recurringDraft); result.Kind != Secret {
 		return result
 	}
-	observed, err := payments.Observe(ctx, s.providers.Payments, e.Activation.Account, s.cfg.CurrencyID, s.now().In(time.Local).Format(time.DateOnly))
+	account := e.Activation.Account
+	expectedProof := e.Activation.Proof
+	if e.Period == RenewalPeriod {
+		account, expectedProof = e.Current, e.CurrentProof
+	}
+	observed, err := payments.Observe(ctx, s.providers.Payments, account, s.cfg.CurrencyID, s.now().In(time.Local).Format(time.DateOnly))
 	if err != nil || observed.Validate() != nil {
 		return deny(DeniedUnavailable)
 	}
-	if observed.Kind != payments.Verified || observed.Proof.Hash != e.Activation.Proof.Hash {
+	if observed.Kind != payments.Verified || observed.Proof.Hash != expectedProof.Hash {
 		return Decision{Kind: Denial, Reason: DeniedPayment, PaymentChanged: true}
 	}
 	// Financial verification cannot bless records which changed while it ran.
@@ -242,7 +247,12 @@ func (s *Service) evaluate(ctx context.Context, m queue.Message, v View) Decisio
 
 func deliveryFuture(e Entitlement, r Request, deadline, now time.Time) bool {
 	today := now.In(time.Local).Format(time.DateOnly)
-	return !now.Before(r.CreatedAt) && now.Before(r.ExpiresAt) && now.Before(deadline) && e.Activation.Proof.NextInvoiceDate > today && e.Activation.Account.NextInvoiceDate > today
+	proof, nextDate := e.Activation.Proof, e.Activation.Account.NextInvoiceDate
+	if e.Period == RenewalPeriod {
+		proof, nextDate = e.CurrentProof, e.Current.NextInvoiceDate
+	}
+	return !now.Before(r.CreatedAt) && now.Before(r.ExpiresAt) && now.Before(deadline) && proof.NextInvoiceDate > today && nextDate > today &&
+		(e.Period != RenewalPeriod || e.Renewal.NextSendUTC.After(now))
 }
 
 func (s *Service) readBound(ctx context.Context, e Entitlement, draft sui.CreateDraft, recurringDraft invoiceninja.RecurringDraft) Decision {
@@ -253,18 +263,37 @@ func (s *Service) readBound(ctx context.Context, e Entitlement, draft sui.Create
 	if record.ID() != e.Binding.ID || record.Name() != e.Binding.Name || record.CredentialsHash() != e.Binding.CredentialsHash || !slices.Equal(record.InboundIDs(), draft.InboundIDs()) || sui.ValidateRecordForDraft(record, draft, true) != nil {
 		return deny(DeniedSUI)
 	}
-	recurring, err := s.providers.Recurring.Get(ctx, e.Activation.Account.RecurringID)
+	recurringID := e.Activation.Account.RecurringID
+	if e.Period == RenewalPeriod {
+		recurringID = e.Current.RecurringID
+	}
+	recurring, err := s.providers.Recurring.Get(ctx, recurringID)
 	if err != nil {
 		return deny(DeniedUnavailable)
 	}
-	if recurring.ID != e.Activation.Account.RecurringID || recurring.StatusID != "2" || recurring.IsDeleted || recurring.ArchivedAt != 0 || invoiceninja.ValidateRecurringForDraft(recurring, recurringDraft) != nil {
+	if recurring.ID != recurringID || recurring.StatusID != "2" || recurring.IsDeleted || recurring.ArchivedAt != 0 {
 		return deny(DeniedRecurring)
 	}
-	original := e.Activation.Steps[activation.RecurringCreate]
-	amount, instant, err := activation.NormalizeRecurringFacts(recurring.Amount, recurring.NextSendDatetime)
-	originalAmount, originalInstant, originalErr := activation.NormalizeRecurringFacts(json.Number(original.RecurringAmount), original.RecurringDatetime)
-	if err != nil || originalErr != nil || amount != originalAmount || instant != originalInstant {
-		return deny(DeniedRecurring)
+	if e.Period == RenewalPeriod {
+		today := s.now().In(time.Local).Format(time.DateOnly)
+		if invoiceninja.ValidateLifecycleRecurringForDraft(recurring, recurringDraft, e.CurrentProof.NextInvoiceDate, today) != nil {
+			return deny(DeniedRecurring)
+		}
+		amount, instant, normalizeErr := activation.NormalizeRecurringFacts(recurring.Amount, recurring.NextSendDatetime)
+		finalAmount, finalUTC, finalErr := activation.NormalizeRecurringFacts(json.Number(e.Renewal.Amount), e.Renewal.NextSendUTC.Format(time.RFC3339Nano))
+		if normalizeErr != nil || finalErr != nil || amount != finalAmount || instant != finalUTC {
+			return deny(DeniedRecurring)
+		}
+	} else {
+		if invoiceninja.ValidateRecurringForDraft(recurring, recurringDraft) != nil {
+			return deny(DeniedRecurring)
+		}
+		original := e.Activation.Steps[activation.RecurringCreate]
+		amount, instant, normalizeErr := activation.NormalizeRecurringFacts(recurring.Amount, recurring.NextSendDatetime)
+		originalAmount, originalInstant, originalErr := activation.NormalizeRecurringFacts(json.Number(original.RecurringAmount), original.RecurringDatetime)
+		if normalizeErr != nil || originalErr != nil || amount != originalAmount || instant != originalInstant {
+			return deny(DeniedRecurring)
+		}
 	}
 	return Decision{Kind: Secret}
 }

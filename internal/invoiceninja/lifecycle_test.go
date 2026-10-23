@@ -28,6 +28,25 @@ func lifecycleFixture(t *testing.T, status string) (RecurringDraft, RecurringRec
 	}
 	return d, r
 }
+func TestValidateLifecycleRecurringForDraftAllowsHistoricalLastSent(t *testing.T) {
+	d, record := lifecycleFixture(t, "2")
+	d.NextSendDate = record.NextSendDate
+	if err := ValidateLifecycleRecurringForDraft(record, d, "2040-02-29", "2040-02-28"); err != nil {
+		t.Fatalf("valid completed-period recurring rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		target, today string
+	}{
+		{"2040-03-01", "2040-02-28"},
+		{"2040-02-29", "2040-02-29"},
+		{"2040-02-29", "2040-03-01"},
+	} {
+		if err := ValidateLifecycleRecurringForDraft(record, d, tc.target, tc.today); err == nil {
+			t.Fatalf("accepted mismatching/nonfuture lifecycle date target=%s today=%s", tc.target, tc.today)
+		}
+	}
+}
+
 func TestPauseAuthorizedLifecycle(t *testing.T) {
 	d, b := lifecycleFixture(t, "2")
 	draft, e := PreparePause(b, d)

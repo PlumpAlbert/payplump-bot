@@ -3,15 +3,20 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
 	"github.com/PlumpAlbert/payplump-bot/internal/clientmenu"
 	"github.com/PlumpAlbert/payplump-bot/internal/configdelivery"
+	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
+	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
+	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -283,7 +288,7 @@ func readConfigurationEntitlement(ctx context.Context, tx pgx.Tx, botID, actor i
 	var e configdelivery.Entitlement
 	a, s := &e.Activation.Account, &e.Activation
 	var policy, hash, bindingHash []byte
-	var invoice string
+	var invoice, currentInvoice, currentPaymentDate, currentNextDate string
 	var checkBot, bindingBot, bindingOperation int64
 	var checkReview int
 	var provenance bool
@@ -299,8 +304,8 @@ func readConfigurationEntitlement(ctx context.Context, tx pgx.Tx, botID, actor i
         JOIN activation_sui_bindings b ON b.client_id=c.id
         WHERE c.telegram_id=$2 AND NOT EXISTS(SELECT 1 FROM registration_flows rf
             JOIN operations ro ON ro.id=rf.operation_id WHERE ro.client_id=c.id AND rf.review_code<>0)`, botID, actor).Scan(
-		&a.ClientID, &a.TelegramID, &a.ChatID, &a.BotID, &a.CustomerID, &a.InvoiceID, &a.FirstInvoiceID, &a.RecurringID, &a.SUIID,
-		&a.State, &a.DesiredAccess, &a.PaymentDate, &a.NextInvoiceDate, &e.ActivationID, &e.Revision, &s.Token, &policy, &hash, &invoice, &s.ReviewCode,
+		&a.ClientID, &a.TelegramID, &a.ChatID, &a.BotID, &a.CustomerID, &currentInvoice, &a.FirstInvoiceID, &a.RecurringID, &a.SUIID,
+		&a.State, &a.DesiredAccess, &currentPaymentDate, &currentNextDate, &e.ActivationID, &e.Revision, &s.Token, &policy, &hash, &invoice, &s.ReviewCode,
 		&checkBot, &checkReview, &provenance, &e.Binding.ID, &e.Binding.Name, &bindingHash, &bindingBot, &bindingOperation)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return e, configdelivery.ErrDenied
@@ -309,11 +314,12 @@ func readConfigurationEntitlement(ctx context.Context, tx pgx.Tx, botID, actor i
 		return e, err
 	}
 	if !provenance || checkBot != botID || bindingBot != botID || bindingOperation != e.ActivationID || len(policy) != 32 || len(hash) != 32 || len(bindingHash) != 32 ||
-		invoice != a.FirstInvoiceID || invoice != a.InvoiceID || a.TelegramID != actor || a.ChatID != actor {
+		invoice != a.FirstInvoiceID || currentInvoice == "" || a.TelegramID != actor || a.ChatID != actor {
 		return e, configdelivery.ErrDenied
 	}
 	copy(s.PolicyHash[:], policy)
 	copy(e.Binding.CredentialsHash[:], bindingHash)
+	a.InvoiceID = a.FirstInvoiceID
 	confirmation, err := readActivationConfirmation(ctx, tx, invoice)
 	if errors.Is(err, queue.ErrConflict) {
 		return e, configdelivery.ErrDenied
@@ -321,7 +327,8 @@ func readConfigurationEntitlement(ctx context.Context, tx pgx.Tx, botID, actor i
 	if err != nil {
 		return e, err
 	}
-	if confirmation.clientID != a.ClientID || confirmation.botID != botID || confirmation.customerID != a.CustomerID || confirmation.paid != a.PaymentDate || confirmation.next != a.NextInvoiceDate {
+	a.PaymentDate, a.NextInvoiceDate = confirmation.paid, confirmation.next
+	if confirmation.clientID != a.ClientID || confirmation.botID != botID || confirmation.customerID != a.CustomerID {
 		return e, configdelivery.ErrDenied
 	}
 	s.Proof, err = confirmation.proof()
@@ -367,10 +374,182 @@ func readConfigurationEntitlement(ctx context.Context, tx pgx.Tx, botID, actor i
 	if err := rows.Err(); err != nil {
 		return e, err
 	}
+	e.Period = configdelivery.FirstPeriod
 	if corrupt || len(s.Steps) != 4 || e.Validate() != nil {
 		return e, configdelivery.ErrDenied
 	}
+	if currentInvoice != a.FirstInvoiceID {
+		e.Period = configdelivery.RenewalPeriod
+		e.Current = payments.Snapshot{ClientID: a.ClientID, TelegramID: actor, ChatID: actor, BotID: botID, CustomerID: a.CustomerID,
+			InvoiceID: currentInvoice, FirstInvoiceID: a.FirstInvoiceID, RecurringID: a.RecurringID, SUIID: a.SUIID,
+			State: a.State, DesiredAccess: a.DesiredAccess, PaymentDate: currentPaymentDate, NextInvoiceDate: currentNextDate}
+		current, currentErr := readActivationConfirmation(ctx, tx, currentInvoice)
+		if currentErr != nil {
+			return e, configdelivery.ErrDenied
+		}
+		proof, proofErr := current.proof()
+		if proofErr != nil || current.clientID != a.ClientID || current.botID != botID || current.customerID != a.CustomerID || current.invoiceID != currentInvoice || current.review || current.reviewCode != 0 || checkReview != 0 ||
+			current.paid != currentPaymentDate || current.next != currentNextDate {
+			return e, configdelivery.ErrDenied
+		}
+		e.CurrentProof = proof
+		e.Renewal, err = readConfigurationRenewalAudit(ctx, tx, a.ClientID, botID, currentInvoice, a.RecurringID, a.SUIID, proof)
+		if err != nil {
+			return e, configdelivery.ErrDenied
+		}
+	}
 	return e, nil
+}
+
+func validRenewalDate(value string) bool {
+	date, err := time.Parse(time.DateOnly, value)
+	return err == nil && date.Format(time.DateOnly) == value
+}
+
+func readConfigurationRenewalAudit(ctx context.Context, tx pgx.Tx, clientID, botID int64, invoiceID, recurringID, suiID string, proof payments.Proof) (configdelivery.RenewalAudit, error) {
+	var audit configdelivery.RenewalAudit
+	var target, amount string
+	var next time.Time
+	var baseline []byte
+	var flags [4]bool
+	err := tx.QueryRow(ctx, `SELECT a.operation_id,a.target_date::text,a.requires_pause,a.requires_schedule,a.requires_enable,a.requires_resume,
+        a.baseline::text,a.recurring_amount::text,a.recurring_next_send_datetime
+        FROM invoice_renewal_actions a JOIN operations o ON o.id=a.operation_id
+        WHERE a.client_id=$1 AND a.bot_id=$2 AND a.invoice_id=$3 AND a.outcome='completed' AND a.review_code=0
+          AND o.kind='invoice_paid_renewal' AND o.status='completed'
+          AND EXISTS (SELECT 1 FROM invoice_lifecycle_invoices li WHERE li.client_id=a.client_id AND li.bot_id=a.bot_id
+            AND li.invoice_id=a.invoice_id AND li.customer_id=$4 AND li.recurring_id=$5 AND li.invoice_number=$6 AND li.status='paid'
+            AND li.notice_state='settled' AND li.amount=$7::numeric)
+          AND NOT EXISTS (SELECT 1 FROM invoice_lifecycle_checks lc WHERE lc.client_id=a.client_id AND lc.bot_id=a.bot_id AND lc.review_code<>0)`, clientID, botID, invoiceID, proof.CustomerID, recurringID, proof.InvoiceNumber, proof.Amount).
+		Scan(&audit.OperationID, &target, &flags[0], &flags[1], &flags[2], &flags[3], &baseline, &amount, &next)
+	if err != nil || audit.OperationID <= 0 || target != proof.NextInvoiceDate || len(baseline) == 0 {
+		return audit, configdelivery.ErrDenied
+	}
+	audit.TargetDate, audit.RequiresPause, audit.RequiresSchedule, audit.RequiresEnable, audit.RequiresResume = target, flags[0], flags[1], flags[2], flags[3]
+	parsed := next.UTC()
+	if parsed.IsZero() {
+		return audit, configdelivery.ErrDenied
+	}
+	audit.Amount, _, err = activation.NormalizeRecurringFacts(json.Number(amount), parsed.Format(time.RFC3339Nano))
+	if err != nil {
+		return audit, configdelivery.ErrDenied
+	}
+	audit.NextSendUTC = parsed
+	audit.PlanHash = sha256.Sum256(baseline)
+	var baselineFields map[string]json.RawMessage
+	if json.Unmarshal(baseline, &baselineFields) != nil || len(baselineFields) != 7 {
+		return audit, configdelivery.ErrDenied
+	}
+	for _, name := range []string{"recurring_id", "status_id", "next_send_date", "amount", "next_send_datetime", "sui_id", "sui_enabled"} {
+		if baselineFields[name] == nil {
+			return audit, configdelivery.ErrDenied
+		}
+	}
+	var frozen struct {
+		RecurringID      string      `json:"recurring_id"`
+		StatusID         string      `json:"status_id"`
+		NextSendDate     string      `json:"next_send_date"`
+		Amount           json.Number `json:"amount"`
+		NextSendDatetime string      `json:"next_send_datetime"`
+		SUIID            int64       `json:"sui_id"`
+		SUIEnabled       bool        `json:"sui_enabled"`
+	}
+	if json.Unmarshal(baseline, &frozen) != nil || frozen.RecurringID != recurringID || strconv.FormatInt(frozen.SUIID, 10) != suiID ||
+		(frozen.StatusID != "2" && frozen.StatusID != "3") || !validRenewalDate(frozen.NextSendDate) || frozen.SUIEnabled == flags[2] ||
+		flags[1] != (frozen.NextSendDate != target) || flags[0] != (flags[1] && frozen.StatusID == "2") || flags[3] != (flags[1] || frozen.StatusID == "3" || flags[2]) {
+		return audit, configdelivery.ErrDenied
+	}
+	baselineAmount, baselineUTC, err := activation.NormalizeRecurringFacts(frozen.Amount, frozen.NextSendDatetime)
+	if err != nil {
+		return audit, configdelivery.ErrDenied
+	}
+	finalAmount, finalUTC, err := activation.NormalizeRecurringFacts(json.Number(audit.Amount), audit.NextSendUTC.Format(time.RFC3339Nano))
+	if err != nil || finalAmount != audit.Amount {
+		return audit, configdelivery.ErrDenied
+	}
+	planned := []struct {
+		name     string
+		required bool
+	}{{"pause_recurring", flags[0]}, {"schedule_recurring", flags[1]}, {"enable_sui", flags[2]}, {"resume_recurring", flags[3]}}
+	rows, err := tx.Query(ctx, `SELECT step,request::text,COALESCE(external_id,''),COALESCE(receipt::text,''),confirmed_at IS NOT NULL FROM invoice_renewal_steps WHERE operation_id=$1 ORDER BY step`, audit.OperationID)
+	if err != nil {
+		return audit, err
+	}
+	defer rows.Close()
+	seen := [4]bool{}
+	for rows.Next() {
+		var step, request, externalID, receipt string
+		var confirmed bool
+		if err := rows.Scan(&step, &request, &externalID, &receipt, &confirmed); err != nil {
+			return audit, err
+		}
+		index := -1
+		for i := range planned {
+			if planned[i].name == step {
+				index = i
+				break
+			}
+		}
+		if index < 0 || seen[index] || !planned[index].required || !confirmed || externalID == "" {
+			return audit, configdelivery.ErrDenied
+		}
+		if (index == 0 || index == 1 || index == 3) && externalID != recurringID || index == 2 && externalID != suiID {
+			return audit, configdelivery.ErrDenied
+		}
+		switch index {
+		case 0:
+			var intent invoiceninja.PauseDraft
+			if json.Unmarshal([]byte(request), &intent) != nil || receipt != "" {
+				return audit, configdelivery.ErrDenied
+			}
+		case 1:
+			var intent invoiceninja.ScheduleDraft
+			var requestFields map[string]json.RawMessage
+			if json.Unmarshal([]byte(request), &intent) != nil || json.Unmarshal([]byte(request), &requestFields) != nil || len(requestFields) != 3 || requestFields["before"] == nil || requestFields["template"] == nil || requestFields["desired_date"] == nil {
+				return audit, configdelivery.ErrDenied
+			}
+			var desired string
+			if json.Unmarshal(requestFields["desired_date"], &desired) != nil || desired != target {
+				return audit, configdelivery.ErrDenied
+			}
+			var receiptFacts invoiceninja.RecurringReceipt
+			if json.Unmarshal([]byte(receipt), &receiptFacts) != nil {
+				return audit, configdelivery.ErrDenied
+			}
+			receiptAmount, receiptUTC, receiptErr := activation.NormalizeRecurringFacts(receiptFacts.Amount, receiptFacts.NextSendDatetime)
+			if receiptErr != nil || receiptAmount != finalAmount || receiptUTC != finalUTC {
+				return audit, configdelivery.ErrDenied
+			}
+		case 2:
+			var intent sui.EnableDraft
+			if json.Unmarshal([]byte(request), &intent) != nil || receipt != "" {
+				return audit, configdelivery.ErrDenied
+			}
+		case 3:
+			var intent invoiceninja.ResumeDraft
+			if json.Unmarshal([]byte(request), &intent) != nil || receipt != "" {
+				return audit, configdelivery.ErrDenied
+			}
+		}
+		seen[index] = true
+		audit.StepIDs[index] = externalID
+		audit.StepHashes[index] = sha256.Sum256([]byte(request + "\x00" + externalID + "\x00" + receipt))
+	}
+	if err := rows.Err(); err != nil {
+		return audit, err
+	}
+	for i, item := range planned {
+		if item.required != seen[i] {
+			return audit, configdelivery.ErrDenied
+		}
+	}
+	if !flags[1] && (baselineAmount != finalAmount || baselineUTC != finalUTC) {
+		return audit, configdelivery.ErrDenied
+	}
+	if activation.ValidID(invoiceID) == false || audit.NextSendUTC.IsZero() || audit.Amount == "" {
+		return audit, configdelivery.ErrDenied
+	}
+	return audit, nil
 }
 
 // Called only after Telegram's private actor and the comparable menu snapshot
@@ -417,15 +596,19 @@ func enqueueConfigurationIntent(ctx context.Context, tx pgx.Tx, prepared clientm
 	if err != nil {
 		return denied()
 	}
+	period, invoiceID, proofHash, renewalID := e.Period, e.Activation.Account.InvoiceID, e.Activation.Proof.Hash, int64(0)
+	if period == configdelivery.RenewalPeriod {
+		invoiceID, proofHash, renewalID = e.Current.InvoiceID, e.CurrentProof.Hash, e.Renewal.OperationID
+	}
 	id, err := insertOutbox(ctx, tx, queue.Draft{BotID: r.BotID, ChatID: r.ChatID, Key: r.Key(), Text: queue.ConfigurationIntentBody, ProtectedConfiguration: true})
 	if err != nil {
 		return err
 	}
 	// One database clock value supplies both timestamps; the request is immutable.
 	_, err = tx.Exec(ctx, `INSERT INTO configuration_requests (outbox_id,bot_id,client_id,actor_id,chat_id,activation_operation_id,
-        invoice_id,proof_hash,client_revision,policy_revision,policy_hash,entitlement_hash,created_at,expires_at)
-        SELECT $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$11,t,t+interval '5 minutes' FROM (SELECT clock_timestamp() AS t) stamp`,
-		id, r.BotID, e.Activation.Account.ClientID, r.TelegramID, e.ActivationID, e.Activation.Account.InvoiceID, e.Activation.Proof.Hash[:], e.Revision, p.Revision, p.Hash[:], fingerprint[:])
+        invoice_id,proof_hash,client_revision,policy_revision,policy_hash,entitlement_hash,created_at,expires_at,period_kind,renewal_operation_id)
+        SELECT $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$11,t,t+interval '5 minutes',$12,NULLIF($13,0) FROM (SELECT clock_timestamp() AS t) stamp`,
+		id, r.BotID, e.Activation.Account.ClientID, r.TelegramID, e.ActivationID, invoiceID, proofHash[:], e.Revision, p.Revision, p.Hash[:], fingerprint[:], string(period), renewalID)
 	return err
 }
 
@@ -436,12 +619,12 @@ func readConfigurationRequest(ctx context.Context, tx pgx.Tx, m queue.Message) (
 	var r configdelivery.Request
 	var policy, proof, hash []byte
 	err := tx.QueryRow(ctx, `SELECT r.outbox_id,r.bot_id,r.client_id,r.actor_id,r.chat_id,r.activation_operation_id,
-        r.invoice_id,r.proof_hash,r.client_revision,r.policy_revision,r.policy_hash,r.entitlement_hash,r.created_at,r.expires_at
+        r.invoice_id,r.proof_hash,r.client_revision,r.policy_revision,r.policy_hash,r.entitlement_hash,r.created_at,r.expires_at,r.period_kind,COALESCE(r.renewal_operation_id,0)
         FROM configuration_requests r JOIN outbox o ON o.id=r.outbox_id
         WHERE o.id=$1 AND o.attempts=$2 AND o.status='running' AND o.locked_until>clock_timestamp()
         AND o.bot_id=$3 AND o.chat_id=$4 AND o.protected_configuration AND NOT o.client_menu AND o.body=$5
         AND r.bot_id=o.bot_id AND r.chat_id=o.chat_id AND r.actor_id=r.chat_id`, m.ID, m.Attempt, m.BotID, m.ChatID, queue.ConfigurationIntentBody).Scan(
-		&r.OutboxID, &r.BotID, &r.ClientID, &r.ActorID, &r.ChatID, &r.ActivationID, &r.InvoiceID, &proof, &r.ClientRevision, &r.PolicyRevision, &policy, &hash, &r.CreatedAt, &r.ExpiresAt)
+		&r.OutboxID, &r.BotID, &r.ClientID, &r.ActorID, &r.ChatID, &r.ActivationID, &r.InvoiceID, &proof, &r.ClientRevision, &r.PolicyRevision, &policy, &hash, &r.CreatedAt, &r.ExpiresAt, &r.Period, &r.RenewalID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, queue.ErrLeaseLost
 	}
@@ -552,6 +735,29 @@ func lockConfigurationAccount(ctx context.Context, tx pgx.Tx, r configdelivery.R
 	if _, err := tx.Exec(ctx, `SELECT id FROM clients WHERE id=$1 FOR UPDATE`, r.ClientID); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(ctx, `SELECT client_id FROM subscriptions WHERE client_id=$1 FOR NO KEY UPDATE`, r.ClientID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `SELECT client_id FROM payment_checks WHERE client_id=$1 FOR UPDATE`, r.ClientID); err != nil {
+		return err
+	}
+	// Lock both immutable first-period and requested current proofs in stable
+	// invoice order, following subscription/payment_checks in the lock order.
+	proofRows, err := tx.Query(ctx, `SELECT invoice_id FROM payment_confirmations WHERE invoice_id=$1 OR invoice_id=(SELECT invoice_id FROM activation_flows WHERE operation_id=$2) ORDER BY invoice_id FOR UPDATE`, r.InvoiceID, r.ActivationID)
+	if err != nil {
+		return err
+	}
+	for proofRows.Next() {
+		var invoice string
+		if err := proofRows.Scan(&invoice); err != nil {
+			proofRows.Close()
+			return err
+		}
+	}
+	proofRows.Close()
+	if err := proofRows.Err(); err != nil {
+		return err
+	}
 	// Pipeline the remaining ordered locks over remote PostgreSQL links. The
 	// backend still executes each statement serially, with the client held.
 	batch := &pgx.Batch{}
@@ -559,15 +765,14 @@ func lockConfigurationAccount(ctx context.Context, tx pgx.Tx, r configdelivery.R
 		sql string
 		arg any
 	}{
-		{`SELECT client_id FROM subscriptions WHERE client_id=$1 FOR NO KEY UPDATE`, r.ClientID},
-		{`SELECT client_id FROM payment_checks WHERE client_id=$1 FOR UPDATE`, r.ClientID},
-		{`SELECT invoice_id FROM payment_confirmations WHERE invoice_id=$1 FOR UPDATE`, r.InvoiceID},
 		{`SELECT operation_id FROM activation_flows WHERE operation_id=$1 FOR UPDATE`, r.ActivationID},
 		{`SELECT client_id FROM activation_sui_bindings WHERE client_id=$1 FOR UPDATE`, r.ClientID},
 		{`SELECT step FROM activation_steps WHERE operation_id=$1 ORDER BY step FOR UPDATE`, r.ActivationID},
 		{`SELECT id FROM operations WHERE client_id=$1 AND kind IN ('register_client','activate_first_subscription') ORDER BY id FOR UPDATE`, r.ClientID},
 		{`SELECT f.operation_id FROM registration_flows f JOIN operations o ON o.id=f.operation_id WHERE o.client_id=$1 FOR UPDATE OF f`, r.ClientID},
 		{`SELECT s.step FROM operation_steps s JOIN operations o ON o.id=s.operation_id WHERE o.client_id=$1 ORDER BY s.step FOR UPDATE OF s`, r.ClientID},
+		{`SELECT operation_id FROM invoice_renewal_actions WHERE operation_id=$1 FOR UPDATE`, r.RenewalID},
+		{`SELECT step FROM invoice_renewal_steps WHERE operation_id=$1 ORDER BY step FOR UPDATE`, r.RenewalID},
 	} {
 		batch.Queue(q.sql, q.arg)
 	}
@@ -664,27 +869,55 @@ func (s *Store) AuthorizeConfiguration(ctx context.Context, m queue.Message, exp
 	if decision.Kind == configdelivery.Denial && decision.Reason == configdelivery.DeniedPayment && decision.PaymentChanged {
 		// A coherent expected original proof is required, never a newly selected
 		// invoice or a GET error. Changes to another owner cannot become sticky.
-		confirmation, readErr := readActivationConfirmation(ctx, tx, request.InvoiceID)
-		if readErr != nil && !errors.Is(readErr, queue.ErrConflict) {
-			return permit, readErr
-		}
-		proof, proofErr := confirmation.proof()
-		a := expected.Entitlement.Activation.Account
-		if readErr == nil && proofErr == nil && expected.Matches() && proof.Hash == request.ProofHash &&
-			confirmation.clientID == request.ClientID && confirmation.botID == request.BotID &&
-			confirmation.customerID == a.CustomerID && confirmation.paid == a.PaymentDate && confirmation.next == a.NextInvoiceDate {
-			tag, err := tx.Exec(ctx, `UPDATE payment_confirmations pc SET review_required=true,review_code=2007
+		if request.Period == configdelivery.FirstPeriod {
+			confirmation, readErr := readActivationConfirmation(ctx, tx, request.InvoiceID)
+			if readErr != nil && !errors.Is(readErr, queue.ErrConflict) {
+				return permit, readErr
+			}
+			proof, proofErr := confirmation.proof()
+			a := expected.Entitlement.Activation.Account
+			if readErr == nil && proofErr == nil && expected.Matches() && fresh.Eligible && fresh.Matches() && proof.Hash == request.ProofHash &&
+				confirmation.clientID == request.ClientID && confirmation.botID == request.BotID && confirmation.customerID == a.CustomerID &&
+				confirmation.paid == a.PaymentDate && confirmation.next == a.NextInvoiceDate {
+				tag, err := tx.Exec(ctx, `UPDATE payment_confirmations pc SET review_required=true,review_code=2007
                 WHERE pc.invoice_id=$1 AND pc.client_id=$2 AND pc.bot_id=$3 AND pc.customer_id=$4 AND pc.proof_hash=$5
                 AND EXISTS(SELECT 1 FROM activation_flows f JOIN operations o ON o.id=f.operation_id
                     JOIN clients c ON c.id=o.client_id WHERE f.operation_id=$6 AND o.client_id=pc.client_id
                     AND f.bot_id=pc.bot_id AND f.invoice_id=pc.invoice_id AND f.proof_hash=pc.proof_hash
                     AND c.invoice_ninja_id=pc.customer_id AND c.telegram_id=$7 AND c.chat_id=$7)`, request.InvoiceID, request.ClientID, request.BotID, a.CustomerID, request.ProofHash[:], request.ActivationID, request.ActorID)
-			if err != nil {
-				return permit, err
-			}
-			if tag.RowsAffected() == 1 {
-				if _, err := tx.Exec(ctx, `UPDATE payment_checks SET review_code=2007 WHERE client_id=$1 AND bot_id=$2`, request.ClientID, request.BotID); err != nil {
+				if err != nil {
 					return permit, err
+				}
+				if tag.RowsAffected() == 1 {
+					if _, err := tx.Exec(ctx, `UPDATE payment_checks SET review_code=2007 WHERE client_id=$1 AND bot_id=$2`, request.ClientID, request.BotID); err != nil {
+						return permit, err
+					}
+				}
+			}
+		} else if request.Period == configdelivery.RenewalPeriod {
+			confirmation, readErr := readActivationConfirmation(ctx, tx, request.InvoiceID)
+			if readErr != nil && !errors.Is(readErr, queue.ErrConflict) {
+				return permit, readErr
+			}
+			proof, proofErr := confirmation.proof()
+			current := expected.Entitlement.Current
+			if readErr == nil && proofErr == nil && expected.Matches() && fresh.Eligible && fresh.Matches() && proof.Hash == request.ProofHash && confirmation.clientID == request.ClientID &&
+				confirmation.botID == request.BotID && confirmation.customerID == current.CustomerID && confirmation.paid == current.PaymentDate && confirmation.next == current.NextInvoiceDate {
+				tag, err := tx.Exec(ctx, `UPDATE payment_confirmations pc SET review_required=true,review_code=2007
+                WHERE pc.invoice_id=$1 AND pc.client_id=$2 AND pc.bot_id=$3 AND pc.customer_id=$4 AND pc.proof_hash=$5
+                  AND EXISTS(SELECT 1 FROM invoice_renewal_actions a JOIN operations o ON o.id=a.operation_id
+                    JOIN subscriptions s ON s.client_id=a.client_id JOIN clients c ON c.id=a.client_id
+                    WHERE a.operation_id=$6 AND a.client_id=pc.client_id AND a.bot_id=pc.bot_id AND a.invoice_id=pc.invoice_id
+                      AND a.outcome='completed' AND a.review_code=0 AND o.kind='invoice_paid_renewal' AND o.status='completed'
+                      AND s.current_invoice_id=pc.invoice_id AND s.state='active' AND s.desired_access
+                      AND c.invoice_ninja_id=pc.customer_id AND c.telegram_id=$7 AND c.chat_id=$7)`, request.InvoiceID, request.ClientID, request.BotID, current.CustomerID, request.ProofHash[:], request.RenewalID, request.ActorID)
+				if err != nil {
+					return permit, err
+				}
+				if tag.RowsAffected() == 1 {
+					if _, err := tx.Exec(ctx, `UPDATE payment_checks SET review_code=2007 WHERE client_id=$1 AND bot_id=$2`, request.ClientID, request.BotID); err != nil {
+						return permit, err
+					}
 				}
 			}
 		}

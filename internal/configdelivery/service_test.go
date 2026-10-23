@@ -87,6 +87,7 @@ func (s *deliveryStore) AuthorizeConfiguration(ctx context.Context, m queue.Mess
 type deliveryPayments struct {
 	f                  *deliveryFixture
 	customer           invoiceninja.SettlementCustomer
+	invoiceID          string
 	invoice            invoiceninja.SettlementInvoice
 	cash               []invoiceninja.SettlementPayment
 	calls, inventories int
@@ -109,8 +110,12 @@ func (p *deliveryPayments) GetSettlementCustomer(_ context.Context, id string) (
 	return p.customer, err
 }
 func (p *deliveryPayments) GetSettlementInvoice(_ context.Context, id string) (invoiceninja.SettlementInvoice, error) {
-	if id != "invoice-A" {
-		p.f.t.Fatal("not the original first invoice")
+	expected := p.invoiceID
+	if expected == "" {
+		expected = "invoice-A"
+	}
+	if id != expected {
+		p.f.t.Fatal("not the requested paid invoice")
 	}
 	err := p.call("invoice")
 	return p.invoice, err
@@ -269,7 +274,7 @@ func newDeliveryFixture(t *testing.T) *deliveryFixture {
 	t.Helper()
 	f := &deliveryFixture{t: t, cfg: deliveryTestConfig(), now: time.Date(2040, 1, 31, 12, 0, 0, 0, time.Local), message: queue.Message{Lease: queue.Lease{ID: 80, Attempt: 1}, BotID: 42, ChatID: 101, Text: queue.ConfigurationIntentBody, ProtectedConfiguration: true}}
 	account := payments.Snapshot{ClientID: 7, TelegramID: 101, ChatID: 101, BotID: 42, CustomerID: "customer-A", InvoiceID: "invoice-A", FirstInvoiceID: "invoice-A", State: "active", DesiredAccess: true, SUIID: "41", RecurringID: "recurring-A"}
-	f.p = &deliveryPayments{f: f,
+	f.p = &deliveryPayments{f: f, invoiceID: "invoice-A",
 		customer: invoiceninja.SettlementCustomer{ID: "customer-A", IDNumber: "101"},
 		invoice:  invoiceninja.SettlementInvoice{ID: "invoice-A", ClientID: "customer-A", Number: "INV-200", StatusID: "4", Date: "2040-01-01", DueDate: "2040-01-31", Amount: "200", Balance: "0", PaidToDate: "200", ExchangeRate: "1"},
 		cash:     []invoiceninja.SettlementPayment{{ID: "payment-A", ClientID: "customer-A", Date: "2040-01-31", StatusID: "4", CurrencyID: "1", Amount: "200", Refunded: "0", Applied: "200", ExchangeRate: "1", IsManual: true, Allocations: []invoiceninja.SettlementAllocation{{ID: "allocation-A", InvoiceID: "invoice-A", PaymentID: "payment-A", Amount: "200", Refunded: "0"}}}}}
@@ -299,13 +304,13 @@ func newDeliveryFixture(t *testing.T) *deliveryFixture {
 		activation.SUIEnable:       {Payload: deliveryJSON(t, enable), ExternalID: "41", DispatchAttempt: 3},
 		activation.RecurringStart:  {Payload: deliveryJSON(t, activation.StartRequest{IDs: []string{"recurring-A"}, Action: "start"}), ExternalID: "recurring-A", DispatchAttempt: 4, RecurringAmount: "200.00", RecurringDatetime: recDraft.NextSendDate + " 12:00:00"},
 	}
-	e := Entitlement{ActivationID: 9, Revision: 2, Binding: binding, Activation: activation.Snapshot{Account: account, Token: token, PolicyHash: [32]byte{1}, Proof: *proof.Proof, Steps: steps}}
+	e := Entitlement{ActivationID: 9, Revision: 2, Binding: binding, Period: FirstPeriod, Activation: activation.Snapshot{Account: account, Token: token, PolicyHash: [32]byte{1}, Proof: *proof.Proof, Steps: steps}}
 	hash, err := e.Fingerprint()
 	if err != nil {
 		t.Fatal("invalid synthetic completed entitlement")
 	}
 	policy := f.cfg.Policy()
-	r := Request{OutboxID: 80, BotID: 42, ClientID: 7, ActorID: 101, ChatID: 101, ActivationID: 9, ClientRevision: 2, PolicyRevision: policy.Revision, PolicyHash: policy.Hash, ProofHash: proof.Proof.Hash, EntitlementHash: hash, InvoiceID: "invoice-A", CreatedAt: f.now, ExpiresAt: f.now.Add(RequestTTL)}
+	r := Request{OutboxID: 80, BotID: 42, ClientID: 7, ActorID: 101, ChatID: 101, ActivationID: 9, Period: FirstPeriod, ClientRevision: 2, PolicyRevision: policy.Revision, PolicyHash: policy.Hash, ProofHash: proof.Proof.Hash, EntitlementHash: hash, InvoiceID: "invoice-A", CreatedAt: f.now, ExpiresAt: f.now.Add(RequestTTL)}
 	f.store = &deliveryStore{f: f, view: View{Request: r, Entitlement: e, Eligible: true}}
 	if !f.store.view.Matches() {
 		t.Fatal("synthetic view does not match")

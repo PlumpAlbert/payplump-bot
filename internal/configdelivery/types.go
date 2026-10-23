@@ -1,4 +1,4 @@
-// Package configdelivery resolves protected, actor-scoped first-cycle intents.
+// Package configdelivery resolves protected, actor-scoped period intents.
 // Rendered subscription URLs exist only in memory at the final send boundary.
 package configdelivery
 
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 )
@@ -36,22 +37,46 @@ type Policy struct {
 	Hash     [32]byte
 }
 
+type PeriodKind string
+
+const (
+	FirstPeriod   PeriodKind = "first"
+	RenewalPeriod PeriodKind = "renewal"
+)
+
 type Request struct {
 	OutboxID, BotID, ClientID, ActorID, ChatID, ActivationID int64
+	RenewalID                                                int64
+	Period                                                   PeriodKind
 	ClientRevision, PolicyRevision                           int64
 	PolicyHash, ProofHash, EntitlementHash                   [32]byte
 	InvoiceID                                                string
 	CreatedAt, ExpiresAt                                     time.Time
 }
 
+type RenewalAudit struct {
+	OperationID                                                     int64
+	TargetDate                                                      string
+	RequiresPause, RequiresSchedule, RequiresEnable, RequiresResume bool
+	StepIDs                                                         [4]string
+	StepHashes                                                      [4][32]byte
+	PlanHash                                                        [32]byte
+	Amount                                                          string
+	NextSendUTC                                                     time.Time
+}
+
 func (Request) String() string   { return "[protected configuration request]" }
 func (Request) GoString() string { return "[protected configuration request]" }
 
 type Entitlement struct {
-	Activation   activation.Snapshot
+	Activation   activation.Snapshot // immutable first-activation audit
 	ActivationID int64
 	Revision     int64
 	Binding      sui.Binding
+	Period       PeriodKind
+	Current      payments.Snapshot
+	CurrentProof payments.Proof
+	Renewal      RenewalAudit
 }
 
 func (Entitlement) String() string   { return "[private configuration entitlement]" }

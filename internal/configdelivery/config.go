@@ -167,7 +167,7 @@ func (c Config) Policy() Policy {
 		Version                                                                int
 		Ninja, SUI, VersionClaim, PublicBase, Currency, Identity, CalendarZone string
 		Allowed, Excluded                                                      []int64
-	}{1, c.BaseURL, c.SUIBaseURL, c.SUIVersion, c.SubscriptionBaseURL, c.CurrencyID, c.TelegramIDField, time.Local.String(), sorted(c.AllowedTelegramIDs), sorted(c.ExcludedTelegramIDs)})
+	}{2, c.BaseURL, c.SUIBaseURL, c.SUIVersion, c.SubscriptionBaseURL, c.CurrencyID, c.TelegramIDField, time.Local.String(), sorted(c.AllowedTelegramIDs), sorted(c.ExcludedTelegramIDs)})
 	return Policy{Enabled: true, Revision: c.Revision, Hash: sha256.Sum256(raw)}
 }
 

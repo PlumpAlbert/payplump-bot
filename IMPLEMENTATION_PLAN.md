@@ -90,7 +90,7 @@ S-UI подтверждена владельцем; отдельный GET statu
 атомарно фиксирует proof, даты и outbox без выдачи доступа. Для реализованных
 workflow действуют leases/fencing, rollback/restart recovery и known receipts;
 неизвестные внешние POST не переотправляются. Расширение этих гарантий для
-renewal/reactivation реализовано в коде PR #20 и ожидает CI; выдача конфигурации следующих периодов остаётся в 9b.
+renewal/reactivation (PR #20, stage 9a) влито в основу 94095a8; выдача конфигурации следующих периодов реализуется этапом 9b.
 
 - [x] Добавить и проверить миграции для `payment_processed_events`, `outbox`, `activation_steps`, `desired_access` и необходимых полей операций / подписок, сохраняя уже применённые миграции.
 - [x] Реализовать выборку заданий порциями, блокировку, срок аренды, число попыток, отложенные повторы и восстановление незавершённой работы.
@@ -262,33 +262,41 @@ resume recurring. Повтор оплаты не должен сдвигать �
 - [ ] После отдельного разрешения владельца проверить полный lifecycle на установленных сервисах и тестовой записи, включая фактическое отключение и доставку уведомлений.
 
 
-## 9. Оплаченные recurring-периоды: 9a реализуется в PR #20, 9b остаётся в очереди
+## 9. Оплаченные recurring-периоды: 9a merged, 9b в реализации
 
 `payments.Observe` / `payments.Evaluate` уже проверяют финансовое доказательство
 для non-first `current_invoice_id` при точном recurring ID. `payment_confirmations`
 хранит подтверждения по invoice; `FinishPaymentCheck` фиксирует доказательство
 и обновляет наблюдаемые `payment_date` / `next_invoice_date`, не выдавая доступ.
 Использовать существующий payment-check pipeline: новый payment-prover worker не
-нужен. Код и синтетические тестовые сценарии 9a находятся в draft PR #20 и ждут
-обязательный CI на финальном HEAD; SQL integration runtime локально не запускался.
-Защищённая выдача конфигурации для последующих периодов остаётся работой 9b.
-
-Очередь: завершить 9a после обязательного CI, затем 9b. Неизвестные внешние исходы остаются на hold;
+нужен. Код 9a merged в основу `94095a8`; финальный PR HEAD
+`952bce4063065c71462d936f71507ee151d557f3` прошёл required Actions run
+`39961598201`. Защищённая выдача следующего периода реализуется в 9b.
+Неизвестные внешние исходы остаются на hold;
 нельзя снимать или обходить существующий guard/epoch/immutable intent либо
 автоматически повторять неизвестную запись.
 
 ### 9a. Durable renewal/reactivation workflow
 
 - [x] Использовать существующую проверку полной оплаты текущего invoice с точным recurring ID, per-invoice confirmation и наблюдаемыми датами; повтор того же доказательства не меняет их. Отдельный payment-prover worker не добавлять.
-- [x] Добавить durable workflow обычного renewal и восстановления после просрочки: pause/schedule/resume существующего recurring и enable прежней S-UI-записи с теми же credentials, binding и URL; обновлять только будущую `next_send_date` на месяц от подтверждённой `Payment.date`, без замены recurring и catch-up счетов. Перед каждым внешним действием повторно проверять актуальное подтверждение и локальную привязку; каждый шаг требует immutable intent и известной квитанции. Реализация в draft PR #20, ожидает обязательный CI.
+- [x] Добавить durable workflow обычного renewal и восстановления после просрочки: pause/schedule/resume существующего recurring и enable прежней S-UI-записи с теми же credentials, binding и URL; обновлять только будущую `next_send_date` на месяц от подтверждённой `Payment.date`, без замены recurring и catch-up счетов. Перед каждым внешним действием повторно проверять актуальное подтверждение и локальную привязку; каждый шаг требует immutable intent и известной квитанции. Реализация PR #20 merged in base `94095a8`; required CI passed on its final HEAD.
 - [x] Добавить тесты обычного и позднего renewal, календарного расчёта и границ дат; runtime PostgreSQL suite должен пройти в required CI до merge.
-- [x] Добавить проверки гонки оплаты после собственного подтверждённого overdue pause, а также неизвестного intent/receipt без replay и обхода guard/epoch. SQL runtime для этих сценариев ещё не подтверждён; ожидается required CI PR #20.
+- [x] Добавить проверки гонки оплаты после собственного подтверждённого overdue pause, а также неизвестного intent/receipt без replay и обхода guard/epoch. SQL/race runtime прошёл required CI PR #20 на disposable PostgreSQL 17, Actions run `39961598201`.
 
 ### 9b. Защищённая выдача конфигурации следующего оплаченного периода
 
-- [ ] Расширить существующую защищённую выдачу конфигурации на последующие оплаченные периоды; опираться на подтверждённый текущий invoice и сохранённую S-UI binding, оставить URL вне outbox и повторно проверять текущую оплату и capability перед отправкой.
-- [ ] Проверить повторные/stale события, смену proof или binding, продление и доставку после восстановления; неизвестный результат выдачи не разрешает автоматический replay.
-- [ ] После отдельного разрешения владельца проверить обычное и позднее восстановление и выдачу следующего периода на выделенном тестовом клиенте.
+Код этапа 9b расширяет ту же protected-delivery capability. Режим периода
+закрепляется в immutable request; first-cycle activation остаётся неизменной
+исторической provenance, а renewal использует отдельный актуальный invoice proof
+и completed renewal receipt. Для локальной проверки добавлены unit tests и
+PostgreSQL integration сценарии; их runtime ждёт required CI на точном PR HEAD.
+Объединённый real renewal-worker → adapters → protected Telegram loopback E2E
+ещё требуется добавить. Локально SQL runtime не запускать.
+
+- [x] Расширить защищённую выдачу на текущий оплаченный период с explicit mode/FK, current-proof GET и неизменной S-UI binding; URL остаётся вне outbox.
+- [x] Добавить renewal lifecycle-recurring validation, финальную квитанцию/даты и fencing изменений invoice/renewal authority.
+- [ ] Добавить и проверить real adapter → renewal worker → protected Telegram loopback workflow, затем прогнать весь PostgreSQL integration suite в required CI; проверить неизвестную доставку без replay.
+- [ ] После отдельного разрешения владельца проверить обычное и позднее восстановление на выделенном тестовом клиенте.
 
 ## 10. Административная рассылка
 
