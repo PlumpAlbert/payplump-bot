@@ -80,17 +80,31 @@ scope; не снимать и не обходить их и не расширя�
   workflow bridge are implemented; positive factory/source-reader and private
   artifact checks pass, as do exclusion, bad-hash and no-payment-source cases.
   Independent review completed with no code defects; one P3 documentation
-  inconsistency was fixed here. Full parent local
-  unit/race/vet/CGO0/build/module checks and SQL compile verification passed.
-  PR #25 is not open; its exact-HEAD CI/merge remain pending. No live verification.
-  Whole 11 remains incomplete; no DB admission or capability/grant.
+  inconsistency was fixed here. PR #25 merged as `3b54c82`; exact code HEAD
+  `02b0c8c7d882e37c713416f39ddcad42ff711baa` passed required CI `39992168476`
+  and post-merge main CI `39992922113`. No live verification.
 
-  Непереговорные TODO: 11b explicit managed
-  admission только после свежего GET, с imported origin/binding/proof
-  anchor/revision, без имитации registration/activation journals. Сохранить
-  actor/pilot ограничения; будущий admission обязан подавлять устаревшие
-  операции/уведомления. Неоплаченные долги остаются ручными, без прощения или
-  автоматизации. Не добавлять 11c или новое архитектурное решение.
+  11b.1 DB-only foundation is implemented in the current feature branch: opaque
+  typed preparation performs fresh GET verification of the complete plan; the
+  database policy is default-disabled and revisioned; admission and inert-plan
+  staging share one transaction; imported origins retain immutable binding,
+  paid-anchor and invoice-history facts without fake first invoices, registration/
+  activation journals, outbox, or external writes. Policy disable/re-enable
+  prevents same-revision ABA; configuration revision baselines allow exact
+  idempotence after benign client-name changes; owned/imported SUI identity
+  collisions are guarded on insert and owned-binding updates. Existing
+  own-created workers still reject imported clients. There is no runtime
+  consumer or historical ledger initialization. Targeted review fixes are applied;
+  PostgreSQL runtime assertions are being completed by the test workstream, and
+  parent review plus required PG17 CI remain pending PR #26. Local
+  SQL checks are compile-only. Managed-origin consumers, legacy write profiles,
+  history-ledger initialization and apply CLI remain future slices; all of stage
+  11 remains incomplete. No live verification or real admission was performed.
+
+  Непереговорные TODO: actor/pilot ограничения сохраняются; будущий managed
+  consumer обязан подавлять устаревшие операции/уведомления. Неоплаченные долги
+  остаются ручными, без прощения или автоматизации. Не добавлять 11c или новое
+  архитектурное решение.
 - [ ] 12: дальнейшая подготовка синтетической isolated restore rehearsal;
   recovery report, restore helper и docs уже есть. Не выполнять автоматические
   rearm/снятие барьеров; реальные backup/restore требуют владельца.
@@ -99,12 +113,14 @@ scope; не снимать и не обходить их и не расширя�
 - [ ] 14: синтетическая подготовка и тесты safe resource harness уже есть;
   целевые измерения VPS не выполнены и требуют владельца.
 
-Очередь последовательная по небольшим PR: 9a и 9b завершены; 11a.1 и 11a.2
-core/history merged. PR #24 и required/post-merge CI зелёные. Operator CLI и
-synthetic real-reader workflow прошли независимый review (zero code defects;
-P3 docs inconsistency fixed) и parent local checks; PR #25 ещё не открыт, exact-HEAD
-CI/merge pending. Затем остаётся 11b, 12, 13 и 14. Весь этап 11 не завершён;
-live verification/admission не выполнялись.
+Очередь последовательная по небольшим PR: 9a и 9b завершены; 11a.1, 11a.2
+core/history и operator CLI merged. PR #25 exact-HEAD required CI `39992168476`
+и post-merge CI `39992922113` зелёные. DB-only foundation 11b.1 реализован в
+текущей ветке; targeted review fixes сделаны, родитель завершает review, а
+runtime PostgreSQL assertions и PR #26 CI остаются pending. Далее остаются
+managed-origin consumers, legacy write profiles, history-ledger initialization и
+apply CLI, затем 12, 13 и 14. Весь этап 11 не завершён; live
+verification/admission не выполнялись.
 
 ## Проверенные срезы
 
