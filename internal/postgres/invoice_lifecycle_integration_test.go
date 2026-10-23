@@ -102,9 +102,13 @@ func seedInvoiceLifecycleAccount(t *testing.T, s *Store, ctx context.Context, wi
 		if step.recurring {
 			amount, datetime = 100, "2040-01-01T00:00:00Z"
 		}
+		request := `{"synthetic":true}`
+		if step.name == "recurring_create" {
+			request = `{"client_id":"customer-synthetic","frequency_id":5,"next_send_date":"2040-02-01","due_date_days":"on_receipt","auto_bill":"off","remaining_cycles":-1,"private_notes":"payplump:synthetic_activation_token_123456:recurring_create","uses_inclusive_taxes":false,"line_items":[{"product_key":"product-synthetic","notes":"subscription","cost":100,"quantity":1,"discount":0,"is_amount_discount":false,"type_id":"1","tax_name1":"","tax_name2":"","tax_name3":"","tax_rate1":0,"tax_rate2":0,"tax_rate3":0,"tax_id":""}]}`
+		}
 		if _, err := s.pool.Exec(ctx, `INSERT INTO activation_steps
             (operation_id, step, request, dispatch_attempt, external_id, recurring_amount, recurring_datetime, confirmed_at)
-            VALUES ($1, $2, '{"synthetic":true}'::jsonb, 1, $3, $4, $5, clock_timestamp())`, activationID, step.name, step.externalID, amount, datetime); err != nil {
+            VALUES ($1, $2, $6::jsonb, 1, $3, $4, $5, clock_timestamp())`, activationID, step.name, step.externalID, amount, datetime, request); err != nil {
 			t.Fatal(err)
 		}
 	}

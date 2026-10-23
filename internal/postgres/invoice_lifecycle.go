@@ -542,7 +542,7 @@ func invoiceLifecycleStageError(stage string, err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, sentinel := range []error{queue.ErrLeaseLost, queue.ErrConflict, context.Canceled, context.DeadlineExceeded} {
+	for _, sentinel := range []error{queue.ErrLeaseLost, queue.ErrConflict, lifecycle.ErrOverduePaid, lifecycle.ErrOverdueNotUnpaid, lifecycle.ErrOverdueGuardBusy, lifecycle.ErrOverdueIntentExists, lifecycle.ErrOverduePaymentLease, context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, sentinel) {
 			return fmt.Errorf("%s: %w", stage, sentinel)
 		}

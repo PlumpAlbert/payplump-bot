@@ -1,6 +1,6 @@
-# Invoice lifecycle: sent-invoice notices (stage 1)
+# Invoice lifecycle: sent-invoice notices and overdue enforcement
 
-This stage is independently **default-off**. It observes Invoice Ninja recurring invoices using GET requests, records canonical observations in PostgreSQL, queues Telegram notices in the existing outbox, and hands the new `current_invoice_id` to the existing payment verifier. It does not create/update invoices, write to S-UI, disable access, pause recurring, decide overdue status, or restore access. Those actions require separate reviewed stages.
+Stage 1 and Stage 2 are independently **default-off**. Stage 1 observes Invoice Ninja recurring invoices using GET requests, records canonical observations in PostgreSQL, queues Telegram notices in the existing outbox, and hands the new `current_invoice_id` to the existing payment verifier. It never writes to Invoice Ninja or S-UI and does not change access. Stage 2 is a separate writer gate described below. Neither stage restores access.
 
 ## Safety and eligibility
 
@@ -39,8 +39,30 @@ The worker reads the complete company invoice inventory with bounded pagination 
 | `INTEGRATION_PAGE_SIZE` / `INTEGRATION_MAX_PAGES` | Shared bounded Invoice Ninja pagination; defaults 50 / 20 |
 | `INVOICE_NINJA_BASE_URL` / `INVOICE_NINJA_API_TOKEN` | Existing Invoice Ninja GET configuration; not stored in source or logs |
 
-`REGISTRATION_EXCLUDED_TELEGRAM_IDS` wins over the lifecycle allowlist. Read `.env.example` for the surrounding integration settings. The lifecycle webhook and worker start only after Telegram webhook setup succeeds.
+`REGISTRATION_EXCLUDED_TELEGRAM_IDS` wins over the lifecycle allowlist. Read `.env.example` for the surrounding integration settings. The lifecycle webhook and Stage 1 worker start only after Telegram webhook setup succeeds.
+
+## Stage 2: overdue enforcement (default-off)
+
+`INVOICE_OVERDUE_ENFORCEMENT_ENABLED=true` is an independent write gate. It additionally requires Stage 1, Telegram, payment verification, the same explicit lifecycle pilot allowlist and exclusions, S-UI 1.6.4, and `INVOICE_OVERDUE_EXCLUSIVE_WRITER=true`. That acknowledgement means no other application, operator, or automation may write to the managed recurring records or S-UI clients during enforcement. Constructing the clients performs no API request; all actions are worker-driven.
+
+An invoice is eligible only when it is the managed subscription's current invoice and the locally persisted Stage 1 observation and a fresh exact-ID Invoice Ninja GET agree on identity, recurring/customer provenance, private marker, invoice number, canonical `invitations[].sent_date`, amount and balance. The status must still be `sent` (status ID 2), `paid_to_date` must be zero and `balance` must equal `amount`. The next local calendar day begins at 00:00 in the process timezone (`TZ`, UTC fallback); `due_date` is deliberately ignored. Partial, paid-to-date, unknown, missing, conflicting, stale, reviewed, or incomplete data is deferred or sent for manual review, never treated as proof of nonpayment. A confirmed payment, payment review, or active payment-verifier lease prevents the write.
+
+The action order is fixed: (1) pause the managed Invoice Ninja recurring record, (2) disable only the S-UI record matched by its persisted binding, and (3) request `closeSessions` for that disabled record. Every step has a durable immutable request intent before transmission and a fresh final invoice check. The same singleton `activation_write_guard` and monotonic epoch serialize these writes with activation; there is no second guard. Only a confirmed adapter result releases the guard. A timeout or otherwise unknown external-write outcome pins the guard for manual reconciliation and is never automatically retried. If payment or a review condition appears between steps, subsequent writes stop; no automatic restoration occurs.
+
+Client and admin notices are enqueued only after all three steps have confirmed results. The `closeSessions` response confirms acceptance of the request, not that every active connection has terminated. This stage does not change Invoice Ninja email reminders, does not issue refunds, and does not restore S-UI access after payment; restoration requires a separate reviewed workflow.
+
+| Variable | Requirement |
+| --- | --- |
+| `INVOICE_OVERDUE_ENFORCEMENT_ENABLED` | `false` by default; independent Stage 2 opt-in |
+| `INVOICE_OVERDUE_EXCLUSIVE_WRITER` | Must be explicitly `true` as an operational acknowledgement |
+| `INVOICE_LIFECYCLE_ALLOWED_TELEGRAM_IDS` | Same 1–20 ID allowlist as Stage 1; exclusions win |
+| `INVOICE_OVERDUE_WORKERS` | 1–4; default 1 |
+| `INVOICE_OVERDUE_POLL_INTERVAL` | 100 ms–1 minute; default 1 second |
+| `INVOICE_OVERDUE_HTTP_TIMEOUT` | 1–10 seconds; default 5 seconds |
+| `INVOICE_OVERDUE_MAX_ACCOUNTS` | 1–1000; default 1000 |
+| `INVOICE_NINJA_BASE_URL` / `INVOICE_NINJA_API_TOKEN` | Existing pinned Invoice Ninja 5.13.47 configuration |
+| `SUI_BASE_URL` / `SUI_API_TOKEN` / `SUI_VERSION` | S-UI writer configuration; version must be `1.6.4` or `v1.6.4` |
 
 ## Verification
 
-Run `scripts/test-safe.sh` for package and race tests. PostgreSQL integration tests require a disposable test database and create a private schema; never point them at production. The worker, webhook, date selection, paid-before-first-sweep handoff, first-invoice suppression, and review paths are covered by synthetic tests. PostgreSQL integration tests were added and compile with the integration build tag, but must still be run against a disposable isolated schema before release. These tests do not validate a live Invoice Ninja installation, a Telegram delivery, or operational configuration.
+Run `scripts/test-safe.sh` for package and race tests. PostgreSQL integration tests require a disposable test database and create a private schema; never point them at production. The worker, webhook, date selection, paid-before-first-sweep handoff, first-invoice suppression, and review paths are covered by synthetic tests. Stage 2 PostgreSQL tests cover seeding, shared-guard reservation/release, and no replay after an unresolved intent; compile them with the integration build tag, and only run them against a disposable isolated schema before release. These tests do not validate a live Invoice Ninja installation, a Telegram delivery, or operational configuration.
