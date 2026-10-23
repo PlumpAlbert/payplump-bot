@@ -317,12 +317,18 @@ func validRenewalAssociation(s RenewalSnapshot, botID int64, allowed, excluded [
 		return false
 	}
 	if s.ImportedOrigin.Valid() {
+		if s.ImportedInitialPaused && !ValidImportedInitialAuthority(s) || !s.ImportedInitialPaused && s.ImportedInitialDebt.ID != "" {
+			return false
+		}
 		return s.ImportedOrigin.ClientID == s.ClientID && s.ImportedOrigin.BotID == botID && s.FirstInvoiceID == "" && s.RegistrationToken == "" && s.ActivationToken == "" && s.Payment.FirstInvoiceID == "" && s.Payment.ImportedOrigin == s.ImportedOrigin && s.Payment.ImportedBaselineProofHash == ([32]byte{}) && s.ImportedAdmissionPermissionRevision > 0 && s.ImportedEffectsRevision > 0 && s.ImportedRecurringProfile.Hash() != "" && s.RecurringDraft.ClientID == "" && s.RecurringDraft.PrivateNotes == "" && len(s.ImportedInboundIDs) > 0 && validImportedInboundIDs(s.ImportedInboundIDs)
 	}
 	return s.FirstInvoiceID != "" && s.FirstInvoiceID != s.InvoiceID && s.Payment.FirstInvoiceID == s.FirstInvoiceID && !s.Payment.ImportedOrigin.Valid() && s.Payment.ImportedBaselineProofHash == ([32]byte{}) && s.RegistrationToken != "" && s.ActivationToken != "" && s.RecurringDraft.ClientID == s.CustomerID && s.RecurringDraft.PrivateNotes == activation.Marker(s.ActivationToken) && invoiceninja.ValidateRecurringDraft(s.RecurringDraft) == nil
 }
 
 func validRenewalLedger(s RenewalSnapshot) bool {
+	if s.ImportedInitialPaused {
+		return ValidImportedInitialAuthority(s)
+	}
 	if s.LedgerCustomerID != s.CustomerID || s.LedgerRecurringID != s.RecurringID || s.LedgerInvoiceNumber != s.Proof.InvoiceNumber || s.LedgerStatus != "sent" && s.LedgerStatus != "partial" && s.LedgerStatus != "paid" {
 		return false
 	}
@@ -364,6 +370,15 @@ func renewalInvoiceMatches(invoice invoiceninja.CycleInvoice, s RenewalSnapshot)
 	if s.ImportedOrigin.Valid() {
 		notes = s.ImportedPrivateNotes
 	}
+	if s.ImportedInitialPaused {
+		notes = s.ImportedInitialDebt.PrivateNotes
+		amount, amountErr := billing.FormatAmount(invoice.Amount)
+		balance, balanceErr := billing.FormatAmount(invoice.Balance)
+		paid, paidErr := billing.FormatAmount(invoice.PaidToDate)
+		if amountErr != nil || balanceErr != nil || paidErr != nil || amount != s.Proof.Amount || balance != "0" || paid != amount || invoice.Number != s.Proof.InvoiceNumber || invoice.Date != s.ImportedInitialDebt.Date {
+			return false
+		}
+	}
 	return invoice.ID == s.InvoiceID && invoice.ClientID == s.CustomerID && invoice.RecurringID == s.RecurringID && invoice.PrivateNotes == notes && invoice.StatusID == "4" && !invoice.IsDeleted && invoice.ArchivedAt == 0
 }
 
@@ -404,6 +419,26 @@ func validRenewalExternalState(s RenewalSnapshot, r invoiceninja.RecurringRecord
 			return 0
 		}
 		return ReviewRenewalExternalState
+	}
+	if s.ImportedInitialPaused && s.State == "overdue" && !s.DesiredAccess {
+		if s.OverduePending || s.OverdueOtherSteps || len(s.OverdueSteps) != 0 && !hasConfirmedOverduePrefix(s) {
+			return ReviewRenewalExternalState
+		}
+		if !ValidImportedInitialAuthority(s) {
+			return ReviewRenewalAssociation
+		}
+		statusOK := r.StatusID == "3"
+		if step, ok := s.Steps[RenewalResume]; ok && step.Confirmed && s.Plan != nil && s.Plan.Resume && r.StatusID == "2" {
+			statusOK = true
+		}
+		panelOK := !p.Enabled()
+		if step, ok := s.Steps[RenewalEnable]; ok && step.Confirmed && s.Plan != nil && s.Plan.Enable && p.Enabled() {
+			panelOK = true
+		}
+		if !statusOK || !panelOK {
+			return ReviewRenewalExternalState
+		}
+		return 0
 	}
 	if s.State == "overdue" && !s.DesiredAccess {
 		if !hasConfirmedOverduePrefix(s) {
@@ -447,10 +482,15 @@ func makeRenewalPlan(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.Cl
 		plan.Pause = r.StatusID == "2"
 		plan.Resume = true
 	}
+	if s.ImportedInitialPaused {
+		when, parseErr := invoiceninja.ParseRecurringUTC(r.NextSendDatetime)
+		plan.Schedule = r.NextSendDate != target || parseErr != nil || !when.After(now)
+		plan.Resume = true
+	}
 	if s.State == "active" && r.StatusID != "2" && !(r.StatusID == "3" && hasConfirmedOverduePausePrefix(s)) {
 		return RenewalPlan{}, nil, ReviewRenewalExternalState
 	}
-	if s.State == "overdue" && (r.StatusID != "3" || p.Enabled()) {
+	if s.State == "overdue" && (r.StatusID != "3" || p.Enabled() || !s.ImportedInitialPaused && !hasConfirmedOverduePrefix(s)) {
 		return RenewalPlan{}, nil, ReviewRenewalExternalState
 	}
 	if s.State == "overdue" {
@@ -467,7 +507,9 @@ func makeRenewalPlan(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.Cl
 		plan.Resume = true
 	}
 	when, e := invoiceninja.ParseRecurringUTC(r.NextSendDatetime)
-	if e != nil || !plan.Schedule && !when.After(now) {
+	if r.NextSendDatetime == "" && s.ImportedInitialPaused && plan.Schedule {
+		e = nil
+	} else if e != nil || !plan.Schedule && !when.After(now) {
 		return RenewalPlan{}, nil, ReviewRenewalTarget
 	}
 	baseline, err := json.Marshal(struct {

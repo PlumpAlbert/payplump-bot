@@ -102,6 +102,9 @@ type RenewalSnapshot struct {
 	ImportedRecurringProfile                                               invoiceninja.ImportedRecurringProfile
 	ImportedPrivateNotes                                                   string
 	ImportedInboundIDs                                                     []int64
+	ImportedInitialPaused                                                  bool
+	ImportedInitialDebt                                                    invoiceninja.CycleInvoice
+	ImportedPaidAnchorInvoiceID                                            string
 }
 
 func (RenewalSnapshot) String() string   { return "[sensitive paid renewal snapshot]" }
