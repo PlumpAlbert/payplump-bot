@@ -519,7 +519,7 @@ func (s *Store) FinishInvoiceLifecycleCheck(ctx context.Context, claim lifecycle
 		return err
 	}
 	tag, err := tx.Exec(ctx, `UPDATE subscriptions SET current_invoice_id = $2
-        WHERE client_id = $1 AND current_invoice_id = $3 AND first_invoice_id = $4
+        WHERE client_id = $1 AND current_invoice_id = $3 AND first_invoice_id IS NOT DISTINCT FROM NULLIF($4, '')
             AND recurring_id = $5 AND state = 'active' AND desired_access = true`,
 		claim.ID, invoice.ID, actual.CurrentInvoiceID, actual.FirstInvoiceID, actual.RecurringID)
 	if err != nil {
