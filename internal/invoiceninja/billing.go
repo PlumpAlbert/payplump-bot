@@ -159,6 +159,23 @@ func billingLookupFailure(err error) error {
 	return errors.Join(ErrLookupIncomplete, err)
 }
 
+// validateBoundedInventoryPage provides the shared stable-pagination contract
+// for source inventories. The caller retains its own GET and error policy.
+func validateBoundedInventoryPage(w wirePagination, page, count, pageSize, maxPages, maxTotal int, first *Pagination) (Pagination, bool) {
+	p, ok := w.validate(page, count)
+	if !ok || p.PerPage != pageSize || p.TotalPages > maxPages || p.Total > maxTotal {
+		return Pagination{}, false
+	}
+	if page == 1 {
+		*first = p
+		return p, true
+	}
+	if p.Total != first.Total || p.TotalPages != first.TotalPages || p.PerPage != first.PerPage {
+		return Pagination{}, false
+	}
+	return p, true
+}
+
 func decodeUniqueNinjaJSON(raw []byte, result any) error {
 	if !uniqueNinjaJSON(raw) || json.Unmarshal(raw, result) != nil {
 		return errInvalidResponse
@@ -210,13 +227,8 @@ func billingLookup[T any](ctx context.Context, c *BillingClient, resource string
 		if envelope.Data == nil || envelope.Meta == nil || envelope.Meta.Pagination == nil {
 			return nil, ErrLookupIncomplete
 		}
-		p, ok := envelope.Meta.Pagination.validate(page, len(envelope.Data))
-		if !ok || p.PerPage != c.pageSize || p.TotalPages > c.maxPages {
-			return nil, ErrLookupIncomplete
-		}
-		if page == 1 {
-			first = p
-		} else if p.Total != first.Total || p.TotalPages != first.TotalPages || p.PerPage != first.PerPage {
+		p, ok := validateBoundedInventoryPage(*envelope.Meta.Pagination, page, len(envelope.Data), c.pageSize, c.maxPages, c.maxPages*c.pageSize, &first)
+		if !ok {
 			return nil, ErrLookupIncomplete
 		}
 		for _, item := range envelope.Data {

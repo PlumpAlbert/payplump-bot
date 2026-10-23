@@ -40,20 +40,33 @@ scope; не снимать и не обходить их и не расширя�
 - [x] 9a: durable renewal/reactivation PR #20 merged in base `94095a8`; its
   final HEAD `952bce4063065c71462d936f71507ee151d557f3` passed required Actions
   run `39961598201`, including PG17/race, normal/late/unknown renewal and smoke.
-- [x] 9b: код и тесты PR #21 прошли required CI на точном code HEAD
-  `925364d85ac733d6f582d5f2bc83d5f2a0b40525`: [run 39975961988](https://github.com/PlumpAlbert/payplump-bot/actions/runs/39975961988).
-  Прошли `fast-checks`, `postgres-integration`, `test`, полный PostgreSQL
-  SQL/race, smoke и Docker checks. В [логе job](https://github.com/PlumpAlbert/payplump-bot/actions/runs/39975961988/job/120491239073)
-  прошли `TestRealRenewalToProtectedConfigurationWorkflow` для обычного
-  (`active_reschedule`, 2.83 s) и позднего (`late_overdue_restoration`, 2.87 s)
-  renewal, а также `TestConfigurationUnknownSecretCannotReplayAfterNewPaidPeriod`.
-  Указанный HEAD — исходный проверенный code HEAD, не новый документационный HEAD.
-- [ ] PR #21 ожидает merge; родитель завершает delivery после required CI на
-  документационном HEAD. Отдельные live-проверки владельца остаются pending.
+- [x] 9b: PR #21 влит в базу `b98d351d20e2cf2a420ba773c3af464ba1564e64`;
+  финальный HEAD `1c63194dde4920c0e8157be59f533a16ea4352e6`. Required CI на
+  исходном code HEAD `925364d85ac733d6f582d5f2bc83d5f2a0b40525` прошёл:
+  [run 39975961988](https://github.com/PlumpAlbert/payplump-bot/actions/runs/39975961988),
+  включая `fast-checks`, `postgres-integration`, `test`, PostgreSQL SQL/race,
+  smoke и Docker checks. После merge required main CI также прошёл:
+  [run 39978010690](https://github.com/PlumpAlbert/payplump-bot/actions/runs/39978010690).
+  Устаревший статус «PR #21 ожидает merge» удалён. Live-проверки владельца
+  остаются pending.
+- [ ] 11a.1: read-only inventory providers — Invoice Ninja `FindCustomers` /
+  `ListRecurring` (source-pinned 5.13.47, bounded) и S-UI `ListIdentities`
+  (strict 1.6.4, bounded, redacted); синтетические loopback HTTP unit/race
+  проверки прошли. Реализация ограничена provider foundation: независимое review
+  и required CI для текущего PR ещё pending; не считать весь 11 или CLI
+  сверки реализованными.
 - [x] 10: приватная административная рассылка с неизменяемым подтверждением,
   снимком получателей, долговечным прогрессом и ограниченной доставкой.
-- [ ] 11: далее — проверенная capability admission и managed import. Инертный
-  import-plan/staging уже есть; live-сверка и реальные импорты не выполняются.
+- [ ] 11: выполнять последовательно небольшими срезами. Инертный
+  import-plan/staging остаётся inert и не является verified reconciliation.
+  11a.1 — только read-only provider foundation (описан выше); после независимого
+  review и required CI — 11a.2: будущие reconciliation service/operator CLI,
+  private canonical-source evidence и repeatability, без БД и admission.
+  11b — отдельно в будущем explicit managed admission только после свежего GET;
+  нужны отдельные imported origin, binding, proof anchor и revision, без
+  имитации registration/activation journals. Сохранить actor/pilot ограничения;
+  исключить history suppression и старые долги из автоматизации, оставить их
+  ручному разбору. Не добавлять 11c или новое архитектурное решение.
 - [ ] 12: дальнейшая подготовка синтетической isolated restore rehearsal;
   recovery report, restore helper и docs уже есть. Не выполнять автоматические
   rearm/снятие барьеров; реальные backup/restore требуют владельца.
@@ -62,10 +75,10 @@ scope; не снимать и не обходить их и не расширя�
 - [ ] 14: синтетическая подготовка и тесты safe resource harness уже есть;
   целевые измерения VPS не выполнены и требуют владельца.
 
-Очередь строго последовательная: 9a, 9b, затем 11, 12, 13 и 14. Для каждого пункта
-создаётся небольшой PR; перед merge родитель ждёт зелёные обязательные проверки
-точного HEAD. Отсутствие owner-gate для live-проверок не задерживает код и
-синтетические тесты, которые безопасно подготовить без владельца.
+Очередь строго последовательная: 9a, 9b, затем 11a.1, 11a.2, 11b, 12, 13 и 14.
+Для каждого пункта создаётся небольшой PR; перед merge родитель ждёт зелёные
+обязательные проверки точного HEAD. Отсутствие owner-gate для live-проверок не
+задерживает код и синтетические тесты, которые безопасно подготовить без владельца.
 
 ## Проверенные срезы
 

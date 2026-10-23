@@ -135,16 +135,29 @@ type managedSummary struct {
 	name string
 }
 
-func (c *ManagedClient) summaries(ctx context.Context) ([]managedSummary, error) {
-	obj, err := c.get(ctx, "clients", nil)
+type identitySummary struct {
+	id         int64
+	name       string
+	enabled    bool
+	hasEnabled bool
+}
+
+// managedIdentitySummaries parses the bounded global identity list. Older
+// managed callers accept the pinned ID/name summary; read-only identity callers
+// additionally require enable to be present.
+func managedIdentitySummaries(ctx context.Context, get managedGetter, maxAccounts int) ([]identitySummary, error) {
+	if maxAccounts < 1 || maxAccounts > 1000 {
+		return nil, ErrManagedInvalid
+	}
+	obj, err := get(ctx, "clients", nil)
 	if err != nil {
 		return nil, err
 	}
 	list, ok := obj["clients"].([]any)
-	if !ok || len(list) > c.maxAccounts {
+	if !ok || len(list) > maxAccounts {
 		return nil, ErrManagedResponse
 	}
-	out := make([]managedSummary, 0, len(list))
+	out := make([]identitySummary, 0, len(list))
 	ids := map[int64]bool{}
 	names := map[string]bool{}
 	for _, v := range list {
@@ -164,8 +177,29 @@ func (c *ManagedClient) summaries(ctx context.Context) ([]managedSummary, error)
 		if !ok || !validIdentity(name) || names[name] {
 			return nil, ErrManagedResponse
 		}
+		enabled, hasEnabled := false, false
+		if value, exists := m["enable"]; exists {
+			var valid bool
+			enabled, valid = value.(bool)
+			if !valid {
+				return nil, ErrManagedResponse
+			}
+			hasEnabled = true
+		}
 		ids[id], names[name] = true, true
-		out = append(out, managedSummary{id, name})
+		out = append(out, identitySummary{id: id, name: name, enabled: enabled, hasEnabled: hasEnabled})
+	}
+	return out, nil
+}
+
+func (c *ManagedClient) summaries(ctx context.Context) ([]managedSummary, error) {
+	items, err := managedIdentitySummaries(ctx, c.get, c.maxAccounts)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]managedSummary, 0, len(items))
+	for _, item := range items {
+		out = append(out, managedSummary{id: item.id, name: item.name})
 	}
 	return out, nil
 }
