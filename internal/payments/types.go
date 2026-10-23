@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/billing"
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 )
 
@@ -39,6 +40,8 @@ type Snapshot struct {
 	CustomerID, InvoiceID, FirstInvoiceID, RecurringID, SUIID, State string
 	DesiredAccess                                                    bool
 	PaymentDate, NextInvoiceDate                                     string
+	ImportedOrigin                                                   importorigin.Ref
+	ImportedBaselineProofHash                                        [32]byte
 }
 type Kind string
 

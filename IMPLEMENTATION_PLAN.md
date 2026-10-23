@@ -6,9 +6,10 @@
 `674f838e80c6bc6b89e240fee79b219311b5f1e8` прошёл required CI и post-merge CI.
 11a.2 завершён. PR #26 с 11b.1 DB-only foundation влит коммитом `76dfcda`;
 точный code HEAD `d0a2ca665be507d1913db9bbe2301e945be34e0a` прошёл required CI
-`40001910084` и post-merge CI `40002786608`. 11b.2 provider-only adapter
-реализован в текущей ветке; независимый review завершён, P3 journal-shape finding
-исправлен, required CI PR #27 ожидается. Импортный runtime consumer пока не реализован.
+`40001910084` и post-merge CI `40002786608`. 11b.2 provider-only adapter merged in PR #27; exact HEAD
+`0fad9355c818424089a72aa1211bf33be5ab6ced` passed required CI `40005099529`
+and post-merge CI `40005923953`, both green. The 11b.3 payment-tracking-only
+slice is implemented and awaits independent review / PR #28 CI.
 
 ## Как вести план
 
@@ -333,8 +334,9 @@ Live-проверки и реальные импорты не выполняют
 - [x] Ограничить `MaxHistoricalAnchors` диапазоном 1..20; превышение проверяется без усечения списка.
 - [x] 11a.2 operator CLI: command and real-reader synthetic HTTP workflow bridge pass positive factory/source-reader and private-artifact checks plus exclusion, bad-hash and no-payment-source cases. PR #25 merged as `3b54c82`; exact code HEAD `02b0c8c7d882e37c713416f39ddcad42ff711baa` passed required CI `39992168476` and post-merge main CI `39992922113`. No live reads, DB admission or capability grants.
 - [x] 11b.1 DB-only foundation: opaque typed preparation performs fresh GET verification of the complete plan; default-disabled, revisioned policy; atomic PostgreSQL admission/staging with immutable imported origin, actual paid anchor and invoice history. No fake first invoice, registration/activation journals, outbox, or external writes. Policy disable/re-enable requires revision advancement to prevent ABA; shared write guard and cross-origin SUI identity checks are preserved. PR #26 merged as `76dfcda`; exact HEAD `d0a2ca665be507d1913db9bbe2301e945be34e0a` passed required CI `40001910084` and post-merge CI `40002786608`, including PostgreSQL 17 integration coverage.
-- [ ] 11b.2 provider-only slice: separate imported recurring profile and typed pause/schedule/resume adapter preserves legacy notes and frozen price, with GET preflight and final authorization. Independent review completed; the reported P3 journal-shape defect is fixed in this follow-up. Required PR #27 CI is pending. It is not runtime-wired and does not make imported origins eligible.
-- [ ] Remaining 11b: explicit managed-origin consumer branches, historical lifecycle-ledger initialization before eligibility, protected origin-mode/configuration and current DB proof, plus apply CLI are separate future slices. Do not consider all of 11b or stage 11 complete; saved verification reports are not admission authority.
+- [x] 11b.2 provider-only slice: separate imported recurring profile and typed pause/schedule/resume adapter preserves legacy notes and frozen price, with GET preflight and final authorization. PR #27 exact HEAD `0fad9355c818424089a72aa1211bf33be5ab6ced` passed required CI `40005099529` and post-merge CI `40005923953`, both green. It remains unwired and does not make imported origins generally managed.
+- [ ] 11b.3 payment-tracking-only: separate default-off imported-runtime permission; DB-validated comparable imported-origin snapshot with current configuration revision; imported-only payment tracking; active paid-baseline proof pin and storage-boundary suppression of historical confirmation notices. Implemented; awaiting independent review and PR #28 PostgreSQL runtime CI. Permission sync is an explicit API only, not startup configuration. No fake first invoice or effects.
+- [ ] Remaining full 11b: lifecycle/discovery consumers, historical ledger initialization and seen-invoice suppression, effect workers, protected origin-mode/configuration with origin FK and current DB proof, and apply CLI. Do not consider all of 11b or stage 11 complete; saved verification reports are not admission authority.
 - [ ] Сохранить actor/pilot ограничения. При будущем import admission исторические счета не должны порождать устаревшие уведомления или операции: такую history suppression требуется реализовать. Накопившиеся неоплаченные долги оставить ручному разбору, без прощения или автоматизации.
 - [ ] Перед любым будущим admission выделять дубли, отсутствующие пары и противоречия для ручного разбора; реальные данные и live API требуют отдельного owner gate.
 

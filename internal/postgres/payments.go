@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/jackc/pgx/v5"
@@ -38,6 +39,26 @@ const paymentProvenance = `
         WHERE o.client_id = c.id AND o.kind = 'register_client'
             AND o.status = 'completed' AND f.bot_id = $1
     )`
+
+// Imported payment tracking is permitted only for an immutable admitted
+// origin whose independent runtime and admission permissions are current.
+const importedPaymentProvenance = `EXISTS (
+    SELECT 1 FROM verified_import_origins io
+    JOIN imported_runtime_permissions rp ON rp.bot_id=io.bot_id AND rp.enabled
+    JOIN import_admission_policy ap ON ap.bot_id=io.bot_id AND ap.enabled
+    WHERE io.client_id=c.id AND io.bot_id=$1
+        AND rp.policy_hash=io.policy_hash AND rp.source_scope_hash=io.source_scope_hash
+        AND ap.policy_hash=io.policy_hash AND ap.source_scope_hash=io.source_scope_hash
+        AND c.chat_id=c.telegram_id
+        AND c.invoice_ninja_id=io.customer_id
+        AND s.first_invoice_id IS NULL AND s.current_invoice_id IS NOT NULL AND s.current_invoice_id<>''
+        AND s.recurring_id=io.recurring_id
+        AND c.sui_id=io.sui_id::text AND io.sui_name=c.telegram_id::text
+        AND s.state IN ('active','overdue')
+)`
+
+const paymentTrackingProvenance = `(((` + paymentProvenance + `) AND NOT EXISTS (SELECT 1 FROM verified_import_origins io WHERE io.client_id=c.id)) OR ((` + importedPaymentProvenance + `) AND NOT (` + paymentProvenance + `)))`
+const ownedPaymentTrackingProvenance = `(` + paymentProvenance + `) AND NOT EXISTS (SELECT 1 FROM verified_import_origins io WHERE io.client_id=c.id)`
 
 const paymentDue = `
     (p.next_check_at <= clock_timestamp() OR (p.last_error_code = 0 AND p.observed_generation < w.generation))
@@ -102,7 +123,7 @@ func (s *Store) SeedPaymentChecks(ctx context.Context, botID int64) (count int, 
 	}
 	rows, err := tx.Query(ctx, `SELECT c.id FROM clients c
         JOIN subscriptions s ON s.client_id = c.id
-        WHERE `+paymentProvenance+`
+        WHERE `+paymentTrackingProvenance+`
             AND NOT EXISTS (SELECT 1 FROM payment_checks p WHERE p.client_id = c.id)
         ORDER BY c.id LIMIT 50 FOR NO KEY UPDATE OF c SKIP LOCKED`, botID)
 	if err != nil {
@@ -119,7 +140,7 @@ func (s *Store) SeedPaymentChecks(ctx context.Context, botID int64) (count int, 
 		// Fresh snapshot after acquiring the client/subscription locks.
 		tag, err := tx.Exec(ctx, `INSERT INTO payment_checks (client_id, bot_id)
             SELECT c.id, $1 FROM clients c JOIN subscriptions s ON s.client_id = c.id
-            WHERE c.id = ANY($2::bigint[]) AND `+paymentProvenance+`
+            WHERE c.id = ANY($2::bigint[]) AND `+paymentTrackingProvenance+`
                 AND NOT EXISTS (SELECT 1 FROM payment_checks p WHERE p.client_id = c.id)
             ORDER BY c.id ON CONFLICT (client_id) DO NOTHING`, botID, ids)
 		if err != nil {
@@ -149,7 +170,7 @@ func (s *Store) ClaimPaymentChecks(ctx context.Context, botID int64, limit int) 
         JOIN subscriptions s ON s.client_id = c.id
         JOIN payment_checks p ON p.client_id = c.id AND p.bot_id = $1
         JOIN payment_wake_state w ON w.bot_id = p.bot_id
-        WHERE `+paymentProvenance+` AND `+paymentDue+`
+        WHERE `+paymentTrackingProvenance+` AND `+paymentDue+`
         ORDER BY p.next_check_at, c.id LIMIT $2 FOR NO KEY UPDATE OF c SKIP LOCKED`, botID, limit)
 	if err != nil {
 		return nil, err
@@ -172,7 +193,7 @@ func (s *Store) ClaimPaymentChecks(ctx context.Context, botID int64, limit int) 
                 payment_wake_state w
             WHERE p.client_id = c.id AND c.id = ANY($2::bigint[])
                 AND p.bot_id = $1 AND w.bot_id = p.bot_id
-                AND `+paymentProvenance+` AND `+paymentDue+`
+                AND `+paymentTrackingProvenance+` AND `+paymentDue+`
             RETURNING p.client_id, p.attempts, p.bot_id, p.lease_generation`, botID, ids)
 		if err != nil {
 			return nil, err
@@ -216,35 +237,89 @@ type paymentSnapshotReader interface {
 
 func readPaymentSnapshot(ctx context.Context, reader paymentSnapshotReader, claim payments.Claim) (payments.Snapshot, error) {
 	var snapshot payments.Snapshot
-	var provenance bool
+	var ownProvenance, importedProvenance bool
+	var originClientID, originBotID, admissionRevision, runtimeRevision, configurationRevision int64
+	var importedBaseline bool
+	var baselineProofHash string
+	var stableHash, policyHash, scopeHash []byte
 	err := reader.QueryRow(ctx, `SELECT c.id, c.telegram_id, c.chat_id, p.bot_id,
         COALESCE(c.invoice_ninja_id, ''), COALESCE(s.current_invoice_id, ''),
         COALESCE(s.first_invoice_id, ''), COALESCE(s.recurring_id, ''), COALESCE(c.sui_id, ''),
         s.state, s.desired_access, COALESCE(s.payment_date::text, ''),
-        COALESCE(s.next_invoice_date::text, ''), (`+paymentProvenance+`)
+        COALESCE(s.next_invoice_date::text, ''), (`+ownedPaymentTrackingProvenance+`), (`+importedPaymentProvenance+`),
+        c.configuration_revision, COALESCE(io.client_id,0), COALESCE(io.bot_id,0), COALESCE(io.admission_revision,0), COALESCE(rp.revision,0),
+        COALESCE(io.stable_hash,decode(repeat('00',32),'hex')),
+        COALESCE(io.policy_hash,decode(repeat('00',32),'hex')),
+        COALESCE(io.source_scope_hash,decode(repeat('00',32),'hex')),
+        COALESCE(io.lifecycle='active' AND s.current_invoice_id=io.current_invoice_id AND io.current_invoice_id=io.paid_anchor_invoice_id,false),
+        CASE WHEN io.lifecycle='active' AND s.current_invoice_id=io.current_invoice_id AND io.current_invoice_id=io.paid_anchor_invoice_id THEN COALESCE(io.evidence->>'proof_hash','') ELSE '' END
         FROM payment_checks p JOIN clients c ON c.id = p.client_id
         JOIN subscriptions s ON s.client_id = c.id
+        LEFT JOIN verified_import_origins io ON io.client_id=c.id AND io.bot_id=p.bot_id
+        LEFT JOIN imported_runtime_permissions rp ON rp.bot_id=io.bot_id
         WHERE p.bot_id = $1 AND p.client_id = $2 AND p.attempts = $3
             AND p.lease_generation = $4 AND p.locked_until > clock_timestamp()`,
 		claim.BotID, claim.ID, claim.Attempt, claim.Generation).Scan(
 		&snapshot.ClientID, &snapshot.TelegramID, &snapshot.ChatID, &snapshot.BotID,
 		&snapshot.CustomerID, &snapshot.InvoiceID, &snapshot.FirstInvoiceID,
 		&snapshot.RecurringID, &snapshot.SUIID, &snapshot.State, &snapshot.DesiredAccess,
-		&snapshot.PaymentDate, &snapshot.NextInvoiceDate, &provenance)
+		&snapshot.PaymentDate, &snapshot.NextInvoiceDate, &ownProvenance, &importedProvenance,
+		&configurationRevision, &originClientID, &originBotID, &admissionRevision, &runtimeRevision, &stableHash, &policyHash, &scopeHash, &importedBaseline, &baselineProofHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return payments.Snapshot{}, queue.ErrLeaseLost
 	}
 	if err != nil {
 		return payments.Snapshot{}, err
 	}
-	if !provenance {
+	if !ownProvenance && !importedProvenance {
 		return payments.Snapshot{}, queue.ErrConflict
+	}
+	if importedProvenance {
+		stable, okStable := importorigin.ParseHash(stableHash)
+		policy, okPolicy := importorigin.ParseHash(policyHash)
+		scope, okScope := importorigin.ParseHash(scopeHash)
+		if !okStable || !okPolicy || !okScope {
+			return payments.Snapshot{}, queue.ErrConflict
+		}
+		snapshot.ImportedOrigin = importorigin.Ref{ClientID: originClientID, BotID: originBotID, AdmissionRevision: admissionRevision, RuntimeRevision: runtimeRevision, ConfigurationRevision: configurationRevision, StableHash: stable, PolicyHash: policy, SourceScopeHash: scope}
+		if !snapshot.ImportedOrigin.Valid() {
+			return payments.Snapshot{}, queue.ErrConflict
+		}
+		if importedBaseline {
+			baseline, ok := importorigin.ParseHashHex(baselineProofHash)
+			if !ok {
+				return payments.Snapshot{}, queue.ErrConflict
+			}
+			snapshot.ImportedBaselineProofHash = baseline
+		}
 	}
 	return snapshot, nil
 }
 
 // Client -> subscription -> check -> confirmation is the mutation lock order.
 // No bot or wake-state lock may be acquired after entering this helper.
+// Permission row locks serialize final proof recording against revocation.
+// The imported origin is immutable, and this lock is acquired after client,
+// subscription, and check locks to preserve the established ordering.
+func lockImportedPaymentPermissions(ctx context.Context, tx pgx.Tx, clientID, botID int64) error {
+	rows, err := tx.Query(ctx, `SELECT rp.bot_id, ap.bot_id FROM verified_import_origins io
+        JOIN imported_runtime_permissions rp ON rp.bot_id=io.bot_id
+        JOIN import_admission_policy ap ON ap.bot_id=io.bot_id
+        WHERE io.client_id=$1 AND io.bot_id=$2 FOR SHARE OF rp, ap`, clientID, botID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var runtimeBot, admissionBot int64
+		if err := rows.Scan(&runtimeBot, &admissionBot); err != nil {
+			rows.Close()
+			return err
+		}
+	}
+	rows.Close()
+	return rows.Err()
+}
+
 func lockPaymentClaim(ctx context.Context, tx pgx.Tx, claim payments.Claim) error {
 	var id int64
 	err := tx.QueryRow(ctx, `SELECT id FROM clients WHERE id = $1 FOR NO KEY UPDATE`, claim.ID).Scan(&id)
@@ -335,6 +410,9 @@ func (s *Store) FinishPaymentCheck(ctx context.Context, claim payments.Claim, ex
 	if err := lockPaymentClaim(ctx, tx, claim); err != nil {
 		return err
 	}
+	if err := lockImportedPaymentPermissions(ctx, tx, claim.ID, claim.BotID); err != nil {
+		return err
+	}
 	actual, err := readPaymentSnapshot(ctx, tx, claim)
 	if err != nil {
 		return err
@@ -344,6 +422,18 @@ func (s *Store) FinishPaymentCheck(ctx context.Context, claim payments.Claim, ex
 	}
 	if decision.Proof != nil && (decision.Proof.CustomerID != actual.CustomerID || decision.Proof.InvoiceID != actual.InvoiceID) {
 		return queue.ErrConflict
+	}
+	if actual.ImportedBaselineProofHash != ([32]byte{}) {
+		var previousReviewCode int
+		if err := tx.QueryRow(ctx, `SELECT review_code FROM payment_checks WHERE client_id=$1 AND bot_id=$2`, claim.ID, claim.BotID).Scan(&previousReviewCode); err != nil {
+			return err
+		}
+		contradicted := decision.Kind == payments.Pending ||
+			(decision.Kind == payments.Verified && decision.Proof.Hash != actual.ImportedBaselineProofHash) ||
+			(decision.Kind == payments.NeedsReview && decision.Code != payments.ReviewAssociation && decision.Code != payments.ReviewExcluded)
+		if previousReviewCode == payments.ReviewChangedProof || contradicted {
+			decision = payments.Decision{Kind: payments.NeedsReview, Code: payments.ReviewChangedProof}
+		}
 	}
 
 	var clientID, botID int64
@@ -395,7 +485,11 @@ func (s *Store) FinishPaymentCheck(ctx context.Context, claim payments.Claim, ex
             next_invoice_date = $3::date WHERE client_id = $1`, actual.ClientID, proof.PaymentDate, proof.NextInvoiceDate); err != nil {
 			return err
 		}
-		drafts = notices.Confirmed
+		// Enforce historical-notice suppression at the storage boundary too;
+		// callers cannot reintroduce a confirmation notice for the pinned baseline.
+		if actual.ImportedBaselineProofHash == ([32]byte{}) {
+			drafts = notices.Confirmed
+		}
 	case decision.Kind == payments.NeedsReview:
 		reviewCode, drafts = decision.Code, notices.Review
 	}

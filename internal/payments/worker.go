@@ -170,7 +170,7 @@ func (w *Worker) notices(s Snapshot, d Decision) Notices {
 	for _, id := range w.admins {
 		notices.Review = append(notices.Review, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":review:admin:" + strconv.FormatInt(id, 10), Text: reviewText})
 	}
-	if d.Kind == Verified {
+	if d.Kind == Verified && s.ImportedBaselineProofHash == ([32]byte{}) {
 		p := d.Proof
 		body := fmt.Sprintf("Платёж по счёту №%s проверен.\nСумма: %s. Дата платежа: %s.\nРасчётная дата следующего счёта: %s.\nЭто подтверждение платежа, не состояния доступа. Настройка доступа выполняется отдельно; проверьте статус в меню или обратитесь к администратору.", p.InvoiceNumber, p.Amount, p.PaymentDate, p.NextInvoiceDate)
 		notices.Confirmed = append(notices.Confirmed, queue.Draft{BotID: w.botID, ChatID: s.ChatID, Key: prefix + ":confirmed:client", Text: body})
