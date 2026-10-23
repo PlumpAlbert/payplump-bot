@@ -538,9 +538,10 @@ func continueInitialRestorationWithNormalLedgerCycle(t *testing.T, s *Store, ctx
 	paymentSQL(t, s, ctx, `SELECT current_invoice_id='invoice-after-restoration' AND first_invoice_id IS NULL AND state='active' AND desired_access FROM subscriptions WHERE client_id=$1`, prior.ClientID)
 	paymentSQL(t, s, ctx, `SELECT count(*)=1 FROM invoice_lifecycle_invoices WHERE client_id=$1 AND invoice_id='invoice-after-restoration' AND status='sent' AND sent_date=$2::date`, prior.ClientID, paidDate)
 	paymentSQL(t, s, ctx, `SELECT count(*)=0 FROM invoice_lifecycle_invoices WHERE client_id=$1 AND invoice_id IN ('debt-current','paid-historical')`, prior.ClientID)
-	if n, err := s.SeedPaymentChecks(ctx, botID); err != nil || n != 1 {
+	if n, err := s.SeedPaymentChecks(ctx, botID); err != nil || n != 0 {
 		t.Fatalf("new-cycle payment check seed=%d %v", n, err)
 	}
+	paymentSQL(t, s, ctx, `SELECT count(*)=1 FROM payment_checks WHERE client_id=$1 AND bot_id=$2`, prior.ClientID, botID)
 	duePayment(t, s, ctx, prior.ClientID)
 	claim, snap := claimSinglePayment(t, s, ctx, botID)
 	if snap.InvoiceID != "invoice-after-restoration" {
