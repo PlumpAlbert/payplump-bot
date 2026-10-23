@@ -33,6 +33,7 @@ type renewalLoopback struct {
 	invoiceDate, invoiceNext                            string
 	customerID, invoiceID, marker, invoiceNumber        string
 	telegramID                                          int64
+	expectedPageSize                                    int
 	paymentID, allocationID                             string
 	pauseCalls, scheduleCalls, resumeCalls, panelWrites int
 	unknownPause                                        bool
@@ -80,6 +81,12 @@ func (r *renewalLoopback) number() string {
 		return r.invoiceNumber
 	}
 	return "SYNTHETIC-CURRENT"
+}
+func (r *renewalLoopback) pageSize() int {
+	if r.expectedPageSize > 0 {
+		return r.expectedPageSize
+	}
+	return 50
 }
 func (r *renewalLoopback) amount() json.Number {
 	r.mu.Lock()
@@ -557,9 +564,19 @@ func (r *renewalLoopback) ninjaHandler() http.Handler {
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(v)
 	}
-	mux.HandleFunc("/api/v1/ping", func(w http.ResponseWriter, q *http.Request) { write(w, 200, map[string]any{"data": map[string]any{}}) })
+	mux.HandleFunc("/api/v1/ping", func(w http.ResponseWriter, q *http.Request) {
+		if q.Method != http.MethodGet || q.URL.RawQuery != "" {
+			http.Error(w, "invalid ping request", http.StatusBadRequest)
+			return
+		}
+		write(w, 200, map[string]any{"data": map[string]any{}})
+	})
 	mux.HandleFunc("/api/v1/clients/", func(w http.ResponseWriter, q *http.Request) {
 		customer, actor := r.customer(), r.actor()
+		if q.Method != http.MethodGet || q.URL.RawQuery != "" {
+			http.Error(w, "invalid client lookup", http.StatusBadRequest)
+			return
+		}
 		if q.URL.Path != "/api/v1/clients/"+customer {
 			http.NotFound(w, q)
 			return
@@ -568,6 +585,10 @@ func (r *renewalLoopback) ninjaHandler() http.Handler {
 	})
 	mux.HandleFunc("/api/v1/invoices/", func(w http.ResponseWriter, q *http.Request) {
 		invoice, customer, marker, number, amount := r.invoice(), r.customer(), r.markerValue(), r.number(), r.amount()
+		if q.Method != http.MethodGet || q.URL.RawQuery != "" {
+			http.Error(w, "invalid invoice lookup", http.StatusBadRequest)
+			return
+		}
 		if q.URL.Path != "/api/v1/invoices/"+invoice {
 			http.NotFound(w, q)
 			return
@@ -578,18 +599,36 @@ func (r *renewalLoopback) ninjaHandler() http.Handler {
 		write(w, 200, map[string]any{"data": map[string]any{"id": invoice, "client_id": customer, "recurring_id": recurringID, "number": number, "private_notes": marker, "status_id": "4", "date": date, "due_date": next, "amount": amount, "balance": 0, "paid_to_date": amount, "exchange_rate": 1, "is_deleted": false, "archived_at": 0, "updated_at": 1, "invitations": []any{map[string]any{"id": "invitation-current", "sent_date": date + " 08:00:00"}}}})
 	})
 	mux.HandleFunc("/api/v1/payments", func(w http.ResponseWriter, q *http.Request) {
+		if q.Method != http.MethodGet {
+			http.Error(w, "payments requires GET", http.StatusBadRequest)
+			return
+		}
+		want := url.Values{"client_id": {r.customer()}, "include": {"invoices"}, "status": {"active,archived,deleted"}, "sort": {"id|asc"}, "per_page": {strconv.Itoa(r.pageSize())}, "page": {"1"}}
+		query := q.URL.Query()
+		if q.URL.RawQuery != want.Encode() || len(query) != 6 || len(query["client_id"]) != 1 || query.Get("client_id") != r.customer() {
+			http.Error(w, "invalid exact-client payment inventory query", http.StatusBadRequest)
+			return
+		}
 		amount, customer, invoice, paymentID, allocationID, date := r.amount(), r.customer(), r.invoice(), r.payment(), r.allocation(), r.invoiceDate
 		p := map[string]any{"id": paymentID, "client_id": customer, "date": date, "status_id": "4", "currency_id": "1", "exchange_currency_id": "", "amount": json.Number(amount), "refunded": 0, "applied": json.Number(amount), "exchange_rate": 1, "is_manual": true, "is_deleted": false, "archived_at": 0, "paymentables": []any{map[string]any{"id": allocationID, "invoice_id": invoice, "payment_id": paymentID, "amount": json.Number(amount), "refunded": 0, "archived_at": 0}}}
-		write(w, 200, map[string]any{"data": []any{p}, "meta": map[string]any{"pagination": map[string]any{"total": 1, "count": 1, "per_page": 50, "current_page": 1, "total_pages": 1}}})
+		write(w, 200, map[string]any{"data": []any{p}, "meta": map[string]any{"pagination": map[string]any{"total": 1, "count": 1, "per_page": r.pageSize(), "current_page": 1, "total_pages": 1}}})
 	})
 	mux.HandleFunc("/api/v1/recurring_invoices/", func(w http.ResponseWriter, q *http.Request) {
 		if q.URL.Path == "/api/v1/recurring_invoices/bulk" || q.URL.Path != "/api/v1/recurring_invoices/"+r.recurring.ID {
 			http.NotFound(w, q)
 			return
 		}
+		if q.URL.RawQuery != "" || q.Method != http.MethodGet && q.Method != http.MethodPut {
+			http.Error(w, "invalid recurring entity request", http.StatusBadRequest)
+			return
+		}
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if q.Method == http.MethodPut {
+			if q.Header.Get("Content-Type") != "application/json" {
+				http.Error(w, "recurring schedule requires JSON", http.StatusBadRequest)
+				return
+			}
 			if r.verifyBeforeWrite != nil {
 				if err := r.verifyBeforeWrite(string(lifecycle.RenewalSchedule)); err != nil {
 					http.Error(w, "missing committed renewal intent", http.StatusConflict)
@@ -616,11 +655,24 @@ func (r *renewalLoopback) ninjaHandler() http.Handler {
 		write(w, 200, map[string]any{"data": r.recurring})
 	})
 	mux.HandleFunc("/api/v1/recurring_invoices/bulk", func(w http.ResponseWriter, q *http.Request) {
+		if q.Method != http.MethodPost || q.URL.RawQuery != "" || q.Header.Get("Content-Type") != "application/json" {
+			http.Error(w, "recurring bulk requires exact POST JSON", http.StatusBadRequest)
+			return
+		}
+		var fields map[string]json.RawMessage
+		if json.NewDecoder(q.Body).Decode(&fields) != nil || len(fields) != 2 || len(fields["ids"]) == 0 || len(fields["action"]) == 0 {
+			http.Error(w, "invalid recurring bulk object", http.StatusBadRequest)
+			return
+		}
 		var body struct {
 			IDs    []string `json:"ids"`
 			Action string   `json:"action"`
 		}
-		_ = json.NewDecoder(q.Body).Decode(&body)
+		encoded, err := json.Marshal(fields)
+		if err != nil || json.Unmarshal(encoded, &body) != nil {
+			http.Error(w, "invalid recurring bulk fields", http.StatusBadRequest)
+			return
+		}
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if len(body.IDs) != 1 || body.IDs[0] != r.recurring.ID || body.Action != "stop" && body.Action != "start" {
@@ -680,6 +732,51 @@ func TestRenewalLoopbackSUIRejectsCreateAndNonPOSTWithoutDatabase(t *testing.T) 
 	}
 }
 
+func TestRenewalLoopbackRejectsUnscopedSettlementRequestsWithoutDatabase(t *testing.T) {
+	valid := url.Values{"client_id": {"customer-synthetic"}, "include": {"invoices"}, "status": {"active,archived,deleted"}, "sort": {"id|asc"}, "per_page": {"50"}, "page": {"1"}}
+	missing := valid.Clone()
+	missing.Del("client_id")
+	other := valid.Clone()
+	other.Set("client_id", "customer-other")
+	duplicate := valid.Encode() + "&client_id=customer-synthetic"
+	cases := []struct {
+		name, method, path string
+		want               int
+	}{
+		{"payments wrong method", http.MethodPost, "/api/v1/payments?" + valid.Encode(), http.StatusBadRequest},
+		{"payments missing client", http.MethodGet, "/api/v1/payments?" + missing.Encode(), http.StatusBadRequest},
+		{"payments other client", http.MethodGet, "/api/v1/payments?" + other.Encode(), http.StatusBadRequest},
+		{"payments duplicate client", http.MethodGet, "/api/v1/payments?" + duplicate, http.StatusBadRequest},
+		{"client query", http.MethodGet, "/api/v1/clients/customer-synthetic?include=all", http.StatusBadRequest},
+		{"invoice method", http.MethodPost, "/api/v1/invoices/invoice-current", http.StatusBadRequest},
+		{"ping query", http.MethodGet, "/api/v1/ping?probe=1", http.StatusBadRequest},
+	}
+	state := &renewalLoopback{}
+	handler := state.ninjaHandler()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status=%d want=%d", rec.Code, tc.want)
+			}
+		})
+	}
+	panel := &renewalLoopback{panel: json.RawMessage(`{"id":71,"enable":true,"name":"pp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)}
+	req := httptest.NewRequest(http.MethodGet, "/apiv2/clients?id=72", nil)
+	rec := httptest.NewRecorder()
+	panel.panelHandler().ServeHTTP(rec, req)
+	var response struct {
+		Obj struct {
+			Clients []map[string]any `json:"clients"`
+		} `json:"obj"`
+	}
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &response) != nil || len(response.Obj.Clients) != 0 {
+		t.Fatalf("unknown SUI id was not empty: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func (r *renewalLoopback) panelHandler() http.Handler {
 	mux := http.NewServeMux()
 	envelope := func(w http.ResponseWriter, obj map[string]any) {
@@ -687,25 +784,54 @@ func (r *renewalLoopback) panelHandler() http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "obj": obj})
 	}
 	mux.HandleFunc("/apiv2/clients", func(w http.ResponseWriter, q *http.Request) {
+		if q.Method != http.MethodGet {
+			http.Error(w, "SUI clients requires GET", http.StatusMethodNotAllowed)
+			return
+		}
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		var record map[string]any
-		_ = json.Unmarshal(r.panel, &record)
+		if err := json.Unmarshal(r.panel, &record); err != nil {
+			http.Error(w, "invalid SUI record", http.StatusInternalServerError)
+			return
+		}
 		id, name, identityErr := r.panelIdentity()
 		if identityErr != nil {
 			http.Error(w, "invalid SUI identity", http.StatusInternalServerError)
 			return
 		}
-		if q.URL.Query().Get("id") != "" {
-			envelope(w, map[string]any{"clients": []any{record}})
-		} else {
+		if q.URL.RawQuery == "" {
 			envelope(w, map[string]any{"clients": []any{map[string]any{"id": id, "name": name}}})
+			return
 		}
+		query := q.URL.Query()
+		if len(query) != 1 || len(query["id"]) != 1 {
+			http.Error(w, "unexpected SUI client query", http.StatusBadRequest)
+			return
+		}
+		requested := query.Get("id")
+		if requested != strconv.FormatInt(id, 10) {
+			envelope(w, map[string]any{"clients": []any{}})
+			return
+		}
+		if q.URL.RawQuery != (url.Values{"id": {requested}}).Encode() {
+			http.Error(w, "noncanonical SUI client query", http.StatusBadRequest)
+			return
+		}
+		envelope(w, map[string]any{"clients": []any{record}})
 	})
 	mux.HandleFunc("/apiv2/inbounds", func(w http.ResponseWriter, q *http.Request) {
+		if q.Method != http.MethodGet || q.URL.RawQuery != "" {
+			http.Error(w, "invalid SUI inbounds request", http.StatusBadRequest)
+			return
+		}
 		envelope(w, map[string]any{"inbounds": []any{map[string]any{"id": 1, "type": "vmess"}}})
 	})
 	mux.HandleFunc("/apiv2/status", func(w http.ResponseWriter, q *http.Request) {
+		if q.Method != http.MethodGet || q.URL.RawQuery != "r=sys" {
+			http.Error(w, "invalid SUI status request", http.StatusBadRequest)
+			return
+		}
 		envelope(w, map[string]any{"sys": map[string]any{"appVersion": "1.6.4"}})
 	})
 	mux.HandleFunc("/apiv2/save", func(w http.ResponseWriter, q *http.Request) {

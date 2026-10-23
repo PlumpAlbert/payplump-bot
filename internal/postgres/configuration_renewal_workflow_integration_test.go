@@ -10,6 +10,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +31,44 @@ import (
 const renewalWorkflowBotID int64 = 77123
 const renewalWorkflowActor int64 = 77101
 const renewalWorkflowAdmin int64 = 77901
+
+func renewalWorkflowAssertInitialSnapshot(t *testing.T, s *Store, ctx context.Context, clientID int64, late bool, proofHash []byte, historical activation.Snapshot, draft invoiceninja.RecurringDraft, binding sui.Binding) {
+	t.Helper()
+	if n, err := s.SeedRenewalOperations(ctx, renewalWorkflowBotID, []int64{renewalWorkflowActor}, 10); err != nil || n != 1 {
+		t.Fatalf("seed initial renewal diagnostic n=%d err=%v", n, err)
+	}
+	claims, err := s.ClaimOperations(ctx, []string{lifecycle.RenewalOperationKind}, 1, time.Minute)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claim initial renewal diagnostic: %v", err)
+	}
+	snapshot, err := s.LoadRenewalSnapshot(ctx, claims[0], renewalWorkflowBotID)
+	if err != nil {
+		t.Fatalf("load initial renewal snapshot: %v", err)
+	}
+	if err := activation.ValidateCompletedSnapshot(historical, binding); err != nil {
+		t.Fatalf("historical activation template/binding validation after renewal claim: %v", err)
+	}
+	var historicalProofHash []byte
+	if err := s.pool.QueryRow(ctx, `SELECT proof_hash FROM payment_confirmations WHERE invoice_id=$1`, historical.Account.FirstInvoiceID).Scan(&historicalProofHash); err != nil || string(historicalProofHash) != string(historical.Proof.Hash[:]) {
+		t.Fatalf("historical activation proof readback mismatch: err=%v", err)
+	}
+	wantState, wantDesired := "active", true
+	if late {
+		wantState, wantDesired = "overdue", false
+	}
+	valid := snapshot.ClientID == clientID && snapshot.TelegramID == renewalWorkflowActor && snapshot.ChatID == renewalWorkflowActor && snapshot.BotID == renewalWorkflowBotID && snapshot.ManagedProvenance && snapshot.InvoiceID == "invoice-current" && snapshot.CurrentInvoiceID == snapshot.InvoiceID && snapshot.FirstInvoiceID == "invoice-77101" && snapshot.Proof.Validate() == nil && snapshot.Proof.InvoiceID == snapshot.InvoiceID && string(snapshot.Proof.Hash[:]) == string(proofHash) && snapshot.State == wantState && snapshot.DesiredAccess == wantDesired && !snapshot.PaymentReview && !snapshot.PaymentLocked && !snapshot.LifecycleReview && !snapshot.WriterBusy && snapshot.RecurringID == "recurring-synthetic" && snapshot.ActivationToken == historical.Token && reflect.DeepEqual(snapshot.RecurringDraft, draft) && snapshot.RecurringDraft.ClientID == snapshot.CustomerID && snapshot.RecurringDraft.PrivateNotes == activation.Marker(snapshot.ActivationToken) && invoiceninja.ValidateRecurringDraft(snapshot.RecurringDraft) == nil && snapshot.SUIBinding == binding && snapshot.SUIID == strconv.FormatInt(binding.ID, 10) && snapshot.LedgerCustomerID == snapshot.CustomerID && snapshot.LedgerRecurringID == snapshot.RecurringID && snapshot.LedgerAmount == "125.25"
+	if late {
+		valid = valid && snapshot.LedgerStatus == "sent" && snapshot.LedgerBalance == "125.25" && snapshot.LedgerPaidToDate == "0" && snapshot.OverdueSteps["pause_recurring"] && snapshot.OverdueSteps["disable_sui"] && !snapshot.OverduePending && !snapshot.OverdueOtherSteps
+	} else {
+		valid = valid && snapshot.LedgerStatus == "paid" && snapshot.LedgerBalance == "0" && snapshot.LedgerPaidToDate == "125.25"
+	}
+	if !valid {
+		t.Fatalf("invalid initial renewal snapshot: managed=%v invoice=%q current=%q first=%q state=%q desired=%v ledger=%q/%q/%q overdue_pause=%v overdue_disable=%v", snapshot.ManagedProvenance, snapshot.InvoiceID, snapshot.CurrentInvoiceID, snapshot.FirstInvoiceID, snapshot.State, snapshot.DesiredAccess, snapshot.LedgerStatus, snapshot.LedgerBalance, snapshot.LedgerPaidToDate, snapshot.OverdueSteps["pause_recurring"], snapshot.OverdueSteps["disable_sui"])
+	}
+	if err := s.RetryOperation(ctx, claims[0].Lease, 0, 0); err != nil {
+		t.Fatalf("release initial renewal diagnostic claim: %v", err)
+	}
+}
 
 func renewalWorkflowPrepared(t *testing.T, s *Store, ctx context.Context, updateID int64, policy configdelivery.Policy) (telegram.Update, clientmenu.Prepared) {
 	t.Helper()
@@ -301,7 +341,7 @@ func runRenewalProtectedConfigurationCase(t *testing.T, late bool) {
 	}
 	// Reuse the loopback adapter peer, but replace its financial and recurring
 	// state with the real current paid cycle and the exact original draft.
-	state := &renewalLoopback{invoiceDate: today, invoiceNext: target, customerID: customer, invoiceID: currentID, marker: activation.Marker(firstActivation.Token), invoiceNumber: "SYNTHETIC-CURRENT", telegramID: renewalWorkflowActor, paymentID: "payment-current", allocationID: "allocation-current", panel: mustJSON(t, panelRecord), recurring: activationWorkflowRecurring(firstDraft, "recurring-synthetic")}
+	state := &renewalLoopback{invoiceDate: today, invoiceNext: target, customerID: customer, invoiceID: currentID, marker: activation.Marker(firstActivation.Token), invoiceNumber: "SYNTHETIC-CURRENT", telegramID: renewalWorkflowActor, expectedPageSize: 20, paymentID: "payment-current", allocationID: "allocation-current", panel: mustJSON(t, panelRecord), recurring: activationWorkflowRecurring(firstDraft, "recurring-synthetic")}
 	state.recurring.StatusID = "2"
 	state.recurring.NextSendDate = firstDraft.NextSendDate
 	state.recurring.NextSendDatetime = firstDraft.NextSendDate + "T12:00:00Z"
@@ -362,11 +402,11 @@ func runRenewalProtectedConfigurationCase(t *testing.T, late bool) {
 	defer ninja.Close()
 	panelHTTP := httptest.NewServer(state.panelHandler())
 	defer panelHTTP.Close()
-	cycle, err := invoiceninja.NewCycleReader(ninja.URL, "synthetic", 2*time.Second, 50, 20)
+	cycle, err := invoiceninja.NewCycleReader(ninja.URL, "synthetic", 2*time.Second, 20, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	settle, err := invoiceninja.NewSettlementClient(ninja.URL, "synthetic", 2*time.Second, 50, 20)
+	settle, err := invoiceninja.NewSettlementClient(ninja.URL, "synthetic", 2*time.Second, 20, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,6 +427,7 @@ func runRenewalProtectedConfigurationCase(t *testing.T, late bool) {
 	if err = s.pool.QueryRow(ctx, `SELECT proof_hash FROM payment_confirmations WHERE invoice_id=$1`, account.FirstInvoiceID).Scan(&originalHash); err != nil {
 		t.Fatal(err)
 	}
+	renewalWorkflowAssertInitialSnapshot(t, s, ctx, clientID, late, decision.Proof.Hash[:], firstActivation, firstDraft, binding)
 	workerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	done := make(chan error, 1)
 	go func() { done <- worker.Run(workerCtx) }()
@@ -408,7 +449,7 @@ func runRenewalProtectedConfigurationCase(t *testing.T, late bool) {
 	defer poll.Stop()
 	var renewalID int64
 	var outcome string
-	for outcome != "completed" {
+	for outcome != "completed" && outcome != "review" {
 		select {
 		case <-poll.C:
 			_ = s.pool.QueryRow(workerCtx, `SELECT a.operation_id,a.outcome FROM invoice_renewal_actions a WHERE a.client_id=$1 AND a.invoice_id=$2`, clientID, currentID).Scan(&renewalID, &outcome)
@@ -430,7 +471,14 @@ func runRenewalProtectedConfigurationCase(t *testing.T, late bool) {
 		t.Fatal("renewal worker did not join")
 	}
 	if outcome != "completed" {
-		t.Fatalf("real renewal outcome=%q late=%v", outcome, late)
+		var code, lastError int
+		var status string
+		var steps, unconfirmed int
+		err := s.pool.QueryRow(ctx, `SELECT COALESCE(a.review_code,0),o.status,COALESCE(o.last_error_code,0),
+			(SELECT count(*) FROM invoice_renewal_steps st WHERE st.operation_id=a.operation_id),
+			(SELECT count(*) FROM invoice_renewal_steps st WHERE st.operation_id=a.operation_id AND st.confirmed_at IS NULL)
+			FROM invoice_renewal_actions a JOIN operations o ON o.id=a.operation_id WHERE a.client_id=$1 AND a.invoice_id=$2`, clientID, currentID).Scan(&code, &status, &lastError, &steps, &unconfirmed)
+		t.Fatalf("real renewal did not complete: outcome=%q review_code=%d operation=%s last_error=%d steps=%d unconfirmed=%d late=%v diagnostic_err=%v", outcome, code, status, lastError, steps, unconfirmed, late, err)
 	}
 	state.mu.Lock()
 	pauseCalls, scheduleCalls, resumeCalls, panelWrites := state.pauseCalls, state.scheduleCalls, state.resumeCalls, state.panelWrites
