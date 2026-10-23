@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 )
 
 // Install the exact pre-010 schema with the same immutable checksum ledger used
@@ -51,6 +52,39 @@ func applyMigrationsThrough009(t *testing.T, s *Store, ctx context.Context) {
 	}
 }
 
+// seedLegacyActivationAccounts constructs payment state using only the schema
+// available through migration 009. In particular it avoids Store.SeedPaymentChecks,
+// whose current implementation also consults post-009 provenance tables.
+func seedLegacyActivationAccounts(t *testing.T, s *Store, ctx context.Context, botID int64, start, count int) {
+	t.Helper()
+	ids := seedPaymentAccounts(t, s, ctx, botID, start, count)
+	proofs := make([]*payments.Proof, count)
+	for i := range count {
+		proofs[i] = paymentProof(t, payments.Snapshot{
+			InvoiceID:  fmt.Sprintf("invoice-%d", start+i),
+			CustomerID: fmt.Sprintf("customer-%d", start+i),
+		}, "2039-01-31", "125.25")
+	}
+	for _, id := range ids {
+		paymentExec(t, s, ctx, `INSERT INTO payment_checks (client_id, bot_id) VALUES ($1, $2)`, id, botID)
+	}
+	hashes, evidence := make([][]byte, count), make([]string, count)
+	for i, proof := range proofs {
+		hashes[i], evidence[i] = proof.Hash[:], string(proof.JSON)
+	}
+	paymentExec(t, s, ctx, `WITH facts AS (
+        SELECT * FROM unnest($1::bigint[], $2::bytea[], $3::text[]) AS f(client_id, hash, evidence)
+    ), confirmed AS (
+        INSERT INTO payment_confirmations (invoice_id, client_id, bot_id, customer_id, invoice_number,
+            amount, currency_id, payment_date, next_invoice_date, proof_hash, evidence)
+        SELECT s.current_invoice_id, c.id, $4, c.invoice_ninja_id, 'SYNTHETIC', 125.25, '1',
+            '2039-01-31', '2039-02-28', f.hash, f.evidence::jsonb
+        FROM facts f JOIN clients c ON c.id=f.client_id JOIN subscriptions s ON s.client_id=c.id
+        RETURNING client_id, payment_date, next_invoice_date
+    ) UPDATE subscriptions s SET payment_date=pc.payment_date, next_invoice_date=pc.next_invoice_date
+        FROM confirmed pc WHERE s.client_id=pc.client_id`, ids, hashes, evidence, botID)
+}
+
 func TestSharedDispatchMigrationBackfillsUnknownActivationGuard(t *testing.T) {
 	if !integrationDatabaseConfigured() {
 		t.Skip("requires disposable PostgreSQL integration database")
@@ -59,7 +93,13 @@ func TestSharedDispatchMigrationBackfillsUnknownActivationGuard(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(setup), 4*time.Minute)
 	t.Cleanup(cancel)
 	applyMigrationsThrough009(t, s, ctx)
-	seedActivationAccounts(t, s, ctx, 34200, 34200, 1)
+	for _, table := range []string{"verified_import_origins", "imported_runtime_permissions"} {
+		var absent bool
+		if err := s.pool.QueryRow(ctx, `SELECT to_regclass($1) IS NULL`, table).Scan(&absent); err != nil || !absent {
+			t.Fatalf("pre-010 schema unexpectedly contains %s: absent=%v err=%v", table, absent, err)
+		}
+	}
+	seedLegacyActivationAccounts(t, s, ctx, 34200, 34200, 1)
 	seedActivationBatch(t, s, ctx, 34200, activationAllow(34200, 1), 1)
 	op, snapshot := claimOneActivation(t, s, ctx, 34200)
 	payload := activationPayload(t, snapshot, activation.SUICreate)
