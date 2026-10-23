@@ -88,6 +88,19 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	var invoiceGets atomic.Int32
 	var extraRecurring any
 	var extraInvoice any
+	var secondExtraInvoice any
+	var anchorFailure bool
+	var extraPayments []any
+	var pausedEnabled = true
+	var pausedMode bool
+	var driftRecurring bool
+	var driftRecurringGets atomic.Int32
+	var currentInvoiceDrift bool
+	var currentInvoiceGets atomic.Int32
+	var settingsDrift bool
+	var settingsGets atomic.Int32
+	var suiSubPath = "private-subpath"
+	var paymentInvoiceID = workflowInvoice
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -121,6 +134,9 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		if path == "/ninja/api/v1/recurring_invoices/"+workflowRecurring {
 			w.Header().Set("X-APP-VERSION", "5.13.47")
 			writeWorkflowJSON(w, map[string]any{"data": recurring, "links": map[string]string{"next": "http://must-not-follow.invalid"}})
+			if driftRecurring && driftRecurringGets.Add(1)%2 == 1 {
+				recurring["private_notes"] = "source changed between verification passes"
+			}
 			return
 		}
 		if path == "/ninja/api/v1/invoices" {
@@ -129,16 +145,44 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 			if extraInvoice != nil {
 				rows = append(rows, extraInvoice)
 			}
+			if secondExtraInvoice != nil {
+				rows = append(rows, secondExtraInvoice)
+			}
 			writeWorkflowPage(w, rows, len(rows), 1)
 			return
 		}
-		if path == "/ninja/api/v1/invoices/"+workflowInvoice {
-			if invoiceGets.Add(1)%3 != 1 {
-				writeWorkflowJSON(w, map[string]any{"data": settlementInvoice})
+		if strings.HasPrefix(path, "/ninja/api/v1/invoices/") {
+			id := strings.TrimPrefix(path, "/ninja/api/v1/invoices/")
+			if anchorFailure && id != workflowInvoice {
+				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
-			w.Header().Set("X-APP-VERSION", "5.13.47")
-			writeWorkflowJSON(w, map[string]any{"data": invoice})
+			if id == workflowInvoice && (pausedMode || invoiceGets.Add(1)%3 == 1) {
+				w.Header().Set("X-APP-VERSION", "5.13.47")
+				writeWorkflowJSON(w, map[string]any{"data": invoice})
+				if currentInvoiceDrift && currentInvoiceGets.Add(1) == 1 {
+					invoice["private_notes"] = "current invoice drift between passes"
+				}
+				return
+			}
+			settlement := settlementInvoice
+			if id != workflowInvoice {
+				source := invoice
+				for _, candidate := range []any{extraInvoice, secondExtraInvoice} {
+					if row, ok := candidate.(map[string]any); ok && row["id"] == id {
+						source = row
+					}
+				}
+				settlement = map[string]any{}
+				for k, v := range source {
+					settlement[k] = v
+				}
+				settlement["id"] = id
+				settlement["status_id"] = "4"
+				settlement["balance"] = 0
+				settlement["paid_to_date"] = 100
+			}
+			writeWorkflowJSON(w, map[string]any{"data": settlement})
 			return
 		}
 		if path == "/ninja/api/v1/clients/"+workflowCustomer {
@@ -146,7 +190,10 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 			return
 		}
 		if path == "/ninja/api/v1/payments" {
-			writeWorkflowPage(w, []any{payment}, 1, 1)
+			allocation["invoice_id"] = paymentInvoiceID
+			rows := []any{payment}
+			rows = append(rows, extraPayments...)
+			writeWorkflowPage(w, rows, len(rows), 1)
 			return
 		}
 		if path == "/panel/apiv2/status" {
@@ -158,11 +205,14 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 			return
 		}
 		if path == "/panel/apiv2/clients" {
-			writeWorkflowJSON(w, map[string]any{"success": true, "obj": map[string]any{"clients": []any{map[string]any{"id": 42, "name": "42", "enable": true, "desc": "", "remark": "", "inbounds": []int{1}, "expiry": 0, "volume": 0}}}})
+			writeWorkflowJSON(w, map[string]any{"success": true, "obj": map[string]any{"clients": []any{map[string]any{"id": 42, "name": "42", "enable": pausedEnabled, "desc": "", "remark": "", "inbounds": []int{1}, "expiry": 0, "volume": 0}}}})
 			return
 		}
 		if path == "/panel/apiv2/settings" {
-			writeWorkflowJSON(w, map[string]any{"success": true, "obj": map[string]any{"subURI": "https://subs.invalid/", "subPath": "sub", "subPort": "443", "subDomain": ""}})
+			writeWorkflowJSON(w, map[string]any{"success": true, "obj": map[string]any{"subURI": "https://subs.invalid/", "subPath": suiSubPath, "subPort": "443", "subDomain": ""}})
+			if settingsDrift && settingsGets.Add(1) == 1 {
+				suiSubPath = "changed-private-path"
+			}
 			return
 		}
 		t.Errorf("unexpected request path %s?%s", path, r.URL.RawQuery)
@@ -219,6 +269,16 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		t.Fatal("private journal omitted actual source evidence")
 	}
 	initialEvidenceHash := result.EvidenceHash
+	// Keep the established active expired-period reason stable.
+	recurring["next_send_date"] = "2026-03-01"
+	expiredClaim := claim
+	expiredClaim.PeriodStart, expiredClaim.PeriodEnd = "2026-02-01", "2026-03-01"
+	expiredPlan := importplan.Analyze(importplan.Manifest{Records: []importplan.Record{expiredClaim}})
+	expiredResult, _, expiredErr := svc.Verify(context.Background(), expiredPlan, expiredPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if expiredErr != nil || expiredResult.Verified != 0 || expiredResult.Reasons[ReasonExpired] != 1 {
+		t.Fatal("active expired-period reason changed", expiredResult.Reasons, expiredErr)
+	}
+	recurring["next_send_date"] = "2026-04-01"
 	for _, public := range []string{result.String(), result.GoString(), fmt.Sprint(result), string(mustJSON(t, result)), fmt.Sprint(evidence[0]), evidence[0].GoString(), string(mustJSON(t, evidence[0]))} {
 		for _, secret := range []string{workflowCustomer, workflowInvoice, workflowRecurring, workflowToken, server.URL, "historical legacy note"} {
 			if strings.Contains(public, secret) {
@@ -306,11 +366,212 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		t.Fatal("additional unpaid debt was accepted", out.Reasons, err)
 	}
 	extraInvoice = nil
+	// A paused account is reportable only with one current debt and a separately paid historical anchor.
+	pausedMode = true
+	pausedEnabled = false
+	paymentInvoiceID = "invoice-anchor"
+	payment["date"] = "2026-02-01"
+	recurring["status_id"] = "3"
+	recurring["next_send_date"] = "2026-02-01"
+	recurring["next_send_datetime"] = "2026-02-01T00:00:00.000000Z"
+	invoice["status_id"], invoice["date"], invoice["balance"], invoice["paid_to_date"] = "2", "2026-03-01", 100, 0
+	settlementInvoice["status_id"], settlementInvoice["date"], settlementInvoice["balance"], settlementInvoice["paid_to_date"] = "2", "2026-03-01", 100, 0
+	setExtraInvoice("invoice-anchor", "2026-02-01", "4")
+	secondExtraInvoice = map[string]any{}
+	for k, v := range invoice {
+		secondExtraInvoice.(map[string]any)[k] = v
+	}
+	secondExtraInvoice.(map[string]any)["id"] = "invoice-000-old"
+	secondExtraInvoice.(map[string]any)["date"] = "2026-01-01"
+	secondExtraInvoice.(map[string]any)["status_id"] = "4"
+	secondExtraInvoice.(map[string]any)["balance"] = 0
+	secondExtraInvoice.(map[string]any)["paid_to_date"] = 100
+	extraPayments = []any{map[string]any{"id": "payment-old", "client_id": workflowCustomer, "date": "2026-01-01", "status_id": "4", "currency_id": "1", "exchange_currency_id": "", "amount": 100, "refunded": 0, "applied": 100, "exchange_rate": 1, "is_manual": true, "is_deleted": false, "archived_at": 0, "paymentables": []any{map[string]any{"id": "allocation-old", "invoice_id": "invoice-000-old", "payment_id": "payment-old", "amount": 100, "refunded": 0, "archived_at": 0}}, "invoices": []any{}}}
+	for k, v := range invoice {
+		if k != "id" && k != "date" && k != "status_id" {
+			extraInvoice.(map[string]any)[k] = v
+		}
+	}
+	extraInvoice.(map[string]any)["id"] = "invoice-anchor"
+	extraInvoice.(map[string]any)["date"] = "2026-02-01"
+	extraInvoice.(map[string]any)["status_id"] = "4"
+	extraInvoice.(map[string]any)["balance"] = 0
+	extraInvoice.(map[string]any)["paid_to_date"] = 100
+	for k := range suiFields {
+		if k == "enable" {
+			suiFields[k] = json.RawMessage(`false`)
+		}
+	}
+	suiRaw, err = json.Marshal(suiFields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pausedClaim := claim
+	pausedClaim.CurrentInvoiceID, pausedClaim.InvoiceStatus = workflowInvoice, "sent"
+	pausedClaim.PeriodStart, pausedClaim.PeriodEnd = "2026-02-01", "2026-03-01"
+	pausedClaim.Lifecycle, pausedClaim.UnpaidInvoices = "paused", 1
+	pausedPlan := importplan.Analyze(importplan.Manifest{Records: []importplan.Record{pausedClaim}})
+	pausedResult, pausedEvidence, err := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || pausedResult.Verified != 1 || len(pausedEvidence) != 1 || pausedEvidence[0].CurrentInvoiceID == pausedEvidence[0].PaidAnchorInvoiceID || pausedEvidence[0].PaidAnchorInvoiceID != "invoice-anchor" {
+		t.Fatalf("paused historical-anchor verification failed: result=%+v evidence=%+v err=%v", pausedResult, pausedEvidence, err)
+	}
+	var privateSnapshot struct {
+		CurrentInvoice invoiceninja.CycleInvoice `json:"current_invoice"`
+		SUISettings    sui.Settings              `json:"sui_settings"`
+	}
+	pausedPrivateJSON, privateErr := pausedEvidence[0].PrivateJSON()
+	if privateErr != nil {
+		t.Fatal(privateErr)
+	}
+	if err := json.Unmarshal(pausedPrivateJSON, &privateSnapshot); err != nil || privateSnapshot.CurrentInvoice.ID != workflowInvoice || privateSnapshot.CurrentInvoice.RecurringID != workflowRecurring || privateSnapshot.CurrentInvoice.StatusID != "2" || privateSnapshot.CurrentInvoice.Date != "2026-03-01" || privateSnapshot.CurrentInvoice.Balance.String() != "100" || privateSnapshot.CurrentInvoice.PaidToDate.String() != "0" || privateSnapshot.CurrentInvoice.ExchangeRate.String() != "1" || privateSnapshot.SUISettings.SubURI != "https://subs.invalid/" || privateSnapshot.SUISettings.SubPath != "private-subpath" || privateSnapshot.SUISettings.SubPort != "443" {
+		t.Fatalf("private evidence omitted actual current debt / S-UI settings: %+v err=%v", privateSnapshot, err)
+	}
+	for _, public := range []string{fmt.Sprint(pausedEvidence[0]), pausedEvidence[0].GoString(), string(mustJSON(t, pausedEvidence[0]))} {
+		for _, secret := range []string{workflowInvoice, workflowRecurring, "private-subpath", "2026-03-01"} {
+			if strings.Contains(public, secret) {
+				t.Fatalf("private snapshot leaked through generic formatting: %s", public)
+			}
+		}
+	}
+	// Actual private fields are part of canonical aggregate evidence.
+	settingsGets.Store(0)
+	settingsDrift = true
+	driftedSettings, _, err := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || driftedSettings.Verified != 0 || driftedSettings.Reasons[ReasonChanged] != 1 {
+		t.Fatal("between-pass S-UI settings drift was accepted", driftedSettings.Reasons, err)
+	}
+	settingsDrift = false
+	suiSubPath = "private-subpath"
+	currentInvoiceGets.Store(0)
+	currentInvoiceDrift = true
+	driftedInvoice, _, err := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || driftedInvoice.Verified != 0 || driftedInvoice.Reasons[ReasonChanged] != 1 {
+		t.Fatal("between-pass current-invoice drift was accepted", driftedInvoice.Reasons, err)
+	}
+	currentInvoiceDrift = false
+	invoice["private_notes"] = "paid current cycle"
+	// The complete source authority is reread; an intervening source drift invalidates the report.
+	driftRecurringGets.Store(0)
+	driftRecurring = true
+	drifted, _, err := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || drifted.Verified != 0 || drifted.Reasons[ReasonChanged] != 1 {
+		t.Fatal("between-pass source drift was accepted", drifted.Reasons, err)
+	}
+	driftRecurring = false
+	// Debt and anchor failures remain manual, never forgiven or silently selected.
+	invoice["balance"] = 99
+	badDebt, _, err := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || badDebt.Verified != 0 {
+		t.Fatal("partial current debt accepted", badDebt.Reasons, err)
+	}
+	invoice["balance"] = 100
+	// A second unpaid debt and an enabled S-UI record both fail closed.
+	secondExtraInvoice = map[string]any{}
+	for k, v := range invoice {
+		secondExtraInvoice.(map[string]any)[k] = v
+	}
+	secondExtraInvoice.(map[string]any)["id"] = "invoice-second-debt"
+	secondExtraInvoice.(map[string]any)["recurring_id"] = ""
+	secondDebt, _, err := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || secondDebt.Verified != 0 || secondDebt.Reasons[ReasonUnpaid] != 1 {
+		t.Fatal("multiple debts accepted", secondDebt.Reasons, err)
+	}
+	secondExtraInvoice = nil
+	pausedEnabled = true
+	enabledMismatch, _, err := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || enabledMismatch.Verified != 0 {
+		t.Fatal("enabled paused S-UI record accepted", enabledMismatch.Reasons, err)
+	}
+	pausedEnabled = false
+	// Source errors while checking a possible paid anchor invalidate the whole report.
+	anchorFailure = true
+	sourceFailure, _, err := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || sourceFailure.Verified != 0 || sourceFailure.Reasons[ReasonSourceFailure] != 1 {
+		t.Fatal("historical source failure was skipped", sourceFailure.Reasons, err)
+	}
+	anchorFailure = false
+	// Current and historical invoice ownership is checked against source inventory, not claims.
+	for _, ownedInvoice := range []map[string]any{invoice, extraInvoice.(map[string]any)} {
+		owner := ownedInvoice["client_id"]
+		ownedInvoice["client_id"] = "foreign-customer"
+		wrongOwner, _, verifyErr := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+		if verifyErr != nil || wrongOwner.Verified != 0 {
+			t.Fatal("foreign invoice owner accepted", wrongOwner.Reasons, verifyErr)
+		}
+		ownedInvoice["client_id"] = owner
+	}
+	// Refunds, FX and credit-like non-manual payments cannot serve as anchors.
+	for _, badPayment := range []struct {
+		field string
+		value any
+	}{{"refunded", 100}, {"exchange_currency_id", "2"}, {"is_manual", false}} {
+		original := payment[badPayment.field]
+		payment[badPayment.field] = badPayment.value
+		badProof, _, verifyErr := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+		if verifyErr != nil || badProof.Verified != 0 {
+			t.Fatalf("unsupported anchor payment %s accepted: %v %v", badPayment.field, badProof.Reasons, verifyErr)
+		}
+		payment[badPayment.field] = original
+	}
+	// Two fully matching historical proofs are ambiguous, never first/top-N selected.
+	secondExtraInvoice = map[string]any{}
+	for k, v := range extraInvoice.(map[string]any) {
+		secondExtraInvoice.(map[string]any)[k] = v
+	}
+	secondExtraInvoice.(map[string]any)["id"] = "invoice-anchor-two"
+	secondExtraInvoice.(map[string]any)["date"] = "2026-02-15"
+	extraAllocation := map[string]any{"id": "allocation-extra", "invoice_id": "invoice-anchor-two", "payment_id": "payment-extra", "amount": 100, "refunded": 0, "archived_at": 0}
+	extraPayments = append(extraPayments, map[string]any{"id": "payment-extra", "client_id": workflowCustomer, "date": "2026-02-01", "status_id": "4", "currency_id": "1", "exchange_currency_id": "", "amount": 100, "refunded": 0, "applied": 100, "exchange_rate": 1, "is_manual": true, "is_deleted": false, "archived_at": 0, "paymentables": []any{extraAllocation}, "invoices": []any{}})
+	ambiguousAnchors, _, err := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || ambiguousAnchors.Verified != 0 || ambiguousAnchors.Reasons[ReasonAmbiguous] != 1 {
+		t.Fatal("multiple paid anchors were selected", ambiguousAnchors.Reasons, err)
+	}
+	extraPayments = extraPayments[:1]
+	// No top-N selection: the configured cap rejects the full historical inventory.
+	secondExtraInvoice = map[string]any{}
+	for k, v := range extraInvoice.(map[string]any) {
+		secondExtraInvoice.(map[string]any)[k] = v
+	}
+	secondExtraInvoice.(map[string]any)["id"] = "invoice-anchor-two"
+	secondExtraInvoice.(map[string]any)["date"] = "2026-02-15"
+	limitedPolicy := policy
+	limitedPolicy.MaxHistoricalAnchors = 1
+	limitedSvc, err := New(limitedPolicy, providers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limited, _, err := limitedSvc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || limited.Verified != 0 || limited.Reasons[ReasonHistoryLimit] != 1 {
+		t.Fatal("historical inventory was truncated or selected", limited.Reasons, err)
+	}
+	secondExtraInvoice = nil
+	extraPayments = nil
+	extraInvoice = nil
+	noAnchor, _, err := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || noAnchor.Verified != 0 {
+		t.Fatal("missing paid anchor accepted", noAnchor.Reasons, err)
+	}
+	pausedMode = false
+	invoiceGets.Store(0)
+	pausedEnabled = true
+	suiFields["enable"] = json.RawMessage(`true`)
+	suiRaw, err = json.Marshal(suiFields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paymentInvoiceID = workflowInvoice
+	payment["date"] = "2026-03-01"
+	recurring["status_id"] = "2"
+	recurring["next_send_date"] = "2026-04-01"
+	recurring["next_send_datetime"] = "2026-04-01T00:00:00.000000Z"
+	invoice["status_id"], invoice["date"], invoice["balance"], invoice["paid_to_date"] = "4", "2026-03-01", 0, 100
+	settlementInvoice["status_id"], settlementInvoice["date"], settlementInvoice["balance"], settlementInvoice["paid_to_date"] = "4", "2026-03-01", 0, 100
+	extraInvoice = nil
 	// Evidence hashing includes private source material, while public rendering stays redacted.
 	recurring["private_notes"] = "changed legacy source note"
 	changed, changedEvidence, err := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
 	if err != nil || changed.Verified != 1 || len(changedEvidence) != 1 || changed.EvidenceHash == initialEvidenceHash {
-		t.Fatal("private source change did not alter evidence digest", err)
+		t.Fatalf("private source change did not alter evidence digest: result=%+v reasons=%v evidence=%d initial=%s err=%v", changed, changed.Reasons, len(changedEvidence), initialEvidenceHash, err)
 	}
 	before := requests.Load()
 	excludedPolicy := policy

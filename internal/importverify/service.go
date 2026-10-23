@@ -34,6 +34,7 @@ const (
 	ReasonExpired       = "active_period_expired"
 	ReasonChanged       = "source_changed"
 	ReasonPausedHistory = "paused_history_not_supported"
+	ReasonHistoryLimit  = "historical_anchor_limit"
 )
 
 type Policy struct {
@@ -51,7 +52,7 @@ type Policy struct {
 }
 
 func (p Policy) Validate() error {
-	if p.BotID <= 0 || p.PublicSubscriptionBase == "" || !validDigest(p.SourceScopeHash) || p.MaxInventoryRecords < 1 || p.MaxInventoryRecords > 1000 || p.NinjaVersion != invoiceninja.SupportedRecurringVersion || (p.SUIVersion != "1.6.4" && p.SUIVersion != "v1.6.4") || p.NativeCurrencyID == "" || p.NativeCurrencyCode == "" || p.ProductKey == "" || p.MaxRecords < 1 || p.MaxRecords > importplan.MaxRecords || p.MaxPages < 1 || p.MaxPages > 100 || p.MaxHistoricalAnchors < 1 || p.MaxHistoricalAnchors > 2000 || p.EvidenceTTL <= 0 || p.EvidenceTTL > 15*time.Minute {
+	if p.BotID <= 0 || p.PublicSubscriptionBase == "" || !validDigest(p.SourceScopeHash) || p.MaxInventoryRecords < 1 || p.MaxInventoryRecords > 1000 || p.NinjaVersion != invoiceninja.SupportedRecurringVersion || (p.SUIVersion != "1.6.4" && p.SUIVersion != "v1.6.4") || p.NativeCurrencyID == "" || p.NativeCurrencyCode == "" || p.ProductKey == "" || p.MaxRecords < 1 || p.MaxRecords > importplan.MaxRecords || p.MaxPages < 1 || p.MaxPages > 100 || p.MaxHistoricalAnchors < 1 || p.MaxHistoricalAnchors > 20 || p.EvidenceTTL <= 0 || p.EvidenceTTL > 15*time.Minute {
 		return errors.New("invalid import verification policy")
 	}
 	if !canonicalPositive(p.NativeCurrencyID) || len(p.NativeCurrencyCode) != 3 || p.NativeCurrencyCode[0] < 'A' || p.NativeCurrencyCode[0] > 'Z' || p.NativeCurrencyCode[1] < 'A' || p.NativeCurrencyCode[1] > 'Z' || p.NativeCurrencyCode[2] < 'A' || p.NativeCurrencyCode[2] > 'Z' {
@@ -142,6 +143,11 @@ type PrivateEvidence struct {
 	CustomerID           string          `json:"customer_id"`
 	RecurringID          string          `json:"recurring_id"`
 	CurrentInvoiceID     string          `json:"current_invoice_id"`
+	CurrentInvoice       json.RawMessage `json:"current_invoice"`
+	SUISettings          sui.Settings    `json:"sui_settings"`
+	Lifecycle            string          `json:"lifecycle"`
+	CurrentInvoiceStatus string          `json:"current_invoice_status"`
+	DebtAmount           string          `json:"debt_amount,omitempty"`
 	SUIID                int64           `json:"sui_id"`
 	ProofHash            string          `json:"proof_hash"`
 	SourceFactsHash      string          `json:"source_facts_hash"`
@@ -251,8 +257,8 @@ func (s *Service) Verify(ctx context.Context, plan importplan.Plan, expectedHash
 			result.Reasons[ReasonUnsupported]++
 			continue
 		}
-		if r.Lifecycle == "paused" {
-			result.Reasons[ReasonPausedHistory]++
+		if r.Lifecycle != "active" && r.Lifecycle != "paused" {
+			result.Reasons[ReasonUnsupported]++
 			continue
 		}
 		reason, evidence := s.verifyCandidate(ctx, candidate, calendarToday, verifiedAt, policyHash, plan.Hash)
@@ -264,7 +270,7 @@ func (s *Service) Verify(ctx context.Context, plan importplan.Plan, expectedHash
 			if err := ctx.Err(); err != nil {
 				return Result{}, nil, err
 			}
-			if secondReason != "" || evidence.ProofHash != second.ProofHash || evidence.SourceFactsHash != second.SourceFactsHash || evidence.CustomerID != second.CustomerID || evidence.RecurringID != second.RecurringID || evidence.CurrentInvoiceID != second.CurrentInvoiceID || evidence.SUIID != second.SUIID {
+			if secondReason != "" || evidence.ProofHash != second.ProofHash || evidence.SourceFactsHash != second.SourceFactsHash || evidence.CustomerID != second.CustomerID || evidence.RecurringID != second.RecurringID || evidence.CurrentInvoiceID != second.CurrentInvoiceID || evidence.PaidAnchorInvoiceID != second.PaidAnchorInvoiceID || evidence.SUIID != second.SUIID {
 				reason = ReasonChanged
 			}
 		}
@@ -315,7 +321,11 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 			live = append(live, x)
 		}
 	}
-	if len(live) != 1 || live[0].ID != r.RecurringID || live[0].StatusID != "2" {
+	expectedRecurringStatus := "2"
+	if r.Lifecycle == "paused" {
+		expectedRecurringStatus = "3"
+	}
+	if len(live) != 1 || live[0].ID != r.RecurringID || live[0].StatusID != expectedRecurringStatus {
 		return ReasonAmbiguous, PrivateEvidence{}
 	}
 	recurring, err := s.providers.Recurring.Get(ctx, r.RecurringID)
@@ -330,11 +340,15 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 	if string(inventoryJSON) != string(directJSON) {
 		return ReasonChanged, PrivateEvidence{}
 	}
-	if !supportedLegacyRecurring(recurring, s.policy.ProductKey, r.Amount) || recurring.NextSendDate != r.PeriodEnd {
+	if !supportedLegacyRecurring(recurring, s.policy.ProductKey, r.Amount, expectedRecurringStatus) || (r.Lifecycle == "active" && recurring.NextSendDate != r.PeriodEnd) {
 		return ReasonUnsupported, PrivateEvidence{}
 	}
-	scheduled, err := invoiceninja.ParseRecurringUTC(recurring.NextSendDatetime)
-	if err != nil || !scheduled.After(verifiedAt) {
+	if recurring.NextSendDatetime != "" {
+		scheduled, parseErr := invoiceninja.ParseRecurringUTC(recurring.NextSendDatetime)
+		if parseErr != nil || (r.Lifecycle == "active" && !scheduled.After(verifiedAt)) {
+			return ReasonUnsupported, PrivateEvidence{}
+		}
+	} else if r.Lifecycle == "active" {
 		return ReasonUnsupported, PrivateEvidence{}
 	}
 	recurringJSON, _ := json.Marshal(recurring)
@@ -404,6 +418,7 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 	latestIssuedDate, latestIssuedID, latestIssuedCount := "", "", 0
 	seenInvoices := map[string]bool{}
 	invoiceIDs := make([]string, 0, len(invoices))
+	var historical []invoiceninja.CycleInvoice
 	for i := range invoices {
 		iv := &invoices[i]
 		if iv.ID == "" || seenInvoices[iv.ID] || iv.ClientID != customer.ID {
@@ -426,6 +441,9 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 				} else if iv.Date == latestIssuedDate {
 					latestIssuedCount++
 				}
+				if r.Lifecycle == "paused" && iv.StatusID == "4" && iv.ID != r.CurrentInvoiceID && iv.Date < r.PeriodEnd {
+					historical = append(historical, *iv)
+				}
 			default:
 				return ReasonUnsupported, PrivateEvidence{}
 			}
@@ -438,17 +456,35 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 		}
 	}
 	slices.Sort(invoiceIDs)
-	if unpaid != r.UnpaidInvoices || unpaid != 0 {
-		return ReasonUnpaid, PrivateEvidence{}
-	}
 	if latestIssuedCount != 1 || latestIssuedID != r.CurrentInvoiceID {
 		return ReasonAmbiguous, PrivateEvidence{}
 	}
-	if r.Lifecycle != "active" || r.Currency != s.policy.NativeCurrencyCode || current == nil || current.StatusID != "4" || !isZero(current.Balance) || !amountStringEqual(current.Amount.String(), r.Amount) {
+	if current == nil || r.Currency != s.policy.NativeCurrencyCode {
 		return ReasonUnsupported, PrivateEvidence{}
 	}
-	if r.PeriodEnd <= calendarToday {
-		return ReasonExpired, PrivateEvidence{}
+	if r.Lifecycle == "active" {
+		if unpaid != r.UnpaidInvoices || unpaid != 0 {
+			return ReasonUnpaid, PrivateEvidence{}
+		}
+		if current.StatusID != "4" || !isZero(current.Balance) || !amountStringEqual(current.Amount.String(), r.Amount) {
+			return ReasonUnsupported, PrivateEvidence{}
+		}
+		if r.PeriodEnd <= calendarToday {
+			return ReasonExpired, PrivateEvidence{}
+		}
+	} else {
+		if unpaid != r.UnpaidInvoices || unpaid != 1 || r.UnpaidInvoices != 1 || r.InvoiceStatus != "sent" || current.StatusID != "2" || current.Date != r.PeriodEnd || r.PeriodEnd > calendarToday || current.Date == "" {
+			return ReasonUnpaid, PrivateEvidence{}
+		}
+		if len(historical) > s.policy.MaxHistoricalAnchors {
+			return ReasonHistoryLimit, PrivateEvidence{}
+		}
+		if !canonicalDate(r.PeriodStart) || !canonicalDate(r.PeriodEnd) || r.PeriodEnd <= r.PeriodStart || current.Date <= r.PeriodStart {
+			return ReasonPausedHistory, PrivateEvidence{}
+		}
+		if !amountStringEqual(current.Amount.String(), r.Amount) || !amountStringEqual(current.Balance.String(), r.Amount) || !isZero(current.PaidToDate) || !amountStringEqual(current.ExchangeRate.String(), "1") {
+			return ReasonUnpaid, PrivateEvidence{}
+		}
 	}
 	fresh, err := s.providers.Invoices.GetInvoice(ctx, current.ID)
 	if err != nil {
@@ -457,16 +493,59 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 	if !sameInvoice(fresh, *current) {
 		return ReasonChanged, PrivateEvidence{}
 	}
-	// payments.Observe requires a positive local row ID structurally. No DB identity is imported or persisted in this read-only stage.
-	snapshot := payments.Snapshot{ClientID: 1, TelegramID: tg, ChatID: tg, BotID: s.policy.BotID, CustomerID: customer.ID, InvoiceID: current.ID, RecurringID: recurring.ID}
-	decision, err := payments.Observe(ctx, s.providers.Payments, snapshot, s.policy.NativeCurrencyID, calendarToday)
-	if err != nil {
-		return ReasonSourceFailure, PrivateEvidence{}
+	// Observe is read-only; ID 1 is structural only and is never persisted here.
+	observeInvoice := current
+	if r.Lifecycle == "paused" {
+		observeInvoice = nil
 	}
-	if decision.Kind != payments.Verified || decision.Proof == nil || !amountStringEqual(decision.Proof.Amount, r.Amount) || decision.Proof.PaymentDate != r.PeriodStart || decision.Proof.NextInvoiceDate != r.PeriodEnd {
-		return ReasonPayment, PrivateEvidence{}
+	var proof *payments.Proof
+	if observeInvoice != nil {
+		snapshot := payments.Snapshot{ClientID: 1, TelegramID: tg, ChatID: tg, BotID: s.policy.BotID, CustomerID: customer.ID, InvoiceID: current.ID, RecurringID: recurring.ID}
+		decision, err := payments.Observe(ctx, s.providers.Payments, snapshot, s.policy.NativeCurrencyID, calendarToday)
+		if err != nil {
+			return ReasonSourceFailure, PrivateEvidence{}
+		}
+		if decision.Kind != payments.Verified || decision.Proof == nil || !amountStringEqual(decision.Proof.Amount, r.Amount) || decision.Proof.PaymentDate != r.PeriodStart || decision.Proof.NextInvoiceDate != r.PeriodEnd {
+			return ReasonPayment, PrivateEvidence{}
+		}
+		proof = decision.Proof
+	} else {
+		if len(historical) == 0 {
+			return ReasonPayment, PrivateEvidence{}
+		}
+		matches := 0
+		for _, anchor := range historical {
+			anchorFresh, getErr := s.providers.Invoices.GetInvoice(ctx, anchor.ID)
+			if getErr != nil {
+				return ReasonSourceFailure, PrivateEvidence{}
+			}
+			if !sameInvoice(anchorFresh, anchor) {
+				return ReasonChanged, PrivateEvidence{}
+			}
+			if !amountStringEqual(anchor.Amount.String(), r.Amount) || !isZero(anchor.Balance) || !amountStringEqual(anchor.PaidToDate.String(), r.Amount) || !amountStringEqual(anchor.ExchangeRate.String(), "1") {
+				continue
+			}
+			snapshot := payments.Snapshot{ClientID: 1, TelegramID: tg, ChatID: tg, BotID: s.policy.BotID, CustomerID: customer.ID, InvoiceID: anchor.ID, RecurringID: recurring.ID}
+			decision, observeErr := payments.Observe(ctx, s.providers.Payments, snapshot, s.policy.NativeCurrencyID, calendarToday)
+			if observeErr != nil {
+				return ReasonSourceFailure, PrivateEvidence{}
+			}
+			if decision.Kind != payments.Verified || decision.Proof == nil || !amountStringEqual(decision.Proof.Amount, r.Amount) {
+				return ReasonPayment, PrivateEvidence{}
+			}
+			if decision.Proof.PaymentDate != r.PeriodStart || decision.Proof.NextInvoiceDate != r.PeriodEnd {
+				continue
+			}
+			matches++
+			proof = decision.Proof
+		}
+		if matches > 1 {
+			return ReasonAmbiguous, PrivateEvidence{}
+		}
+		if matches != 1 || proof == nil {
+			return ReasonPayment, PrivateEvidence{}
+		}
 	}
-	proof := decision.Proof
 	identityFacts := make([]struct {
 		ID      int64  `json:"id"`
 		Name    string `json:"name"`
@@ -491,18 +570,27 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 		Invoices        []invoiceninja.CycleInvoice
 		Identities      any
 		Settings        sui.Settings
+		PaymentProof    json.RawMessage
 		SUIID           int64
 		SUIName         string
 		ConfigHash      string
 		Enabled         bool
 		InboundIDs      []int64
-	}{customerJSON, recurrings, recurringJSON, invoices, identityFacts, settings, record.ID(), record.Name(), hex.EncodeToString(credentialHash[:]), record.Enabled(), sorted(record.InboundIDs())})
+	}{customerJSON, recurrings, recurringJSON, invoices, identityFacts, settings, proof.JSON, record.ID(), record.Name(), hex.EncodeToString(credentialHash[:]), record.Enabled(), sorted(record.InboundIDs())})
 	factsHash := sha256.Sum256(facts)
 	invoiceWatermark := ""
 	if len(invoices) > 0 {
 		invoiceWatermark = invoiceIDs[len(invoiceIDs)-1]
 	}
-	return "", PrivateEvidence{SourceScope: s.policy.SourceScopeHash, PolicyHash: policyHash, BotID: s.policy.BotID, PlanHash: planHash, CandidateIndex: c.Index, VerifiedAt: verifiedAt, NotAfter: verifiedAt.Add(s.policy.EvidenceTTL), CustomerID: customer.ID, RecurringID: recurring.ID, CurrentInvoiceID: current.ID, SUIID: record.ID(), ProofHash: hex.EncodeToString(proof.Hash[:]), SourceFactsHash: hex.EncodeToString(factsHash[:]), LegacyRecurring: recurringJSON, LegacyRecurringHash: hex.EncodeToString(recurringHash[:]), HistoricalInvoiceIDs: invoiceIDs, InvoiceWatermark: invoiceWatermark, PaidAnchorInvoiceID: current.ID, SUIName: record.Name(), PublicBaseHash: hex.EncodeToString(publicBaseHash[:]), ConfigHash: hex.EncodeToString(credentialHash[:]), InboundIDs: sorted(record.InboundIDs()), Proof: proof.JSON}
+	currentInvoiceJSON, err := json.Marshal(fresh)
+	if err != nil {
+		return ReasonSourceFailure, PrivateEvidence{}
+	}
+	debtAmount := ""
+	if r.Lifecycle == "paused" {
+		debtAmount = current.Amount.String()
+	}
+	return "", PrivateEvidence{SourceScope: s.policy.SourceScopeHash, PolicyHash: policyHash, BotID: s.policy.BotID, PlanHash: planHash, CandidateIndex: c.Index, VerifiedAt: verifiedAt, NotAfter: verifiedAt.Add(s.policy.EvidenceTTL), CustomerID: customer.ID, RecurringID: recurring.ID, CurrentInvoiceID: current.ID, CurrentInvoice: currentInvoiceJSON, SUISettings: settings, Lifecycle: r.Lifecycle, CurrentInvoiceStatus: current.StatusID, DebtAmount: debtAmount, SUIID: record.ID(), ProofHash: hex.EncodeToString(proof.Hash[:]), SourceFactsHash: hex.EncodeToString(factsHash[:]), LegacyRecurring: recurringJSON, LegacyRecurringHash: hex.EncodeToString(recurringHash[:]), HistoricalInvoiceIDs: invoiceIDs, InvoiceWatermark: invoiceWatermark, PaidAnchorInvoiceID: proof.InvoiceID, SUIName: record.Name(), PublicBaseHash: hex.EncodeToString(publicBaseHash[:]), ConfigHash: hex.EncodeToString(credentialHash[:]), InboundIDs: sorted(record.InboundIDs()), Proof: proof.JSON}
 }
 func unlimitedRecord(record sui.ClientRecord) bool {
 	var limits struct {
@@ -516,8 +604,8 @@ func unlimitedRecord(record sui.ClientRecord) bool {
 	return json.Unmarshal(record.Raw(), &limits) == nil && limits.Volume == 0 && limits.Expiry == 0 && !limits.DelayStart && !limits.AutoReset && limits.ResetDays == 0 && limits.NextReset == 0
 }
 
-func supportedLegacyRecurring(r invoiceninja.RecurringRecord, productKey, amount string) bool {
-	if r.IsDeleted || r.ArchivedAt != 0 || r.StatusID != "2" || r.FrequencyID != "5" || r.AutoBillEnabled || r.AutoBill != "off" || r.RemainingCycles != -1 || !amountStringEqual(r.Amount.String(), amount) || len(r.LineItems) != 1 || r.LineItems[0].TypeID != "1" || r.LineItems[0].ProductKey != productKey || !amountStringEqual(r.LineItems[0].Cost.String(), amount) || !amountStringEqual(r.LineItems[0].Quantity.String(), "1") {
+func supportedLegacyRecurring(r invoiceninja.RecurringRecord, productKey, amount, expectedStatus string) bool {
+	if r.IsDeleted || r.ArchivedAt != 0 || r.StatusID != expectedStatus || r.FrequencyID != "5" || r.AutoBillEnabled || r.AutoBill != "off" || r.RemainingCycles != -1 || !amountStringEqual(r.Amount.String(), amount) || len(r.LineItems) != 1 || r.LineItems[0].TypeID != "1" || r.LineItems[0].ProductKey != productKey || !amountStringEqual(r.LineItems[0].Cost.String(), amount) || !amountStringEqual(r.LineItems[0].Quantity.String(), "1") {
 		return false
 	}
 	for _, n := range []json.Number{r.Discount, r.TaxRate1, r.TaxRate2, r.TaxRate3, r.CustomSurcharge1, r.CustomSurcharge2, r.CustomSurcharge3, r.CustomSurcharge4, r.Partial, r.PaidToDate} {
