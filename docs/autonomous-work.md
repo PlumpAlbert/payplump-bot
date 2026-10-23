@@ -84,22 +84,32 @@ scope; не снимать и не обходить их и не расширя�
   `02b0c8c7d882e37c713416f39ddcad42ff711baa` passed required CI `39992168476`
   and post-merge main CI `39992922113`. No live verification.
 
-  11b.1 DB-only foundation is implemented in the current feature branch: opaque
-  typed preparation performs fresh GET verification of the complete plan; the
-  database policy is default-disabled and revisioned; admission and inert-plan
-  staging share one transaction; imported origins retain immutable binding,
-  paid-anchor and invoice-history facts without fake first invoices, registration/
-  activation journals, outbox, or external writes. Policy disable/re-enable
-  prevents same-revision ABA; configuration revision baselines allow exact
-  idempotence after benign client-name changes; owned/imported SUI identity
-  collisions are guarded on insert and owned-binding updates. Existing
-  own-created workers still reject imported clients. There is no runtime
-  consumer or historical ledger initialization. Targeted review fixes are applied;
-  PostgreSQL runtime assertions are being completed by the test workstream, and
-  parent review plus required PG17 CI remain pending PR #26. Local
-  SQL checks are compile-only. Managed-origin consumers, legacy write profiles,
-  history-ledger initialization and apply CLI remain future slices; all of stage
-  11 remains incomplete. No live verification or real admission was performed.
+  11b.1 DB-only foundation merged in PR #26 as
+  `76dfcda8a13b88651cc42f8821e1cf2c0fb94191`; exact PR code HEAD
+  `d0a2ca665be507d1913db9bbe2301e945be34e0a` passed required CI
+  `40001910084` and post-merge main CI `40002786608`, both all-green. Required CI
+  covered six fresh GET → opaque preparation → DB admission workflows, full
+  PostgreSQL 17 integration, race, smoke, and Docker checks. This closes the
+  earlier local PostgreSQL runtime-coverage gap; local SQL checks remain
+  compile-only. No live provider/API access or deployment was performed.
+
+  11b.2 provider-only imported Invoice Ninja profile and typed pause/schedule/
+  resume adapter is implemented in the current branch. It preserves frozen
+  source facts and legacy notes, remains unwired/default-inert, and adds strict
+  exact-shape v1 journal decoding without tightening provider GET DTOs.
+  Independent review `2b1af0d5-5d94-40f` completed with one P3 journal-shape
+  finding fixed; parent also fixed current tax/surcharge and legacy zero-flag
+  compatibility, durable expired-journal decoding, and resume local-date/UTC
+  checks. Parent reports unit/race/vet/CGO0-build/module verification, SQL
+  compile-only, and gofmt all passing after fixes. PR #27 has not yet been
+  opened; its required CI and merge remain pending. No live API access or
+  unapproved deployment occurred.
+
+  Remaining 11b work is not complete: explicit runtime managed-origin consumer
+  branches; historical lifecycle-ledger initialization before eligibility;
+  protected origin-mode/configuration with origin FK and current DB proof;
+  and the apply CLI. Preserve default-off behavior and keep imported origins
+  ineligible until those slices land. No real import was performed.
 
   Непереговорные TODO: actor/pilot ограничения сохраняются; будущий managed
   consumer обязан подавлять устаревшие операции/уведомления. Неоплаченные долги
@@ -115,12 +125,12 @@ scope; не снимать и не обходить их и не расширя�
 
 Очередь последовательная по небольшим PR: 9a и 9b завершены; 11a.1, 11a.2
 core/history и operator CLI merged. PR #25 exact-HEAD required CI `39992168476`
-и post-merge CI `39992922113` зелёные. DB-only foundation 11b.1 реализован в
-текущей ветке; targeted review fixes сделаны, родитель завершает review, а
-runtime PostgreSQL assertions и PR #26 CI остаются pending. Далее остаются
-managed-origin consumers, legacy write profiles, history-ledger initialization и
-apply CLI, затем 12, 13 и 14. Весь этап 11 не завершён; live
-verification/admission не выполнялись.
+и post-merge CI `39992922113` зелёные. 11b.1 merged и прошёл полный required
+PostgreSQL 17 CI; 11b.2 provider-only adapter реализован, P3 исправлен, PR #27
+required CI и merge pending. Runtime managed-origin consumers, history-ledger
+initialization, protected origin configuration/current DB proof и apply CLI ещё
+не сделаны. Весь этап 11 не завершён. Live verification/admission не выполнялись;
+не обращаться к provider API и не выполнять unapproved deployment.
 
 ## Проверенные срезы
 
