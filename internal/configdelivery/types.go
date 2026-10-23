@@ -67,6 +67,7 @@ type Request struct {
 }
 
 type RenewalAudit struct {
+	OriginMode                                                      string `json:"origin_mode,omitempty"`
 	OperationID                                                     int64
 	TargetDate                                                      string
 	RequiresPause, RequiresSchedule, RequiresEnable, RequiresResume bool
