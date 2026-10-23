@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,9 +31,81 @@ type renewalLoopback struct {
 	recurring                                           invoiceninja.RecurringRecord
 	panel                                               json.RawMessage
 	invoiceDate, invoiceNext                            string
+	customerID, invoiceID, marker, invoiceNumber        string
+	telegramID                                          int64
+	paymentID, allocationID                             string
 	pauseCalls, scheduleCalls, resumeCalls, panelWrites int
 	unknownPause                                        bool
 	verifyBeforeWrite                                   func(string) error
+}
+
+func (r *renewalLoopback) customer() string {
+	if r.customerID != "" {
+		return r.customerID
+	}
+	return "customer-synthetic"
+}
+func (r *renewalLoopback) invoice() string {
+	if r.invoiceID != "" {
+		return r.invoiceID
+	}
+	return "invoice-current"
+}
+func (r *renewalLoopback) payment() string {
+	if r.paymentID != "" {
+		return r.paymentID
+	}
+	return "payment-current"
+}
+func (r *renewalLoopback) allocation() string {
+	if r.allocationID != "" {
+		return r.allocationID
+	}
+	return "allocation-current"
+}
+func (r *renewalLoopback) actor() int64 {
+	if r.telegramID != 0 {
+		return r.telegramID
+	}
+	return 101
+}
+func (r *renewalLoopback) markerValue() string {
+	if r.marker != "" {
+		return r.marker
+	}
+	return "payplump:synthetic_activation_token_123456:recurring_create"
+}
+func (r *renewalLoopback) number() string {
+	if r.invoiceNumber != "" {
+		return r.invoiceNumber
+	}
+	return "SYNTHETIC-CURRENT"
+}
+func (r *renewalLoopback) amount() json.Number {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.recurring.Amount != "" {
+		return json.Number(r.recurring.Amount)
+	}
+	return json.Number("100")
+}
+func (r *renewalLoopback) panelIdentity() (int64, string, error) {
+	var record map[string]json.RawMessage
+	if err := json.Unmarshal(r.panel, &record); err != nil {
+		return 0, "", err
+	}
+	var id int64
+	var name string
+	if err := json.Unmarshal(record["id"], &id); err != nil {
+		return 0, "", err
+	}
+	if err := json.Unmarshal(record["name"], &name); err != nil {
+		return 0, "", err
+	}
+	if id <= 0 || name == "" {
+		return 0, "", errors.New("invalid loopback SUI identity")
+	}
+	return id, name, nil
 }
 
 func TestInvoicePaidRenewalRealStoreAdaptersLoopbackSuccessAndUnknown(t *testing.T) {
@@ -469,7 +542,11 @@ func prepareRenewalDatabaseFixture(t *testing.T, s *Store, ctx context.Context, 
 }
 
 func renewalProofPayment(paymentID, allocationID, invoiceID, date string) invoiceninja.SettlementPayment {
-	return invoiceninja.SettlementPayment{ID: paymentID, ClientID: "customer-synthetic", Date: date, StatusID: "4", CurrencyID: "1", Amount: "100", Refunded: "0", Applied: "100", ExchangeRate: "1", IsManual: true, Allocations: []invoiceninja.SettlementAllocation{{ID: allocationID, InvoiceID: invoiceID, PaymentID: paymentID, Amount: "100", Refunded: "0"}}}
+	return renewalProofPaymentAmount(paymentID, allocationID, invoiceID, date, "100")
+}
+
+func renewalProofPaymentAmount(paymentID, allocationID, invoiceID, date, amount string) invoiceninja.SettlementPayment {
+	return invoiceninja.SettlementPayment{ID: paymentID, ClientID: "customer-synthetic", Date: date, StatusID: "4", CurrencyID: "1", Amount: json.Number(amount), Refunded: "0", Applied: json.Number(amount), ExchangeRate: "1", IsManual: true, Allocations: []invoiceninja.SettlementAllocation{{ID: allocationID, InvoiceID: invoiceID, PaymentID: paymentID, Amount: json.Number(amount), Refunded: "0"}}}
 }
 
 func (r *renewalLoopback) ninjaHandler() http.Handler {
@@ -481,20 +558,35 @@ func (r *renewalLoopback) ninjaHandler() http.Handler {
 		_ = json.NewEncoder(w).Encode(v)
 	}
 	mux.HandleFunc("/api/v1/ping", func(w http.ResponseWriter, q *http.Request) { write(w, 200, map[string]any{"data": map[string]any{}}) })
-	mux.HandleFunc("/api/v1/clients/customer-synthetic", func(w http.ResponseWriter, q *http.Request) {
-		write(w, 200, map[string]any{"data": map[string]any{"id": "customer-synthetic", "id_number": "101", "group_settings_id": "", "settings": map[string]any{"currency_id": "1"}, "is_deleted": false, "archived_at": 0}})
+	mux.HandleFunc("/api/v1/clients/", func(w http.ResponseWriter, q *http.Request) {
+		customer, actor := r.customer(), r.actor()
+		if q.URL.Path != "/api/v1/clients/"+customer {
+			http.NotFound(w, q)
+			return
+		}
+		write(w, 200, map[string]any{"data": map[string]any{"id": customer, "id_number": strconv.FormatInt(actor, 10), "group_settings_id": "", "settings": map[string]any{"currency_id": "1"}, "is_deleted": false, "archived_at": 0}})
 	})
-	mux.HandleFunc("/api/v1/invoices/invoice-current", func(w http.ResponseWriter, q *http.Request) {
+	mux.HandleFunc("/api/v1/invoices/", func(w http.ResponseWriter, q *http.Request) {
+		invoice, customer, marker, number, amount := r.invoice(), r.customer(), r.markerValue(), r.number(), r.amount()
+		if q.URL.Path != "/api/v1/invoices/"+invoice {
+			http.NotFound(w, q)
+			return
+		}
 		r.mu.Lock()
-		date, next := r.invoiceDate, r.invoiceNext
+		date, next, recurringID := r.invoiceDate, r.invoiceNext, r.recurring.ID
 		r.mu.Unlock()
-		write(w, 200, map[string]any{"data": map[string]any{"id": "invoice-current", "client_id": "customer-synthetic", "recurring_id": "recurring-synthetic", "number": "SYNTHETIC-CURRENT", "private_notes": "payplump:synthetic_activation_token_123456:recurring_create", "status_id": "4", "date": date, "due_date": next, "amount": 100, "balance": 0, "paid_to_date": 100, "exchange_rate": 1, "is_deleted": false, "archived_at": 0, "updated_at": 1, "invitations": []any{map[string]any{"id": "invitation-current", "sent_date": date + " 08:00:00"}}}})
+		write(w, 200, map[string]any{"data": map[string]any{"id": invoice, "client_id": customer, "recurring_id": recurringID, "number": number, "private_notes": marker, "status_id": "4", "date": date, "due_date": next, "amount": amount, "balance": 0, "paid_to_date": amount, "exchange_rate": 1, "is_deleted": false, "archived_at": 0, "updated_at": 1, "invitations": []any{map[string]any{"id": "invitation-current", "sent_date": date + " 08:00:00"}}}})
 	})
 	mux.HandleFunc("/api/v1/payments", func(w http.ResponseWriter, q *http.Request) {
-		p := map[string]any{"id": "payment-current", "client_id": "customer-synthetic", "date": r.invoiceDate, "status_id": "4", "currency_id": "1", "exchange_currency_id": "", "amount": 100, "refunded": 0, "applied": 100, "exchange_rate": 1, "is_manual": true, "is_deleted": false, "archived_at": 0, "paymentables": []any{map[string]any{"id": "allocation-current", "invoice_id": "invoice-current", "payment_id": "payment-current", "amount": 100, "refunded": 0, "archived_at": 0}}}
+		amount, customer, invoice, paymentID, allocationID, date := r.amount(), r.customer(), r.invoice(), r.payment(), r.allocation(), r.invoiceDate
+		p := map[string]any{"id": paymentID, "client_id": customer, "date": date, "status_id": "4", "currency_id": "1", "exchange_currency_id": "", "amount": json.Number(amount), "refunded": 0, "applied": json.Number(amount), "exchange_rate": 1, "is_manual": true, "is_deleted": false, "archived_at": 0, "paymentables": []any{map[string]any{"id": allocationID, "invoice_id": invoice, "payment_id": paymentID, "amount": json.Number(amount), "refunded": 0, "archived_at": 0}}}
 		write(w, 200, map[string]any{"data": []any{p}, "meta": map[string]any{"pagination": map[string]any{"total": 1, "count": 1, "per_page": 50, "current_page": 1, "total_pages": 1}}})
 	})
-	mux.HandleFunc("/api/v1/recurring_invoices/recurring-synthetic", func(w http.ResponseWriter, q *http.Request) {
+	mux.HandleFunc("/api/v1/recurring_invoices/", func(w http.ResponseWriter, q *http.Request) {
+		if q.URL.Path == "/api/v1/recurring_invoices/bulk" || q.URL.Path != "/api/v1/recurring_invoices/"+r.recurring.ID {
+			http.NotFound(w, q)
+			return
+		}
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if q.Method == http.MethodPut {
@@ -531,7 +623,7 @@ func (r *renewalLoopback) ninjaHandler() http.Handler {
 		_ = json.NewDecoder(q.Body).Decode(&body)
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if len(body.IDs) != 1 || body.IDs[0] != "recurring-synthetic" || body.Action != "stop" && body.Action != "start" {
+		if len(body.IDs) != 1 || body.IDs[0] != r.recurring.ID || body.Action != "stop" && body.Action != "start" {
 			http.Error(w, "unexpected recurring bulk payload", http.StatusConflict)
 			return
 		}
@@ -599,10 +691,15 @@ func (r *renewalLoopback) panelHandler() http.Handler {
 		defer r.mu.Unlock()
 		var record map[string]any
 		_ = json.Unmarshal(r.panel, &record)
+		id, name, identityErr := r.panelIdentity()
+		if identityErr != nil {
+			http.Error(w, "invalid SUI identity", http.StatusInternalServerError)
+			return
+		}
 		if q.URL.Query().Get("id") != "" {
 			envelope(w, map[string]any{"clients": []any{record}})
 		} else {
-			envelope(w, map[string]any{"clients": []any{map[string]any{"id": 71, "name": "pp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}})
+			envelope(w, map[string]any{"clients": []any{map[string]any{"id": id, "name": name}}})
 		}
 	})
 	mux.HandleFunc("/apiv2/inbounds", func(w http.ResponseWriter, q *http.Request) {
@@ -635,7 +732,12 @@ func (r *renewalLoopback) panelHandler() http.Handler {
 			}
 		}
 		var record map[string]any
-		if json.Unmarshal([]byte(q.PostForm.Get("data")), &record) != nil || record["id"] != float64(71) || record["enable"] != true {
+		id, _, identityErr := r.panelIdentity()
+		if identityErr != nil {
+			http.Error(w, "invalid SUI identity", http.StatusInternalServerError)
+			return
+		}
+		if json.Unmarshal([]byte(q.PostForm.Get("data")), &record) != nil || record["id"] != float64(id) || record["enable"] != true {
 			http.Error(w, "invalid S-UI enable payload", http.StatusBadRequest)
 			return
 		}
