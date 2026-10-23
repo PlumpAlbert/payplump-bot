@@ -138,39 +138,45 @@ provider/Telegram/payment/working-DB/publish/deploy result is claimed.
 
 ## Next slice: 11b.7.2 imported current-renewal delivery
 
-11b.7.2 implementation and four PostgreSQL workflow cases are ready; PR #34 is
-not open. Eligibility is a protected imported CURRENT COMPLETED renewal, covering
-normal ledger renewal and current debt after initial-restoration mode. Require
-explicit current-payment proof, completed native plan/journal/receipts and a
-strictly future current UTC date. Immutable shared origin, historical paid anchor
-and original proof remain historical, never current entitlement/selectors; keep
-current proof and renewal audit separate and do not mutate the baseline.
+11b.7.2 implementation and four PostgreSQL workflow cases are in PR #34 at
+`815d54c6e019e03e5a8391dccaec21e2e7a39fd3`. Eligibility is a protected imported
+CURRENT COMPLETED renewal, covering normal ledger renewal and current debt after
+initial-restoration mode. Require explicit current-payment proof, completed native
+plan/journal/receipts and a strictly future current UTC date. Immutable shared
+origin, historical paid anchor and original proof remain historical, never
+current entitlement/selectors; keep current proof and renewal audit separate.
 
 `RenewalAudit.OriginMode` is new `omitempty` (`ledger` or
 `imported_initial_paused`). Renewal request `request_period='renewal'` retains SQL
 NULL `activation_id`, uses the conditional generated baseline-origin invoice FK
 and existing current-renewal composite FK; old requests/fingerprints remain
 unchanged. No fake activation, ledger row, first invoice, or historical payment
-confirmation. `Current.ImportedBaselineProofHash` is zero for renewal; the origin
-proof hash remains in `Entitlement.Imported`. Check canonical immutable evidence
-for the old anchor, while current proof/date/amount are independent of old anchor
-dates. Native audit applies to both imported modes, not the OWN decoder; exact
-seven-key plan and exact known receipts are required. Initial mode omits Schedule
-only if current target already is future; old empty/past UTC receipt is acceptable
-only when a known new schedule replaces it with a future receipt, without Pause.
-Current admission/runtime/config must match. Effects may be disabled after known
-completion; historical completion revisions need not equal current read/request
-revisions. Preserve GET-only provider/scope/public-base/native-currency/date/UTC
-checks, final-DB authorization and in-memory URL; unknown send keeps the existing
-non-expiring chat barrier without replay/rearm or extra GETs. Do not broaden
-baseline denial before verified audit.
+confirmation. `Current.ImportedBaselineProofHash` is zero for renewal; origin
+proof hash stays in `Entitlement.Imported`. Validate old proof through canonical
+admitted evidence; current proof/date/amount are independent of anchor dates.
+Native audit handles both imported modes, not OWN decoder; exact seven-key plan
+and known receipts are required. Initial mode omits Schedule only when current
+target already is future; empty/past old UTC is replaceable only by a known new
+schedule/future receipt, without Pause. Current admission/runtime/config must
+match; effects may be off after known completion and completion revisions may be
+historical. Preserve GET-only provider/scope/public-base/native-currency/date/UTC
+checks, final DB authorization and in-memory URL.
 
-Domain `dcb4a0e2-70f3-4ca`, Store `e7576737-ba1d-471`, and tests
-`bda905ec-faef-45c` report complete. Parent normal unit, race, vet, CGO0 build,
-module verification, gofmt and PostgreSQL compile-only checks passed. Four SQL
-workflows are authored and compile-only; no SQL runtime, exact-HEAD CI, PR #34 or
-merge yet. Independent review `e370ed66-465a-4ef` completed against full patch
-and current sources with zero behavioral/design findings; reviewer ran no checks
-and code is unchanged since review. No owner blocker. Apply CLI/default-off
-startup wiring remains later work; 11b and live verification/admission remain
-incomplete.
+Keep barriers distinct: unknown Invoice Ninja/S-UI mutations pin the shared
+`activation_write_guard`/epoch and local workflow remains held; unknown secret
+Telegram sends pin `configuration_chat_guards` for that chat. Neither clears the
+other. The new unknown-native case is Resume mutation→503, pinned global guard
+and local overdue, followed by ordinary menu denial without a configuration
+request; it is not a Telegram-unknown test.
+
+The first PR CI run `40038835592` passed fast checks, but PostgreSQL integration
+failed before all feature scenarios while parsing migration 024 (`SQLSTATE
+42601`, mismatched parentheses). This is a real migration syntax defect, not a
+fixture-only failure; Store producer is correcting syntax without weakening
+predicates. No SQL scenario has run in CI; local PG workflows are compile-only.
+The independent full-patch review `e370ed66-465a-4ef` found zero behavioral/
+design findings before this runtime parse failure; the migration fix needs a
+narrow recheck. Parent local unit/race/vet/CGO0 build/module/gofmt and PG
+compile-only checks passed before the migration correction. Corrected-HEAD CI,
+SQL runtime and merge remain pending. Apply CLI/default-off startup wiring is
+later work; 11b and live verification/admission remain incomplete.

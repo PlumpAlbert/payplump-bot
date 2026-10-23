@@ -75,7 +75,7 @@ BEGIN
             OR (a.origin_mode='imported_initial_paused' AND EXISTS (
                 SELECT 1 FROM verified_import_origins io WHERE io.client_id=a.imported_origin_client_id
                   AND io.client_id=a.client_id AND io.bot_id=a.bot_id AND io.lifecycle='paused'
-                  AND io.current_invoice_id=a.invoice_id AND io.paid_anchor_invoice_id<>io.current_invoice_id)))
+                  AND io.current_invoice_id=a.invoice_id AND io.paid_anchor_invoice_id<>io.current_invoice_id))))
     ) THEN
         RAISE EXCEPTION 'imported renewal requires completed imported renewal authority' USING ERRCODE='23514';
     END IF;

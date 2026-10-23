@@ -246,7 +246,7 @@ func readImportedRenewalAudit(ctx context.Context, tx pgx.Tx, clientID, botID in
 		    OR (a.origin_mode='ledger' AND a.invoice_id<>io.current_invoice_id AND a.invoice_id<>io.paid_anchor_invoice_id
 		      AND (io.lifecycle='active' OR (io.lifecycle='paused' AND EXISTS(SELECT 1 FROM invoice_renewal_actions initial JOIN operations initial_op ON initial_op.id=initial.operation_id
 		        WHERE initial.client_id=io.client_id AND initial.bot_id=io.bot_id AND initial.imported_origin_client_id=io.client_id
-		          AND initial.origin_mode='imported_initial_paused' AND initial.outcome='completed' AND initial.review_code=0 AND initial_op.kind='invoice_paid_renewal' AND initial_op.status='completed')))))`, clientID, botID, invoiceID, mode).
+		          AND initial.origin_mode='imported_initial_paused' AND initial.outcome='completed' AND initial.review_code=0 AND initial_op.kind='invoice_paid_renewal' AND initial_op.status='completed'))))))`, clientID, botID, invoiceID, mode).
 		Scan(&audit.OperationID, &target, &flags[0], &flags[1], &flags[2], &flags[3], &baseline, &amount, &next, &planFrozenAt)
 	if err != nil || audit.OperationID <= 0 || target != proof.NextInvoiceDate || len(baseline) == 0 || planFrozenAt.IsZero() {
 		return audit, configdelivery.ErrDenied

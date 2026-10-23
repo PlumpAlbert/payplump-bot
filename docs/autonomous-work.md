@@ -157,39 +157,45 @@ scope; не снимать и не обходить их и не расширя�
   bot scope); final findings zero. No live provider/Telegram/payment/working DB/
   publish/deploy. This does not claim live consumer readiness.
 
-  11b.7.2 implementation and four SQL workflow cases are ready; all three
-  producers are done, but PR #34 is not open. Scope is protected imported CURRENT
-  COMPLETED renewal: explicit current proof, completed native plan/journal/receipts,
-  and future current UTC date. Immutable origin/paid anchor remains history, not
-  entitlement/current selector; current proof/audit stays separate. Renewal
-  `Current.ImportedBaselineProofHash` is zero (the pinned origin proof remains
-  only in `Entitlement.Imported`); preserve legacy OWN/baseline fingerprint
-  encodings. `RenewalAudit.OriginMode` is new `omitempty` (`ledger` or
-  `imported_initial_paused`); renewal request `activation_id` stays SQL NULL,
-  with conditional generated baseline-origin invoice FK and existing current-
-  renewal composite FK. Old requests/fingerprints unchanged; no fake activation,
-  ledger, or historical payment-confirmation rows. Validate historical origin
-  proof through canonical admitted evidence; current proof/date/amount are
-  independent of origin paid-anchor dates. Native audit is valid for both ledger
-  and initial modes, not OWN decoder; enforce exact seven-key plan and actual
-  known receipts. Initial mode may omit Schedule only if its current target is
-  already future; empty/past old UTC receipt is replaced only by a known new
-  schedule/future receipt, with no Pause. Current admission/runtime/config policy
-  must match; effects may be disabled after known completion and historical
-  completion permission revisions need not equal current read revisions. Keep
-  GET-only source/scope/public-base/native currency/date/UTC checks, URL in
-  memory after final DB authorization, and per-chat unknown-send barrier.
+  11b.7.2 implementation and four workflow cases were ready; PR #34 is now open
+  at `815d54c6e019e03e5a8391dccaec21e2e7a39fd3`. Scope is protected imported
+  CURRENT COMPLETED renewal: explicit current proof, completed native
+  plan/journal/receipts, future current UTC date. Immutable origin/paid anchor is
+  history, not entitlement/current selector; current proof/audit stays separate.
+  Renewal `Current.ImportedBaselineProofHash` is zero; pinned origin proof stays
+  in `Entitlement.Imported`. Preserve old OWN/baseline fingerprints and
+  `RenewalAudit.OriginMode` `omitempty` (`ledger`/`imported_initial_paused`);
+  renewal request `activation_id` remains SQL NULL with conditional generated
+  baseline-origin invoice FK plus current-renewal composite FK. No fake
+  activation, ledger, or historical payment-confirmation rows. Validate origin
+  proof via canonical admitted evidence; current proof/date/amount are independent
+  of anchor dates. Native audit covers both imported modes, not OWN decoder;
+  require exact seven-key plan and known receipts. Initial mode may omit Schedule
+  only if target is already future; past/empty old UTC needs a known new schedule
+  and future receipt, with no Pause. Current gates match; completed actions may
+  survive effects-off and their revisions may be historical.
 
-  Producers: domain `dcb4a0e2-70f3-4ca` ready with legacy fingerprint tests;
-  Store `e7576737-ba1d-471` ready; tests `bda905ec-faef-45c` ready. Parent full
-  `-count=1 ./...`, race, vet, CGO0 build, mod verify, gofmt and PostgreSQL
-  compile-only checks passed (logs `/tmp/payplump-imported-renewal-config-{unit,race}.log`
-  and `/tmp/payplump-imported-renewal-config-domain-race.log`). Four PG cases are
-  code/compile-only, not SQL runtime. Independent full-patch/current-source review
-  `e370ed66-465a-4ef` completed with zero behavioral/design findings; reviewer
-  ran no checks, and code did not change afterward. SQL runtime, exact-HEAD CI,
-  PR #34 and merge remain pending. Do not broaden baseline denial before verified
-  audit. No owner blocker; Stage 11 remains incomplete.
+  Distinguish barriers: unknown native Invoice Ninja/S-UI write pins the shared
+  global `activation_write_guard`/epoch and leaves local workflow held. Unknown
+  secret Telegram transmission pins `configuration_chat_guards` for that chat.
+  Neither clears or substitutes for the other. The new unknown-native test is
+  Resume mutation→503, pinned global guard/local overdue, then ordinary menu
+  denial without a configuration request; it is not a Telegram-unknown test.
+
+  Domain `dcb4a0e2-70f3-4ca`, tests `bda905ec-faef-45c`, and initial Store
+  producer `e7576737-ba1d-471` completed implementation; Store is correcting a
+  migration 024 syntax error without weakening predicates. Parent full
+  `-count=1 ./...`, race, vet, CGO0 build, mod verify, gofmt and PG compile-only
+  checks passed (logs `/tmp/payplump-imported-renewal-config-{unit,race}.log`
+  and `/tmp/payplump-imported-renewal-config-domain-race.log`). Four workflows
+  compile locally but have not reached SQL runtime. First PR CI `40038835592`:
+  fast checks passed; PostgreSQL integration failed before scenarios parsing
+  migration 024 (`SQLSTATE 42601`, mismatched parentheses). This is a real
+  migration parse failure, not a fixture-only issue. Independent review
+  `e370ed66-465a-4ef` had zero behavioral/design findings on the pre-CI full
+  patch; narrow recheck after syntax fix is pending. Corrected-HEAD CI, SQL
+  runtime, merge and PR34 delivery remain pending. No owner blocker; Stage 11
+  remains incomplete.
 
   Непереговорные TODO: actor/pilot ограничения сохраняются; будущий managed
   consumer обязан подавлять устаревшие операции/уведомления. Неоплаченные долги
