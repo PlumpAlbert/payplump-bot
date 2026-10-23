@@ -178,6 +178,35 @@ func PrepareEnable(record ClientRecord, binding Binding) (EnableDraft, error) {
 	}
 	return EnableDraft{before: r, binding: binding}, nil
 }
+
+// ValidateImportedRecordBinding fences imported writes to the identity, full credential fingerprint,
+// admitted inbound set and unmetered/no-reset account policy.
+func ValidateImportedRecordBinding(r ClientRecord, b Binding, expectedInboundIDs []int64) error {
+	if !matchesBinding(r, b) || !sameInboundSet(r.InboundIDs(), expectedInboundIDs) {
+		return ErrManagedConflict
+	}
+	w := r.wire
+	if !safeEnablePolicy(r) || w.Volume != 0 || w.Expiry != 0 || w.DelayStart || w.AutoReset || w.ResetDays != 0 || w.NextReset != 0 {
+		return ErrManagedState
+	}
+	return nil
+}
+func sameInboundSet(a, b []int64) bool {
+	if !validInboundIDs(a, true) || !validInboundIDs(b, true) || len(a) != len(b) {
+		return false
+	}
+	seen := make(map[int64]bool, len(a))
+	for _, id := range a {
+		seen[id] = true
+	}
+	for _, id := range b {
+		if !seen[id] {
+			return false
+		}
+	}
+	return true
+}
+
 func matchesBinding(r ClientRecord, b Binding) bool {
 	return b.ID > 0 && validBindingName(b.Name) && r.ID() == b.ID && r.Name() == b.Name && r.CredentialsHash() == b.CredentialsHash
 }

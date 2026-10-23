@@ -1,10 +1,12 @@
 package lifecycle
 
 import (
+	"crypto/sha256"
 	"testing"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 )
@@ -24,6 +26,65 @@ func validEnforcementSnapshot() EnforcementSnapshot {
 		},
 		SUIBinding: sui.Binding{ID: 71, Name: "pp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 		Steps:      make(map[EnforcementStep]OverdueStep),
+	}
+}
+
+func importedEnforcementTestSnapshot(t *testing.T) EnforcementSnapshot {
+	t.Helper()
+	s := validEnforcementSnapshot()
+	record := overdueTestRecurringRecord(s.RecurringDraft)
+	profile, err := invoiceninja.NewImportedRecurringProfile(record, record.LineItems[0].ProductKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	panel, err := overdueTestPanelRecord(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FirstInvoiceID, s.RegistrationToken, s.ActivationToken = "", "", ""
+	s.RecurringDraft = invoiceninja.RecurringDraft{}
+	s.ImportedOrigin = importorigin.Ref{ClientID: s.ClientID, BotID: s.BotID, AdmissionRevision: 1, RuntimeRevision: 2, ConfigurationRevision: 4, StableHash: sha256.Sum256([]byte("stable")), PolicyHash: sha256.Sum256([]byte("policy")), SourceScopeHash: sha256.Sum256([]byte("scope"))}
+	s.ImportedAdmissionPermissionRevision = 3 // Current gate revision can differ from historical origin admission revision.
+	s.ImportedEffectsRevision, s.ImportedEffectsAllowed = 3, false
+	s.ImportedRecurringProfile, s.ImportedPrivateNotes, s.ImportedInboundIDs = profile, record.PrivateNotes, []int64{1}
+	s.SUIBinding.CredentialsHash = panel.CredentialsHash()
+	return s
+}
+
+func TestImportedOverdueSnapshotValidationIsIndependentOfCurrentGate(t *testing.T) {
+	s := importedEnforcementTestSnapshot(t)
+	now := time.Date(2040, 1, 2, 12, 0, 0, 0, time.Local)
+	if s.ImportedOrigin.AdmissionRevision == s.ImportedAdmissionPermissionRevision {
+		t.Fatal("fixture must distinguish historical admission from current permission revision")
+	}
+	if code := validateEnforcementSnapshot(s, s.BotID, []int64{s.TelegramID}, nil, now); code != 0 {
+		t.Fatalf("immutable imported ownership rejected after gate disable: review=%d", code)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*EnforcementSnapshot)
+	}{
+		{"wrong-client-ref", func(v *EnforcementSnapshot) { v.ImportedOrigin.ClientID++ }},
+		{"wrong-bot-ref", func(v *EnforcementSnapshot) { v.ImportedOrigin.BotID++ }},
+		{"no-admission-permission-revision", func(v *EnforcementSnapshot) { v.ImportedAdmissionPermissionRevision = 0 }},
+		{"no-effects-revision", func(v *EnforcementSnapshot) { v.ImportedEffectsRevision = 0 }},
+
+		{"no-profile", func(v *EnforcementSnapshot) { v.ImportedRecurringProfile = invoiceninja.ImportedRecurringProfile{} }},
+		{"no-inbounds", func(v *EnforcementSnapshot) { v.ImportedInboundIDs = nil }},
+		{"duplicate-inbounds", func(v *EnforcementSnapshot) { v.ImportedInboundIDs = []int64{1, 1} }},
+		{"invented-first-invoice", func(v *EnforcementSnapshot) { v.FirstInvoiceID = "fake" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := s
+			tc.mutate(&bad)
+			if code := validateEnforcementSnapshot(bad, bad.BotID, []int64{bad.TelegramID}, nil, now); code == 0 {
+				t.Fatal("invalid imported snapshot accepted")
+			}
+		})
+	}
+	if code := validateEnforcementSnapshot(s, s.BotID, nil, nil, now); code != ReviewOverdueAssociation {
+		t.Fatalf("missing actor authorization accepted: review=%d", code)
 	}
 }
 

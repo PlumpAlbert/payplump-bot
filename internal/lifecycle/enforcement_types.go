@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
@@ -58,6 +59,13 @@ type EnforcementSnapshot struct {
 	WriterOperationID                                               int64
 	WriterStep                                                      string
 	Steps                                                           map[EnforcementStep]OverdueStep
+	ImportedOrigin                                                  importorigin.Ref
+	ImportedAdmissionPermissionRevision                             int64
+	ImportedEffectsRevision                                         int64
+	ImportedEffectsAllowed                                          bool
+	ImportedRecurringProfile                                        invoiceninja.ImportedRecurringProfile
+	ImportedPrivateNotes                                            string
+	ImportedInboundIDs                                              []int64
 }
 
 func (EnforcementSnapshot) String() string   { return "[sensitive overdue enforcement snapshot]" }
@@ -82,6 +90,11 @@ type EnforcementInvoiceReader interface {
 type EnforcementRecurringWriter interface {
 	Get(context.Context, string) (invoiceninja.RecurringRecord, error)
 	PauseAuthorized(context.Context, invoiceninja.PauseDraft, func(context.Context) error) (invoiceninja.RecurringRecord, error)
+}
+
+type EnforcementImportedRecurringWriter interface {
+	Get(context.Context, string) (invoiceninja.RecurringRecord, error)
+	PauseAuthorized(context.Context, invoiceninja.ImportedPauseDraft, func(context.Context) error) (invoiceninja.RecurringRecord, error)
 }
 
 type EnforcementSUIWriter interface {
