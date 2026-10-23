@@ -7,6 +7,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 )
@@ -32,9 +33,11 @@ type Claim struct {
 type Snapshot struct {
 	ClientID, TelegramID, ChatID, BotID                              int64
 	CustomerID, FirstInvoiceID, CurrentInvoiceID, RecurringID, SUIID string
+	ImportedPrivateNotes                                             string
 	RegistrationToken, ActivationToken, State                        string
 	DesiredAccess, ManagedProvenance, SeenInvoiceOverflow            bool
 	SeenInvoiceIDs                                                   []string
+	ImportedOrigin                                                   importorigin.Ref
 }
 
 func (Snapshot) String() string   { return "[sensitive lifecycle snapshot]" }

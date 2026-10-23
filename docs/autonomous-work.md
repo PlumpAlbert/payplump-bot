@@ -104,17 +104,25 @@ scope; не снимать и не обходить их и не расширя�
   and post-merge main CI `40005923953`, all green. No live API access or
   unapproved deployment occurred.
 
-  11b.3 payment-tracking-only imported-origin bridge is implemented in this
-  slice and awaits independent review and PR #28 CI. It adds a separate
-  default-off runtime permission, DB-validated comparable origin snapshot
-  reference, and imported-only payment provenance; no lifecycle discovery,
-  history initialization/suppression, effect writer, configuration delivery,
-  protected origin mode, or apply CLI is included. Preserve default-off
-  behavior and keep other imported-origin consumers ineligible. No real import
-  was performed.
+  11b.3 payment-tracking-only imported-origin bridge merged in PR #28 as
+  `925d994619864e4f07b9d72fcb2e68cdfcd8e449`; exact HEAD
+  `839144922e91fb27bfea7b08b8f204b437c38545` passed required CI run
+  `40010097193` all-green, including PostgreSQL 17 race/runtime imported
+  payment cases, old-pre-010 migration fixture, smoke, and Docker checks.
 
-  Remaining 11b work is not complete: lifecycle/discovery consumers and
-  historical ledger initialization before eligibility; protected
+  11b.4 read-only invoice lifecycle tracking is implemented; independent review
+  `68092e25-a6f3-41a` found no behavioral issues and one P3 documentation
+  inconsistency, fixed in `docs/import-admission.md`. Parent review fixes fence
+  imported recurring notes, origin-scoped history, and owned active/desired
+  eligibility. Imported origins require explicit current DB permission; frozen
+  history joins the seen set without fabricated sent dates. OWN-only overdue/
+  renewal processing remains unchanged. PR #29 is not open; required CI/merge
+  remain pending. The full cycle-reader/worker/store PostgreSQL runtime test is
+  still being completed, so compiled prototype is not a runtime pass. No real
+  import or live API access was performed.
+
+  Remaining 11b work is not complete: lifecycle wiring/effectful consumers;
+  protected
   origin-mode/configuration with origin FK and current DB proof; and the apply
   CLI. Preserve default-off behavior. No real import was performed.
 
@@ -135,10 +143,13 @@ core/history и operator CLI merged. PR #25 exact-HEAD required CI `39992168476`
 и post-merge CI `39992922113` зелёные. 11b.1 merged и прошёл полный required
 PostgreSQL 17 CI; 11b.2 merged as PR #27, exact HEAD
 `0fad9355c818424089a72aa1211bf33be5ab6ced`, required CI `40005099529` and
-post-merge CI `40005923953` all green. 11b.3 payment-tracking-only
-implementation awaits review and PR #28 CI. Full lifecycle/discovery consumers,
-history-ledger initialization/suppression, protected origin configuration/
-current DB proof и apply CLI ещё не сделаны. Весь этап 11 не завершён. Live
+post-merge CI `40005923953` all green. 11b.3 payment-tracking-only merged as PR #28 (`925d994`), exact HEAD
+`839144922e91fb27bfea7b08b8f204b437c38545`, required CI `40010097193` all green.
+11b.4 read-only lifecycle tracking review `68092e25-a6f3-41a` found no
+behavioral findings; P3 docs fix is complete. PR #29/CI/merge and the full
+PostgreSQL runtime workflow remain pending. Runtime wiring, imported overdue/
+renewal effects, protected origin configuration/current DB proof и apply CLI
+ещё не сделаны. Весь этап 11 не завершён. Live
 verification/admission не выполнялись; не обращаться к provider API и не
 выполнять unapproved deployment.
 

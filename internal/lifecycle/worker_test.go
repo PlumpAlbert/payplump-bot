@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 )
@@ -192,6 +193,64 @@ func TestUnrecordedCurrentInvoiceRequiresReview(t *testing.T) {
 	worker.handle(context.Background(), Claim{Lease: queue.Lease{ID: 7, Attempt: 1}, BotID: 71})
 	if !store.finished || store.reviewCode != ReviewAssociation || reader.listCalls != 0 {
 		t.Fatalf("unrecorded current invoice was accepted: code=%d lists=%d", store.reviewCode, reader.listCalls)
+	}
+}
+
+func TestImportedSnapshotAllowsEmptyActivationTokensOnlyWithValidOrigin(t *testing.T) {
+	invoice := cycleInvoice("invoice-new", "2")
+	invoice.PrivateNotes = "frozen legacy recurring notes"
+	reader := &fakeLifecycleReader{inventory: []invoiceninja.CycleInvoice{invoice}, fresh: invoice}
+	worker, store := newWorkerFixture(t, reader)
+	store.snapshot.ImportedPrivateNotes = "frozen legacy recurring notes"
+	store.snapshot.FirstInvoiceID = ""
+	store.snapshot.RegistrationToken, store.snapshot.ActivationToken = "", ""
+	store.snapshot.SeenInvoiceIDs = []string{"invoice-first"}
+	store.snapshot.ImportedOrigin = importorigin.Ref{ClientID: 7, BotID: 71, AdmissionRevision: 1, RuntimeRevision: 1, ConfigurationRevision: 1}
+	store.snapshot.ImportedOrigin.StableHash[0] = 1
+	store.snapshot.ImportedOrigin.PolicyHash[0] = 1
+	store.snapshot.ImportedOrigin.SourceScopeHash[0] = 1
+	worker.handle(context.Background(), Claim{Lease: queue.Lease{ID: 7, Attempt: 1}, BotID: 71})
+	if !store.finished || store.reviewCode != 0 || store.invoice == nil || reader.listCalls != 1 {
+		t.Fatalf("valid imported snapshot was rejected: code=%d invoice=%#v lists=%d", store.reviewCode, store.invoice, reader.listCalls)
+	}
+}
+
+func TestImportedFreshInvoiceMustMatchFrozenRecurringNotes(t *testing.T) {
+	listed := cycleInvoice("invoice-new", "2")
+	listed.PrivateNotes = "changed notes"
+	reader := &fakeLifecycleReader{inventory: []invoiceninja.CycleInvoice{listed}, fresh: listed}
+	worker, store := newWorkerFixture(t, reader)
+	store.snapshot.FirstInvoiceID = ""
+	store.snapshot.RegistrationToken, store.snapshot.ActivationToken = "", ""
+	store.snapshot.SeenInvoiceIDs = []string{"invoice-first"}
+	store.snapshot.ImportedPrivateNotes = "frozen legacy recurring notes"
+	store.snapshot.ImportedOrigin = importorigin.Ref{ClientID: 7, BotID: 71, AdmissionRevision: 1, RuntimeRevision: 1, ConfigurationRevision: 1}
+	store.snapshot.ImportedOrigin.StableHash[0] = 1
+	store.snapshot.ImportedOrigin.PolicyHash[0] = 1
+	store.snapshot.ImportedOrigin.SourceScopeHash[0] = 1
+	worker.handle(context.Background(), Claim{Lease: queue.Lease{ID: 7, Attempt: 1}, BotID: 71})
+	if !store.finished || store.reviewCode != ReviewAssociation || reader.getCalls != 1 {
+		t.Fatalf("invoice with mismatched frozen recurring notes was accepted: code=%d gets=%d", store.reviewCode, reader.getCalls)
+	}
+}
+
+func TestImportedSnapshotRejectsPartialReferenceAndMissingCurrentHistory(t *testing.T) {
+	for _, missingHistory := range []bool{false, true} {
+		reader := &fakeLifecycleReader{}
+		worker, store := newWorkerFixture(t, reader)
+		store.snapshot.FirstInvoiceID = ""
+		store.snapshot.RegistrationToken, store.snapshot.ActivationToken = "", ""
+		store.snapshot.ImportedOrigin = importorigin.Ref{ClientID: 7, BotID: 71}
+		if missingHistory {
+			store.snapshot.ImportedOrigin = importorigin.Ref{ClientID: 7, BotID: 71, AdmissionRevision: 1, RuntimeRevision: 1, ConfigurationRevision: 1}
+			store.snapshot.ImportedOrigin.StableHash[0] = 1
+			store.snapshot.ImportedOrigin.PolicyHash[0] = 1
+			store.snapshot.ImportedOrigin.SourceScopeHash[0] = 1
+		}
+		worker.handle(context.Background(), Claim{Lease: queue.Lease{ID: 7, Attempt: 1}, BotID: 71})
+		if !store.finished || store.reviewCode != ReviewAssociation || reader.listCalls != 0 {
+			t.Fatalf("invalid imported reference was accepted: missingHistory=%v code=%d lists=%d", missingHistory, store.reviewCode, reader.listCalls)
+		}
 	}
 }
 

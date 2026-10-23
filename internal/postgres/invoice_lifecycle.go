@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/lifecycle"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/jackc/pgx/v5"
@@ -47,6 +48,14 @@ const invoiceLifecycleManaged = paymentProvenance + `
     )`
 
 const invoiceLifecycleEligible = invoiceLifecycleManaged + `
+    AND c.telegram_id = ANY($2::bigint[])
+    AND s.state = 'active' AND s.desired_access = true`
+
+const importedLifecycleTracking = `( (` + importedPaymentProvenance + `)
+    AND NOT (` + paymentProvenance + `)
+    AND s.state = 'active' AND s.desired_access = true )`
+const invoiceLifecycleTrackingManaged = `( ((` + invoiceLifecycleManaged + `) AND NOT EXISTS (SELECT 1 FROM verified_import_origins io WHERE io.client_id=c.id)) OR (` + importedLifecycleTracking + `) )`
+const invoiceLifecycleTrackingEligible = `(` + invoiceLifecycleTrackingManaged + `)
     AND c.telegram_id = ANY($2::bigint[])
     AND s.state = 'active' AND s.desired_access = true`
 
@@ -100,7 +109,7 @@ func (s *Store) SeedInvoiceLifecycleChecks(ctx context.Context, botID int64, all
 		return 0, err
 	}
 	rows, err := tx.Query(ctx, `SELECT c.id FROM clients c JOIN subscriptions s ON s.client_id = c.id
-        WHERE `+invoiceLifecycleEligible+`
+        WHERE `+invoiceLifecycleTrackingEligible+`
           AND NOT EXISTS (SELECT 1 FROM invoice_lifecycle_checks lc WHERE lc.client_id = c.id)
         ORDER BY c.id LIMIT $3 FOR NO KEY UPDATE OF c SKIP LOCKED`, botID, allowed, limit)
 	if err != nil {
@@ -116,7 +125,7 @@ func (s *Store) SeedInvoiceLifecycleChecks(ctx context.Context, botID int64, all
 		}
 		tag, err := tx.Exec(ctx, `INSERT INTO invoice_lifecycle_checks (client_id, bot_id)
             SELECT c.id, $1 FROM clients c JOIN subscriptions s ON s.client_id = c.id
-            WHERE c.id = ANY($3::bigint[]) AND `+invoiceLifecycleEligible+`
+            WHERE c.id = ANY($3::bigint[]) AND `+invoiceLifecycleTrackingEligible+`
               AND NOT EXISTS (SELECT 1 FROM invoice_lifecycle_checks lc WHERE lc.client_id = c.id)
             ORDER BY c.id ON CONFLICT (client_id) DO NOTHING`, botID, allowed, ids)
 		if err != nil {
@@ -146,7 +155,7 @@ func (s *Store) ClaimInvoiceLifecycleChecks(ctx context.Context, botID int64, al
 	rows, err := tx.Query(ctx, `SELECT c.id FROM clients c JOIN subscriptions s ON s.client_id = c.id
         JOIN invoice_lifecycle_checks lc ON lc.client_id = c.id AND lc.bot_id = $1
         JOIN invoice_lifecycle_wake_state w ON w.bot_id = lc.bot_id
-        WHERE `+invoiceLifecycleEligible+` AND `+invoiceLifecycleDue+`
+        WHERE `+invoiceLifecycleTrackingEligible+` AND `+invoiceLifecycleDue+`
         ORDER BY lc.next_check_at, c.id LIMIT $3 FOR NO KEY UPDATE OF c SKIP LOCKED`, botID, allowed, limit)
 	if err != nil {
 		return nil, err
@@ -167,7 +176,7 @@ func (s *Store) ClaimInvoiceLifecycleChecks(ctx context.Context, botID int64, al
                 invoice_lifecycle_wake_state w
             WHERE lc.client_id = c.id AND c.id = ANY($3::bigint[])
                 AND lc.bot_id = $1 AND w.bot_id = lc.bot_id
-                AND `+invoiceLifecycleEligible+` AND `+invoiceLifecycleDue+`
+                AND `+invoiceLifecycleTrackingEligible+` AND `+invoiceLifecycleDue+`
             RETURNING lc.client_id, lc.attempts, lc.bot_id, lc.lease_generation`, botID, allowed, ids, lifecycle.LeaseDuration.Microseconds())
 		if err != nil {
 			return nil, err
@@ -200,7 +209,9 @@ type lifecycleSnapshotReader interface {
 }
 
 func readInvoiceLifecycleSnapshot(ctx context.Context, reader lifecycleSnapshotReader, claim lifecycle.Claim) (snapshot lifecycle.Snapshot, err error) {
-	var provenance bool
+	var provenance, hasOrigin bool
+	var refClient, refBot, admissionRevision, runtimeRevision, configRevision int64
+	var stableHash, policyHash, scopeHash []byte
 	err = reader.QueryRow(ctx, `SELECT c.id, c.telegram_id, c.chat_id, lc.bot_id,
         COALESCE(c.invoice_ninja_id, ''), COALESCE(s.first_invoice_id, ''),
         COALESCE(s.current_invoice_id, ''), COALESCE(s.recurring_id, ''), COALESCE(c.sui_id, ''),
@@ -211,18 +222,28 @@ func readInvoiceLifecycleSnapshot(ctx context.Context, reader lifecycleSnapshotR
             WHERE ao.client_id = c.id AND ao.kind = 'activate_first_subscription' AND ao.status = 'completed'
                 AND af.bot_id = $1 AND af.review_code = 0 AND af.invoice_id = s.first_invoice_id), ''),
         s.state, s.desired_access,
-        ARRAY(SELECT li.invoice_id FROM invoice_lifecycle_invoices li
-            WHERE li.client_id = c.id ORDER BY li.invoice_id LIMIT 10001),
-        (`+invoiceLifecycleManaged+`)
+        ARRAY(SELECT seen.invoice_id FROM (
+            SELECT li.invoice_id FROM invoice_lifecycle_invoices li WHERE li.client_id=c.id
+            UNION SELECT jsonb_array_elements_text(io.historical_invoice_ids) FROM verified_import_origins io
+                WHERE io.client_id=c.id AND io.bot_id=$1 AND (`+importedLifecycleTracking+`)
+        ) seen ORDER BY seen.invoice_id LIMIT 10001),
+        (`+invoiceLifecycleTrackingManaged+`), (io.client_id IS NOT NULL),
+        COALESCE(io.client_id,0), COALESCE(io.bot_id,0), COALESCE(io.admission_revision,0), COALESCE(rp.revision,0),
+        c.configuration_revision, COALESCE(io.stable_hash,decode(repeat('00',32),'hex')),
+        COALESCE(io.policy_hash,decode(repeat('00',32),'hex')), COALESCE(io.source_scope_hash,decode(repeat('00',32),'hex')),
+        COALESCE(io.template->>'private_notes','')
         FROM invoice_lifecycle_checks lc JOIN clients c ON c.id = lc.client_id
         JOIN subscriptions s ON s.client_id = c.id
+        LEFT JOIN verified_import_origins io ON io.client_id=c.id AND io.bot_id=lc.bot_id
+        LEFT JOIN imported_runtime_permissions rp ON rp.bot_id=io.bot_id
         WHERE lc.bot_id = $1 AND lc.client_id = $2 AND lc.attempts = $3
             AND lc.lease_generation = $4 AND lc.locked_until > clock_timestamp()`,
 		claim.BotID, claim.ID, claim.Attempt, claim.Generation).Scan(
 		&snapshot.ClientID, &snapshot.TelegramID, &snapshot.ChatID, &snapshot.BotID,
 		&snapshot.CustomerID, &snapshot.FirstInvoiceID, &snapshot.CurrentInvoiceID,
 		&snapshot.RecurringID, &snapshot.SUIID, &snapshot.RegistrationToken, &snapshot.ActivationToken,
-		&snapshot.State, &snapshot.DesiredAccess, &snapshot.SeenInvoiceIDs, &provenance)
+		&snapshot.State, &snapshot.DesiredAccess, &snapshot.SeenInvoiceIDs, &provenance, &hasOrigin,
+		&refClient, &refBot, &admissionRevision, &runtimeRevision, &configRevision, &stableHash, &policyHash, &scopeHash, &snapshot.ImportedPrivateNotes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return lifecycle.Snapshot{}, queue.ErrLeaseLost
 	}
@@ -230,6 +251,14 @@ func readInvoiceLifecycleSnapshot(ctx context.Context, reader lifecycleSnapshotR
 		return lifecycle.Snapshot{}, err
 	}
 	snapshot.ManagedProvenance = provenance
+	if hasOrigin {
+		stable, okStable := importorigin.ParseHash(stableHash)
+		policy, okPolicy := importorigin.ParseHash(policyHash)
+		scope, okScope := importorigin.ParseHash(scopeHash)
+		if okStable && okPolicy && okScope {
+			snapshot.ImportedOrigin = importorigin.Ref{ClientID: refClient, BotID: refBot, AdmissionRevision: admissionRevision, RuntimeRevision: runtimeRevision, ConfigurationRevision: configRevision, StableHash: stable, PolicyHash: policy, SourceScopeHash: scope}
+		}
+	}
 	snapshot.SeenInvoiceOverflow = len(snapshot.SeenInvoiceIDs) > 10000
 	return snapshot, nil
 }
@@ -367,6 +396,19 @@ func (s *Store) FinishInvoiceLifecycleCheck(ctx context.Context, claim lifecycle
 	if !sameLifecycleSnapshot(actual, expected) {
 		return queue.ErrConflict
 	}
+	if actual.ImportedOrigin != (importorigin.Ref{}) {
+		if err := lockImportedPaymentPermissions(ctx, tx, claim.ID, claim.BotID); err != nil {
+			return err
+		}
+		current, err := readInvoiceLifecycleSnapshot(ctx, tx, claim)
+		if err != nil {
+			return err
+		}
+		if !sameLifecycleSnapshot(current, expected) || !current.ManagedProvenance {
+			return queue.ErrConflict
+		}
+		actual = current
+	}
 
 	if reviewCode != 0 {
 		if len(notices.Review) == 0 {
@@ -384,6 +426,9 @@ func (s *Store) FinishInvoiceLifecycleCheck(ctx context.Context, claim lifecycle
 	}
 
 	if invoice.ID == actual.CurrentInvoiceID || invoice.ID == actual.FirstInvoiceID {
+		return queue.ErrConflict
+	}
+	if actual.ImportedOrigin != (importorigin.Ref{}) && slices.Contains(actual.SeenInvoiceIDs, invoice.ID) {
 		return queue.ErrConflict
 	}
 	var paymentBotID int64
@@ -474,7 +519,7 @@ func (s *Store) FinishInvoiceLifecycleCheck(ctx context.Context, claim lifecycle
 		return err
 	}
 	tag, err := tx.Exec(ctx, `UPDATE subscriptions SET current_invoice_id = $2
-        WHERE client_id = $1 AND current_invoice_id = $3 AND first_invoice_id = $4
+        WHERE client_id = $1 AND current_invoice_id = $3 AND first_invoice_id IS NOT DISTINCT FROM NULLIF($4, '')
             AND recurring_id = $5 AND state = 'active' AND desired_access = true`,
 		claim.ID, invoice.ID, actual.CurrentInvoiceID, actual.FirstInvoiceID, actual.RecurringID)
 	if err != nil {
@@ -504,7 +549,7 @@ func sameLifecycleSnapshot(a, b lifecycle.Snapshot) bool {
 	return a.ClientID == b.ClientID && a.TelegramID == b.TelegramID && a.ChatID == b.ChatID && a.BotID == b.BotID &&
 		a.CustomerID == b.CustomerID && a.FirstInvoiceID == b.FirstInvoiceID && a.CurrentInvoiceID == b.CurrentInvoiceID &&
 		a.RecurringID == b.RecurringID && a.SUIID == b.SUIID && a.RegistrationToken == b.RegistrationToken && a.ActivationToken == b.ActivationToken &&
-		a.State == b.State && a.DesiredAccess == b.DesiredAccess && a.ManagedProvenance == b.ManagedProvenance &&
+		a.State == b.State && a.DesiredAccess == b.DesiredAccess && a.ManagedProvenance == b.ManagedProvenance && a.ImportedOrigin == b.ImportedOrigin && a.ImportedPrivateNotes == b.ImportedPrivateNotes &&
 		a.SeenInvoiceOverflow == b.SeenInvoiceOverflow && slices.Equal(a.SeenInvoiceIDs, b.SeenInvoiceIDs)
 }
 
