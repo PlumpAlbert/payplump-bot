@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/lifecycle"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
+	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -34,24 +36,39 @@ func (s *Store) SeedOverdueOperations(ctx context.Context, botID int64, allowed 
 	if err := prepareLifecycleBot(ctx, tx, botID); err != nil {
 		return 0, err
 	}
-	rows, err := tx.Query(ctx, `SELECT c.id, v.invoice_id
+	rows, err := tx.Query(ctx, `SELECT c.id, v.invoice_id, COALESCE(io.client_id,0),
+        CASE WHEN io.client_id IS NULL THEN 0 ELSE ap.revision END,
+        CASE WHEN io.client_id IS NULL THEN 0 ELSE rp.revision END,
+        CASE WHEN io.client_id IS NULL THEN 0 ELSE ep.revision END
         FROM clients c JOIN subscriptions s ON s.client_id = c.id
         JOIN invoice_lifecycle_invoices v ON v.client_id = c.id AND v.invoice_id = s.current_invoice_id
-        WHERE `+invoiceLifecycleEligible+`
-          AND v.bot_id = $1 AND v.customer_id = c.invoice_ninja_id AND v.recurring_id = s.recurring_id
-          AND v.invoice_id <> s.first_invoice_id AND v.status = 'sent' AND v.sent_date < $3::date
-          AND NOT EXISTS (SELECT 1 FROM invoice_overdue_actions a WHERE a.client_id = c.id AND a.invoice_id = v.invoice_id)
-        ORDER BY v.sent_date, c.id LIMIT $4 FOR NO KEY UPDATE OF c SKIP LOCKED`, botID, allowed, today, limit)
+        LEFT JOIN verified_import_origins io ON io.client_id=c.id AND io.bot_id=$1
+        LEFT JOIN imported_runtime_permissions rp ON rp.bot_id=io.bot_id AND rp.enabled AND rp.policy_hash=io.policy_hash AND rp.source_scope_hash=io.source_scope_hash
+        LEFT JOIN import_admission_policy ap ON ap.bot_id=io.bot_id AND ap.enabled AND ap.policy_hash=io.policy_hash AND ap.source_scope_hash=io.source_scope_hash
+        LEFT JOIN imported_effect_permissions ep ON ep.bot_id=io.bot_id AND ep.enabled AND ep.policy_hash=io.policy_hash AND ep.source_scope_hash=io.source_scope_hash
+        WHERE ((`+invoiceLifecycleEligible+` AND io.client_id IS NULL)
+          OR (io.client_id=c.id AND rp.bot_id IS NOT NULL AND ap.bot_id IS NOT NULL AND ep.bot_id IS NOT NULL
+            AND c.telegram_id=ANY($2::bigint[]) AND s.state='active' AND s.desired_access=true
+            AND c.chat_id=c.telegram_id AND c.invoice_ninja_id=io.customer_id AND s.first_invoice_id IS NULL
+            AND s.current_invoice_id IS NOT NULL AND s.recurring_id=io.recurring_id AND c.sui_id=io.sui_id::text AND io.sui_name=c.telegram_id::text))
+          AND v.bot_id=$1 AND v.customer_id=c.invoice_ninja_id AND v.recurring_id=s.recurring_id
+          AND v.invoice_id IS DISTINCT FROM s.first_invoice_id AND v.status='sent' AND v.sent_date<$3::date
+          AND NOT EXISTS (SELECT 1 FROM invoice_overdue_actions a WHERE a.client_id=c.id AND a.invoice_id=v.invoice_id)
+        ORDER BY v.sent_date,c.id LIMIT $4 FOR NO KEY UPDATE OF c SKIP LOCKED`, botID, allowed, today, limit)
 	if err != nil {
 		return 0, err
 	}
 	type candidate struct {
-		clientID  int64
-		invoiceID string
+		clientID                    int64
+		invoiceID                   string
+		originID                    int64
+		admissionPermissionRevision int64
+		runtimeRevision             int64
+		effectRevision              int64
 	}
 	candidates, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (candidate, error) {
 		var c candidate
-		err := row.Scan(&c.clientID, &c.invoiceID)
+		err := row.Scan(&c.clientID, &c.invoiceID, &c.originID, &c.admissionPermissionRevision, &c.runtimeRevision, &c.effectRevision)
 		return c, err
 	})
 	if err != nil {
@@ -79,8 +96,8 @@ func (s *Store) SeedOverdueOperations(ctx context.Context, botID int64, allowed 
 		if err != nil {
 			return 0, err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO invoice_overdue_actions (operation_id, client_id, bot_id, invoice_id)
-            VALUES ($1, $2, $3, $4)`, operationID, c.clientID, botID, c.invoiceID); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO invoice_overdue_actions (operation_id, client_id, bot_id, invoice_id, imported_origin_client_id, imported_admission_permission_revision, imported_runtime_revision, imported_effect_revision)
+            VALUES ($1, $2, $3, $4, NULLIF($5,0), NULLIF($6,0), NULLIF($7,0), NULLIF($8,0))`, operationID, c.clientID, botID, c.invoiceID, c.originID, c.admissionPermissionRevision, c.runtimeRevision, c.effectRevision); err != nil {
 			return 0, err
 		}
 		count++
@@ -115,19 +132,43 @@ func readOverdueSnapshot(ctx context.Context, reader overdueSnapshotReader, clai
 	var actionReview int
 	var suiID int64
 	var paymentCheckReview, paymentConfirmationReview bool
+	var hasOwnedRecurringJournal bool
+	var importedOriginID, importedBotID, importedAdmissionRevision int64
+	var importedAdmissionPermissionRevision, importedRuntimeRevision, importedEffectRevision int64
+	var currentAdmissionPermissionRevision, currentRuntimeRevision, currentEffectRevision int64
+	var currentConfigurationRevision int64
+	var importedStable, importedPolicy, importedScope, importedCredential []byte
+	var importedSUIID int64
+	var importedSUIName, importedPrivateNotes string
+	var importedTemplate, importedEvidence []byte
+	var importedAllowed bool
 	err := reader.QueryRow(ctx, `SELECT c.id, c.telegram_id, c.chat_id, a.bot_id,
         COALESCE(c.invoice_ninja_id, ''), COALESCE(s.first_invoice_id, ''), COALESCE(s.current_invoice_id, ''),
         COALESCE(s.recurring_id, ''), COALESCE(c.sui_id, ''), COALESCE(registration.token, ''), COALESCE(activation.token, ''),
         s.state, s.desired_access, v.invoice_id, v.invoice_number, v.status, v.sent_date::text,
         v.amount::text, v.balance::text, v.paid_to_date::text,
-        COALESCE(recurring.request, '{}'::jsonb)::text,
+        COALESCE(recurring.request, '{}'::jsonb)::text, (recurring.request IS NOT NULL),
         COALESCE(binding.sui_id, 0), COALESCE(binding.name, ''), COALESCE(binding.credentials_hash, ''::bytea),
-        (`+invoiceLifecycleManaged+`), p.review_code <> 0,
+        (((a.imported_origin_client_id IS NULL) AND (`+invoiceLifecycleManaged+`)) OR
+          (io.client_id=a.client_id AND io.bot_id=a.bot_id AND c.chat_id=c.telegram_id AND c.invoice_ninja_id=io.customer_id
+           AND s.first_invoice_id IS NULL AND s.current_invoice_id IS NOT NULL AND s.current_invoice_id<>'' AND s.recurring_id=io.recurring_id
+           AND c.sui_id=io.sui_id::text AND io.sui_name=c.telegram_id::text AND s.state IN ('active','overdue'))), p.review_code <> 0,
         (p.locked_until IS NOT NULL AND p.locked_until > clock_timestamp()),
         EXISTS (SELECT 1 FROM payment_confirmations pc WHERE pc.invoice_id = a.invoice_id),
         EXISTS (SELECT 1 FROM payment_confirmations pc WHERE pc.invoice_id = a.invoice_id AND (pc.review_required OR pc.review_code <> 0)),
         (lc.client_id IS NULL OR lc.review_code <> 0), g.epoch, (g.operation_id IS NOT NULL),
-        COALESCE(g.operation_id, 0), COALESCE(g.step, ''), a.outcome, a.review_code
+        COALESCE(g.operation_id, 0), COALESCE(g.step, ''), a.outcome, a.review_code,
+        COALESCE(a.imported_origin_client_id,0), COALESCE(a.imported_admission_permission_revision,0), COALESCE(a.imported_runtime_revision,0), COALESCE(a.imported_effect_revision,0), c.configuration_revision,
+        COALESCE(io.bot_id,0), COALESCE(io.admission_revision,0), COALESCE(io.stable_hash,''::bytea), COALESCE(io.policy_hash,''::bytea), COALESCE(io.source_scope_hash,''::bytea),
+        COALESCE(io.template,'{}'::jsonb)::text, COALESCE(io.evidence,'{}'::jsonb)::text,
+        COALESCE(io.sui_id,0), COALESCE(io.sui_name,''), COALESCE(io.credentials_hash,''::bytea), COALESCE(io.template->>'private_notes',''),
+        COALESCE(ap.revision,0), COALESCE(rp.revision,0), COALESCE(ep.revision,0),
+        (io.client_id IS NOT NULL AND COALESCE(ap.enabled,false) AND COALESCE(rp.enabled,false) AND COALESCE(ep.enabled,false)
+          AND rp.policy_hash=io.policy_hash AND rp.source_scope_hash=io.source_scope_hash
+          AND ap.policy_hash=io.policy_hash AND ap.source_scope_hash=io.source_scope_hash
+          AND ap.revision=a.imported_admission_permission_revision
+          AND ep.policy_hash=io.policy_hash AND ep.source_scope_hash=io.source_scope_hash
+          AND rp.revision=a.imported_runtime_revision AND ep.revision=a.imported_effect_revision)
         FROM invoice_overdue_actions a JOIN operations o ON o.id = a.operation_id
         JOIN clients c ON c.id = a.client_id JOIN subscriptions s ON s.client_id = c.id
         JOIN invoice_lifecycle_invoices v ON v.client_id = a.client_id AND v.invoice_id = a.invoice_id
@@ -145,6 +186,10 @@ func readOverdueSnapshot(ctx context.Context, reader overdueSnapshotReader, clai
         ) activation ON true
         LEFT JOIN activation_steps recurring ON recurring.operation_id = activation.operation_id AND recurring.step = 'recurring_create' AND recurring.confirmed_at IS NOT NULL
         LEFT JOIN activation_sui_bindings binding ON binding.client_id = c.id AND binding.bot_id = a.bot_id AND binding.sui_id::text = c.sui_id
+        LEFT JOIN verified_import_origins io ON io.client_id=a.imported_origin_client_id
+        LEFT JOIN import_admission_policy ap ON ap.bot_id=io.bot_id
+        LEFT JOIN imported_runtime_permissions rp ON rp.bot_id=io.bot_id
+        LEFT JOIN imported_effect_permissions ep ON ep.bot_id=io.bot_id
         CROSS JOIN activation_write_guard g
         WHERE g.id = 1 AND a.operation_id = $2 AND a.bot_id = $1 AND a.client_id = $3
           AND a.outcome = 'pending' AND a.review_code = 0
@@ -155,25 +200,74 @@ func readOverdueSnapshot(ctx context.Context, reader overdueSnapshotReader, clai
 		&snapshot.RecurringID, &snapshot.SUIID, &snapshot.RegistrationToken, &snapshot.ActivationToken,
 		&snapshot.State, &snapshot.DesiredAccess, &snapshot.Invoice.ID, &snapshot.Invoice.Number, &snapshot.Invoice.Status,
 		&snapshot.Invoice.SentDate, &snapshot.Invoice.Amount, &snapshot.Invoice.Balance, &snapshot.Invoice.PaidToDate,
-		&recurringRequest, &suiID, &snapshot.SUIBinding.Name, &credentialHash, &snapshot.ManagedProvenance,
+		&recurringRequest, &hasOwnedRecurringJournal, &suiID, &snapshot.SUIBinding.Name, &credentialHash, &snapshot.ManagedProvenance,
 		&paymentCheckReview, &snapshot.PaymentLocked, &snapshot.PaymentConfirmed, &paymentConfirmationReview,
 		&snapshot.LifecycleReview, &snapshot.WriteEpoch, &snapshot.WriterBusy, &snapshot.WriterOperationID,
-		&snapshot.WriterStep, &actionOutcome, &actionReview)
+		&snapshot.WriterStep, &actionOutcome, &actionReview,
+		&importedOriginID, &importedAdmissionPermissionRevision, &importedRuntimeRevision, &importedEffectRevision, &currentConfigurationRevision,
+		&importedBotID, &importedAdmissionRevision, &importedStable, &importedPolicy, &importedScope,
+		&importedTemplate, &importedEvidence, &importedSUIID, &importedSUIName, &importedCredential, &importedPrivateNotes,
+		&currentAdmissionPermissionRevision, &currentRuntimeRevision, &currentEffectRevision, &importedAllowed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return lifecycle.EnforcementSnapshot{}, queue.ErrLeaseLost
 	}
 	if err != nil {
 		return lifecycle.EnforcementSnapshot{}, err
 	}
-	if actionOutcome != "pending" || actionReview != 0 || len(credentialHash) != 32 {
+	if actionOutcome != "pending" || actionReview != 0 {
 		return lifecycle.EnforcementSnapshot{}, queue.ErrConflict
 	}
 	snapshot.InvoiceID = snapshot.Invoice.ID
 	snapshot.PaymentReview = paymentCheckReview || paymentConfirmationReview
-	snapshot.SUIBinding.ID = suiID
-	copy(snapshot.SUIBinding.CredentialsHash[:], credentialHash)
-	if len(recurringRequest) == 0 || json.Unmarshal(recurringRequest, &snapshot.RecurringDraft) != nil {
-		return lifecycle.EnforcementSnapshot{}, queue.ErrConflict
+	if importedOriginID != 0 {
+		stable, okStable := importorigin.ParseHash(importedStable)
+		policy, okPolicy := importorigin.ParseHash(importedPolicy)
+		scope, okScope := importorigin.ParseHash(importedScope)
+		credential, okCredential := importorigin.ParseHash(importedCredential)
+		if !okStable || !okPolicy || !okScope || !okCredential || importedOriginID != snapshot.ClientID || importedBotID != botID || importedAdmissionRevision <= 0 || importedAdmissionPermissionRevision <= 0 || importedRuntimeRevision <= 0 || importedEffectRevision <= 0 || importedSUIID <= 0 || importedSUIName == "" || len(importedEvidence) == 0 || len(importedTemplate) == 0 {
+			return lifecycle.EnforcementSnapshot{}, queue.ErrConflict
+		}
+		var template invoiceninja.RecurringRecord
+		if json.Unmarshal(importedTemplate, &template) != nil || len(template.LineItems) != 1 || template.ID != snapshot.RecurringID || template.ClientID != snapshot.CustomerID || importedPrivateNotes != template.PrivateNotes {
+			return lifecycle.EnforcementSnapshot{}, queue.ErrConflict
+		}
+		profile, profileErr := invoiceninja.NewImportedRecurringProfile(template, template.LineItems[0].ProductKey)
+		if profileErr != nil {
+			return lifecycle.EnforcementSnapshot{}, queue.ErrConflict
+		}
+		var evidence struct {
+			InboundIDs []int64 `json:"inbound_ids"`
+		}
+		if json.Unmarshal(importedEvidence, &evidence) != nil || len(evidence.InboundIDs) == 0 {
+			return lifecycle.EnforcementSnapshot{}, queue.ErrConflict
+		}
+		seen := map[int64]bool{}
+		for _, id := range evidence.InboundIDs {
+			if id <= 0 || seen[id] {
+				return lifecycle.EnforcementSnapshot{}, queue.ErrConflict
+			}
+			seen[id] = true
+		}
+		snapshot.ImportedOrigin = importorigin.Ref{ClientID: importedOriginID, BotID: importedBotID, AdmissionRevision: importedAdmissionRevision, RuntimeRevision: importedRuntimeRevision, ConfigurationRevision: currentConfigurationRevision, StableHash: stable, PolicyHash: policy, SourceScopeHash: scope}
+		if !snapshot.ImportedOrigin.Valid() {
+			return lifecycle.EnforcementSnapshot{}, queue.ErrConflict
+		}
+		snapshot.ImportedAdmissionPermissionRevision = importedAdmissionPermissionRevision
+		snapshot.ImportedEffectsRevision = importedEffectRevision
+		snapshot.ImportedEffectsAllowed = importedAllowed
+		snapshot.ImportedRecurringProfile = profile
+		snapshot.ImportedPrivateNotes = importedPrivateNotes
+		snapshot.ImportedInboundIDs = append([]int64(nil), evidence.InboundIDs...)
+		snapshot.SUIBinding = sui.Binding{ID: importedSUIID, Name: importedSUIName, CredentialsHash: credential}
+		if suiID != 0 || hasOwnedRecurringJournal {
+			return lifecycle.EnforcementSnapshot{}, queue.ErrConflict
+		}
+	} else {
+		if len(credentialHash) != 32 || len(recurringRequest) == 0 || json.Unmarshal(recurringRequest, &snapshot.RecurringDraft) != nil {
+			return lifecycle.EnforcementSnapshot{}, queue.ErrConflict
+		}
+		snapshot.SUIBinding.ID = suiID
+		copy(snapshot.SUIBinding.CredentialsHash[:], credentialHash)
 	}
 	snapshot.Steps = make(map[lifecycle.EnforcementStep]lifecycle.OverdueStep, 3)
 	rows, err := reader.Query(ctx, `SELECT step, request::text, COALESCE(external_id, ''), dispatch_attempt, confirmed_at IS NOT NULL
@@ -205,6 +299,58 @@ func readOverdueSnapshot(ctx context.Context, reader overdueSnapshotReader, clai
 	return snapshot, nil
 }
 
+func lockImportedOverduePermissions(ctx context.Context, tx pgx.Tx, clientID, botID int64) error {
+	var originBot int64
+	if err := tx.QueryRow(ctx, `SELECT bot_id FROM verified_import_origins WHERE client_id=$1`, clientID).Scan(&originBot); err != nil || originBot != botID {
+		return queue.ErrConflict
+	}
+	for _, query := range []string{
+		`SELECT bot_id FROM import_admission_policy WHERE bot_id=$1 FOR SHARE`,
+		`SELECT bot_id FROM imported_runtime_permissions WHERE bot_id=$1 FOR SHARE`,
+		`SELECT bot_id FROM imported_effect_permissions WHERE bot_id=$1 FOR SHARE`,
+	} {
+		var lockedBot int64
+		err := tx.QueryRow(ctx, query, botID).Scan(&lockedBot)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateImportedOverdueRequest(raw json.RawMessage, step lifecycle.EnforcementStep, snapshot lifecycle.EnforcementSnapshot) error {
+	if step == lifecycle.OverduePauseRecurring {
+		var draft invoiceninja.ImportedPauseDraft
+		if json.Unmarshal(raw, &draft) != nil || draft.ProfileHash() != snapshot.ImportedRecurringProfile.Hash() {
+			return queue.ErrConflict
+		}
+		return nil
+	}
+	var wire struct {
+		Before  json.RawMessage `json:"before"`
+		Binding sui.Binding     `json:"binding"`
+	}
+	if json.Unmarshal(raw, &wire) != nil || len(wire.Before) == 0 || wire.Binding != snapshot.SUIBinding {
+		return queue.ErrConflict
+	}
+	before, err := sui.ParseClientRecord(wire.Before)
+	if err != nil || sui.ValidateImportedRecordBinding(before, snapshot.SUIBinding, snapshot.ImportedInboundIDs) != nil {
+		return queue.ErrConflict
+	}
+	if step == lifecycle.OverdueDisableSUI {
+		var draft sui.DisableDraft
+		if json.Unmarshal(raw, &draft) != nil || draft.Binding() != snapshot.SUIBinding {
+			return queue.ErrConflict
+		}
+	} else {
+		var draft sui.CloseSessionsDraft
+		if json.Unmarshal(raw, &draft) != nil || draft.Binding() != snapshot.SUIBinding {
+			return queue.ErrConflict
+		}
+	}
+	return nil
+}
+
 func (s *Store) AuthorizeOverdueWrite(ctx context.Context, claim queue.Operation, botID int64, expected lifecycle.EnforcementSnapshot, step lifecycle.EnforcementStep, request json.RawMessage, today string, allowed []int64) (authorized bool, err error) {
 	defer func() { err = invoiceLifecycleStageError("authorize invoice overdue write", err) }()
 	if !step.Valid() || len(request) == 0 || len(request) > 4<<20 || !json.Valid(request) || !lifecycleIDs(allowed) {
@@ -229,6 +375,11 @@ func (s *Store) AuthorizeOverdueWrite(ctx context.Context, claim queue.Operation
 	if err != nil {
 		return false, err
 	}
+	if expected.ImportedOrigin.Valid() {
+		if err := lockImportedOverduePermissions(ctx, tx, expected.ImportedOrigin.ClientID, botID); err != nil {
+			return false, err
+		}
+	}
 	actual, err := readOverdueSnapshot(ctx, tx, claim, botID)
 	if err != nil {
 		return false, err
@@ -239,10 +390,17 @@ func (s *Store) AuthorizeOverdueWrite(ctx context.Context, claim queue.Operation
 	if !actual.ManagedProvenance || !containsID(allowed, actual.TelegramID) || actual.PaymentConfirmed || actual.PaymentReview || actual.PaymentLocked || actual.LifecycleReview || actual.WriterBusy {
 		return false, lifecycle.ErrOverdueNotUnpaid
 	}
-	if actual.Invoice.Status != "sent" || actual.Invoice.PaidToDate != "0" || actual.Invoice.Balance != actual.Invoice.Amount || actual.CurrentInvoiceID != actual.InvoiceID || actual.FirstInvoiceID == actual.InvoiceID || !overdueDatePassed(actual.Invoice.SentDate, today) {
+	if actual.Invoice.Status != "sent" || actual.Invoice.PaidToDate != "0" || actual.Invoice.Balance != actual.Invoice.Amount || actual.CurrentInvoiceID != actual.InvoiceID || (actual.ImportedOrigin.Valid() && actual.FirstInvoiceID != "") || (!actual.ImportedOrigin.Valid() && actual.FirstInvoiceID == actual.InvoiceID) || !overdueDatePassed(actual.Invoice.SentDate, today) {
 		return false, lifecycle.ErrOverdueNotUnpaid
 	}
-	if actual.RegistrationToken == "" || actual.ActivationToken == "" || actual.RecurringDraft.ClientID != actual.CustomerID || actual.RecurringDraft.PrivateNotes != activation.Marker(actual.ActivationToken) || invoiceninja.ValidateRecurringDraft(actual.RecurringDraft) != nil || actual.SUIBinding.ID <= 0 || strconv.FormatInt(actual.SUIBinding.ID, 10) != actual.SUIID || actual.SUIBinding.Name == "" {
+	if actual.ImportedOrigin.Valid() {
+		if !actual.ImportedEffectsAllowed || actual.ImportedAdmissionPermissionRevision != expected.ImportedAdmissionPermissionRevision || actual.ImportedOrigin.RuntimeRevision != expected.ImportedOrigin.RuntimeRevision || actual.ImportedEffectsRevision != expected.ImportedEffectsRevision || actual.ImportedOrigin.ClientID != actual.ClientID || actual.ImportedOrigin.BotID != botID || actual.RegistrationToken != "" || actual.ActivationToken != "" || actual.ImportedRecurringProfile.Hash() == "" || actual.RecurringDraft.ClientID != "" || actual.SUIBinding.ID <= 0 || strconv.FormatInt(actual.SUIBinding.ID, 10) != actual.SUIID {
+			return false, queue.ErrConflict
+		}
+		if err := validateImportedOverdueRequest(request, step, actual); err != nil {
+			return false, queue.ErrConflict
+		}
+	} else if actual.RegistrationToken == "" || actual.ActivationToken == "" || actual.RecurringDraft.ClientID != actual.CustomerID || actual.RecurringDraft.PrivateNotes != activation.Marker(actual.ActivationToken) || invoiceninja.ValidateRecurringDraft(actual.RecurringDraft) != nil || actual.SUIBinding.ID <= 0 || strconv.FormatInt(actual.SUIBinding.ID, 10) != actual.SUIID || actual.SUIBinding.Name == "" {
 		return false, queue.ErrConflict
 	}
 	next, pending, complete, valid := lifecycle.NextOverdueStep(actual.Steps)

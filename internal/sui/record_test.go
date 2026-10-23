@@ -32,6 +32,24 @@ func changeRaw(t *testing.T, raw []byte, change func(map[string]json.RawMessage)
 	return b
 }
 
+func TestImportedRecordBindingFencesAdmittedIdentityAndPolicy(t *testing.T) {
+	r := managedTestRecord(t, 123)
+	binding := Binding{ID: r.ID(), Name: r.Name(), CredentialsHash: r.CredentialsHash()}
+	if err := ValidateImportedRecordBinding(r, binding, []int64{7}); err != nil {
+		t.Fatalf("valid imported binding rejected: %v", err)
+	}
+	if err := ValidateImportedRecordBinding(r, binding, []int64{8}); err == nil {
+		t.Fatal("accepted changed inbound set")
+	}
+	changed, err := ParseClientRecord(changeRaw(t, r.Raw(), func(m map[string]json.RawMessage) { m["volume"] = json.RawMessage(`10`) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateImportedRecordBinding(changed, binding, []int64{7}); err == nil {
+		t.Fatal("accepted credential/policy drift")
+	}
+}
+
 func TestManagedRecordStrictSchema(t *testing.T) {
 	r := managedTestRecord(t, 123)
 	for _, key := range recordKeys {

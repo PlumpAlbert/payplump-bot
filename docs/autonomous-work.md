@@ -110,21 +110,26 @@ scope; не снимать и не обходить их и не расширя�
   `40010097193` all-green, including PostgreSQL 17 race/runtime imported
   payment cases, old-pre-010 migration fixture, smoke, and Docker checks.
 
-  11b.4 read-only invoice lifecycle tracking is implemented; independent review
-  `68092e25-a6f3-41a` found no behavioral issues and one P3 documentation
-  inconsistency, fixed in `docs/import-admission.md`. Parent review fixes fence
-  imported recurring notes, origin-scoped history, and owned active/desired
-  eligibility. Imported origins require explicit current DB permission; frozen
-  history joins the seen set without fabricated sent dates. OWN-only overdue/
-  renewal processing remains unchanged. PR #29 is not open; required CI/merge
-  remain pending. The full cycle-reader/worker/store PostgreSQL runtime test is
-  still being completed, so compiled prototype is not a runtime pass. No real
-  import or live API access was performed.
+  11b.4 read-only invoice lifecycle tracking completed in PR #29, merged as
+  `149d6b679ff007b1cff6d9679862675f03048412`. Exact HEAD
+  `4c7a879da681ea75410526fc98f7bc37ab18e096` passed required CI `40014461532`
+  and post-merge CI `40015300957`; all three `TestImportedInvoiceLifecycle...`
+  workflows passed, including the full three-phase worker/actual CycleReader
+  PostgreSQL path. The nullable-first-invoice CAS defect was fixed before merge.
 
-  Remaining 11b work is not complete: lifecycle wiring/effectful consumers;
-  protected
-  origin-mode/configuration with origin FK and current DB proof; and the apply
-  CLI. Preserve default-off behavior. No real import was performed.
+  11b.5 imported overdue-only code and tests are ready. Separate default-off
+  effect permission and immutable action-frozen current admission/runtime/effect
+  revisions fence new writes; imported profile and S-UI identity fences are in
+  place. Review `b5148ca3-905d-495` found zero behavioral/design findings; no
+  legacy-overdue fixture predating migration 020 was found. The independent PG
+  workflow covers full GET/admit/baseline-observe/CycleWorker/EnforcementWorker
+  success, known closeSessions response after effect disable, and unknown
+  pause/503/revision-2/restart with the guard pinned. Parent local unit/race/
+  vet/CGO0 build/module/gofmt/diff checks and PostgreSQL integration compile
+  passed. SQL runtime, PR #30, required CI and merge remain pending. Do not use
+  these effects for a real import before CI passes. Imported renewal, protected
+  origin configuration/current DB proof, runtime wiring, and apply CLI remain
+  future work. No real import or live API access was performed.
 
   Непереговорные TODO: actor/pilot ограничения сохраняются; будущий managed
   consumer обязан подавлять устаревшие операции/уведомления. Неоплаченные долги
@@ -145,11 +150,15 @@ PostgreSQL 17 CI; 11b.2 merged as PR #27, exact HEAD
 `0fad9355c818424089a72aa1211bf33be5ab6ced`, required CI `40005099529` and
 post-merge CI `40005923953` all green. 11b.3 payment-tracking-only merged as PR #28 (`925d994`), exact HEAD
 `839144922e91fb27bfea7b08b8f204b437c38545`, required CI `40010097193` all green.
-11b.4 read-only lifecycle tracking review `68092e25-a6f3-41a` found no
-behavioral findings; P3 docs fix is complete. PR #29/CI/merge and the full
-PostgreSQL runtime workflow remain pending. Runtime wiring, imported overdue/
-renewal effects, protected origin configuration/current DB proof и apply CLI
-ещё не сделаны. Весь этап 11 не завершён. Live
+11b.4 is merged as `149d6b679ff007b1cff6d9679862675f03048412`; exact HEAD
+`4c7a879da681ea75410526fc98f7bc37ab18e096` passed required CI `40014461532`
+and post-merge CI `40015300957`, including the full PostgreSQL runtime workflow.
+11b.5 overdue-only code and tests are ready; review `b5148ca3-905d-495` found
+zero behavioral/design findings. Parent local unit/race/vet/CGO0 build/module/
+gofmt/diff and PostgreSQL integration compile checks passed. SQL runtime, PR #30,
+required CI and merge remain pending; do not mark 11b.5 complete before CI.
+Imported renewal, protected origin configuration/current DB proof, apply CLI and
+runtime wiring remain future work. Stage 11 is incomplete. Live
 verification/admission не выполнялись; не обращаться к provider API и не
 выполнять unapproved deployment.
 

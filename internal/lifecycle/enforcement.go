@@ -37,18 +37,27 @@ const (
 )
 
 type EnforcementWorker struct {
-	store     EnforcementStore
-	invoices  EnforcementInvoiceReader
-	recurring EnforcementRecurringWriter
-	sui       EnforcementSUIWriter
-	botID     int64
-	admins    []int64
-	cfg       EnforcementConfig
-	logger    *slog.Logger
-	now       func() time.Time
+	store             EnforcementStore
+	invoices          EnforcementInvoiceReader
+	recurring         EnforcementRecurringWriter
+	importedRecurring EnforcementImportedRecurringWriter
+	sui               EnforcementSUIWriter
+	botID             int64
+	admins            []int64
+	cfg               EnforcementConfig
+	logger            *slog.Logger
+	now               func() time.Time
 }
 
 func NewEnforcementWorker(store EnforcementStore, invoices EnforcementInvoiceReader, recurring EnforcementRecurringWriter, panel EnforcementSUIWriter, botID int64, admins []int64, cfg EnforcementConfig, logger *slog.Logger) (*EnforcementWorker, error) {
+	return newEnforcementWorker(store, invoices, recurring, nil, panel, botID, admins, cfg, logger)
+}
+
+func NewEnforcementWorkerWithImported(store EnforcementStore, invoices EnforcementInvoiceReader, ownedRecurring EnforcementRecurringWriter, importedRecurring EnforcementImportedRecurringWriter, panel EnforcementSUIWriter, botID int64, admins []int64, cfg EnforcementConfig, logger *slog.Logger) (*EnforcementWorker, error) {
+	return newEnforcementWorker(store, invoices, ownedRecurring, importedRecurring, panel, botID, admins, cfg, logger)
+}
+
+func newEnforcementWorker(store EnforcementStore, invoices EnforcementInvoiceReader, recurring EnforcementRecurringWriter, importedRecurring EnforcementImportedRecurringWriter, panel EnforcementSUIWriter, botID int64, admins []int64, cfg EnforcementConfig, logger *slog.Logger) (*EnforcementWorker, error) {
 	if !cfg.Enabled {
 		return nil, errors.New("invoice overdue enforcement is disabled")
 	}
@@ -68,7 +77,7 @@ func NewEnforcementWorker(store EnforcementStore, invoices EnforcementInvoiceRea
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &EnforcementWorker{store: store, invoices: invoices, recurring: recurring, sui: panel, botID: botID, admins: ids, cfg: cfg, logger: logger, now: time.Now}, nil
+	return &EnforcementWorker{store: store, invoices: invoices, recurring: recurring, importedRecurring: importedRecurring, sui: panel, botID: botID, admins: ids, cfg: cfg, logger: logger, now: time.Now}, nil
 }
 
 func (w *EnforcementWorker) Run(ctx context.Context) error {
@@ -150,6 +159,13 @@ func (w *EnforcementWorker) handle(service context.Context, claim queue.Operatio
 		if code := validateEnforcementSnapshot(s, w.botID, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs, w.now()); code != 0 {
 			w.hold(claim, s, code)
 			return
+		}
+		if s.ImportedOrigin.Valid() && !s.ImportedEffectsAllowed {
+			_, _, complete, valid := NextOverdueStep(s.Steps)
+			if !valid || !complete {
+				w.hold(claim, s, ReviewOverdueAssociation)
+				return
+			}
 		}
 		if s.PaymentLocked {
 			w.retry(claim, ErrOverduePaymentLease)
@@ -244,7 +260,7 @@ func (w *EnforcementWorker) readUnpaid(ctx context.Context, s EnforcementSnapsho
 	if err != nil {
 		return Invoice{}, err
 	}
-	if fresh.ID != s.InvoiceID || fresh.ClientID != s.CustomerID || fresh.RecurringID != s.RecurringID || fresh.PrivateNotes != activation.Marker(s.ActivationToken) {
+	if fresh.ID != s.InvoiceID || fresh.ClientID != s.CustomerID || fresh.RecurringID != s.RecurringID || (s.ImportedOrigin.Valid() && fresh.PrivateNotes != s.ImportedPrivateNotes) || (!s.ImportedOrigin.Valid() && fresh.PrivateNotes != activation.Marker(s.ActivationToken)) {
 		return Invoice{}, queue.ErrConflict
 	}
 	if fresh.StatusID == "4" {
@@ -264,7 +280,7 @@ func (w *EnforcementWorker) readUnpaid(ctx context.Context, s EnforcementSnapsho
 }
 
 func validateEnforcementSnapshot(s EnforcementSnapshot, botID int64, allowed, excluded []int64, now time.Time) int {
-	if s.BotID != botID || s.ClientID <= 0 || s.TelegramID <= 0 || s.ChatID != s.TelegramID || !s.ManagedProvenance || !slices.Contains(allowed, s.TelegramID) || slices.Contains(excluded, s.TelegramID) || s.CustomerID == "" || s.InvoiceID == "" || s.Invoice.ID != s.InvoiceID || s.CurrentInvoiceID != s.InvoiceID || s.FirstInvoiceID == s.InvoiceID || s.RecurringID == "" || s.SUIID == "" || s.RegistrationToken == "" || s.ActivationToken == "" {
+	if s.BotID != botID || s.ClientID <= 0 || s.TelegramID <= 0 || s.ChatID != s.TelegramID || !s.ManagedProvenance || !slices.Contains(allowed, s.TelegramID) || slices.Contains(excluded, s.TelegramID) || s.CustomerID == "" || s.InvoiceID == "" || s.Invoice.ID != s.InvoiceID || s.CurrentInvoiceID != s.InvoiceID || (s.FirstInvoiceID != "" && s.FirstInvoiceID == s.InvoiceID) || s.RecurringID == "" || s.SUIID == "" {
 		return ReviewOverdueAssociation
 	}
 	if !validOverdueInvoice(s.Invoice) || s.Invoice.Status != "sent" || s.Invoice.PaidToDate != "0" || s.Invoice.Balance != s.Invoice.Amount {
@@ -273,7 +289,11 @@ func validateEnforcementSnapshot(s EnforcementSnapshot, botID int64, allowed, ex
 	if due, err := billing.IsOverdue(s.Invoice.SentDate, now.In(time.Local)); err != nil || !due {
 		return ReviewOverdueInvoice
 	}
-	if s.RecurringDraft.ClientID != s.CustomerID || s.RecurringDraft.PrivateNotes != activation.Marker(s.ActivationToken) || invoiceninja.ValidateRecurringDraft(s.RecurringDraft) != nil || s.SUIBinding.ID <= 0 || strconv.FormatInt(s.SUIBinding.ID, 10) != s.SUIID || s.SUIBinding.Name == "" {
+	if s.ImportedOrigin.Valid() {
+		if s.ImportedOrigin.ClientID != s.ClientID || s.ImportedOrigin.BotID != botID || s.FirstInvoiceID != "" || s.RegistrationToken != "" || s.ActivationToken != "" || s.ImportedAdmissionPermissionRevision <= 0 || s.ImportedEffectsRevision <= 0 || s.ImportedRecurringProfile.Hash() == "" || s.RecurringDraft.ClientID != "" || !validImportedInboundIDs(s.ImportedInboundIDs) || s.SUIBinding.ID <= 0 || strconv.FormatInt(s.SUIBinding.ID, 10) != s.SUIID || s.SUIBinding.Name == "" || len(s.ImportedInboundIDs) == 0 {
+			return ReviewOverdueAssociation
+		}
+	} else if s.RegistrationToken == "" || s.ActivationToken == "" || s.FirstInvoiceID == "" || s.RecurringDraft.ClientID != s.CustomerID || s.RecurringDraft.PrivateNotes != activation.Marker(s.ActivationToken) || invoiceninja.ValidateRecurringDraft(s.RecurringDraft) != nil || s.SUIBinding.ID <= 0 || strconv.FormatInt(s.SUIBinding.ID, 10) != s.SUIID || s.SUIBinding.Name == "" {
 		return ReviewOverdueAssociation
 	}
 	if s.State == "active" && s.DesiredAccess {
@@ -286,6 +306,20 @@ func validateEnforcementSnapshot(s EnforcementSnapshot, botID int64, allowed, ex
 		return 0
 	}
 	return ReviewOverdueAssociation
+}
+
+func validImportedInboundIDs(ids []int64) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if id <= 0 || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
 }
 
 func confirmed(steps map[EnforcementStep]OverdueStep, step EnforcementStep) bool {
@@ -315,6 +349,47 @@ func validOverdueInvoice(invoice Invoice) bool {
 }
 
 func (w *EnforcementWorker) pauseRecurring(ctx context.Context, claim queue.Operation, s EnforcementSnapshot) bool {
+	if s.ImportedOrigin.Valid() {
+		if w.importedRecurring == nil {
+			w.hold(claim, s, ReviewOverdueAssociation)
+			return false
+		}
+		record, err := w.importedRecurring.Get(ctx, s.RecurringID)
+		if err != nil {
+			if isProviderContractError(err) {
+				w.hold(claim, s, ReviewOverdueContract)
+			} else {
+				w.retry(claim, err)
+			}
+			return false
+		}
+		draft, err := invoiceninja.PrepareImportedPause(s.ImportedRecurringProfile, record)
+		if err != nil {
+			w.hold(claim, s, ReviewOverdueContract)
+			return false
+		}
+		raw, err := json.Marshal(draft)
+		if err != nil {
+			w.hold(claim, s, ReviewOverdueContract)
+			return false
+		}
+		granted := false
+		authorize := func(ctx context.Context) error {
+			return w.authorize(ctx, claim, s, OverduePauseRecurring, raw, &granted)
+		}
+		result, err := w.importedRecurring.PauseAuthorized(ctx, draft, authorize)
+		if err != nil {
+			w.finishWriteAttempt(claim, s, granted, err)
+			return false
+		}
+		if err := w.confirm(claim, OverduePauseRecurring, result.ID); err != nil {
+			if !errors.Is(err, queue.ErrLeaseLost) {
+				w.holdCurrent(claim, ReviewOverdueUnknownWrite)
+			}
+			return false
+		}
+		return true
+	}
 	record, err := w.recurring.Get(ctx, s.RecurringID)
 	if err != nil {
 		if isProviderContractError(err) {
@@ -362,6 +437,12 @@ func (w *EnforcementWorker) disableSUI(ctx context.Context, claim queue.Operatio
 		}
 		return false
 	}
+	if s.ImportedOrigin.Valid() {
+		if err := sui.ValidateImportedRecordBinding(record, s.SUIBinding, s.ImportedInboundIDs); err != nil {
+			w.hold(claim, s, ReviewOverdueContract)
+			return false
+		}
+	}
 	draft, err := sui.PrepareDisable(record, s.SUIBinding)
 	if err != nil {
 		w.hold(claim, s, ReviewOverdueContract)
@@ -397,6 +478,12 @@ func (w *EnforcementWorker) closeSessions(ctx context.Context, claim queue.Opera
 			w.retry(claim, err)
 		}
 		return false
+	}
+	if s.ImportedOrigin.Valid() {
+		if err := sui.ValidateImportedRecordBinding(record, s.SUIBinding, s.ImportedInboundIDs); err != nil {
+			w.hold(claim, s, ReviewOverdueContract)
+			return false
+		}
 	}
 	draft, err := sui.PrepareCloseSessions(record, s.SUIBinding)
 	if err != nil {
