@@ -372,7 +372,9 @@ func TestImportedInitialPausedDebtRestorationWorker(t *testing.T) {
 	t.Run("resume mutation with unknown response", func(t *testing.T) { runInitialRestorationWorkflow(t, false, true) })
 }
 
-func runInitialRestorationWorkflow(t *testing.T, emptySchedule, unknownResume bool) {
+type initialRestorationOutcomeHook func(*Store, context.Context, importadmission.PreparedPlan, *initialRestorationSource, int64, payments.Snapshot)
+
+func runInitialRestorationWorkflow(t *testing.T, emptySchedule, unknownResume bool, hooks ...initialRestorationOutcomeHook) {
 	s, ctx, prepared, settlement, cycle, importedRecurring, panel, src := newInitialRestorationRig(t, emptySchedule)
 	src.unknownResume = unknownResume
 	botID := prepared.BotID()
@@ -480,6 +482,11 @@ func runInitialRestorationWorkflow(t *testing.T, emptySchedule, unknownResume bo
 		if !reflect.DeepEqual(posts, []string{"schedule_recurring", "enable_sui", "resume_recurring"}) || recurring["status_id"] != "2" || !panelRecord.Enabled() {
 			t.Fatalf("ambiguous resume source state/writes: steps=%v status=%v enabled=%v", posts, recurring["status_id"], panelRecord.Enabled())
 		}
+		for _, hook := range hooks {
+			if hook != nil {
+				hook(s, ctx, prepared, src, botID, snap)
+			}
+		}
 		return
 	}
 	wantNext, err := billing.NextBillingDate(paidDate)
@@ -512,6 +519,11 @@ func runInitialRestorationWorkflow(t *testing.T, emptySchedule, unknownResume bo
 	}
 	if !panelRecord.Enabled() || !importedOverdueSameSUIExceptEnable(src.suiRaw, panelRecord) {
 		t.Fatal("SUI client identity/config changed beyond enable")
+	}
+	for _, hook := range hooks {
+		if hook != nil {
+			hook(s, ctx, prepared, src, botID, snap)
+		}
 	}
 	if !emptySchedule {
 		continueInitialRestorationWithNormalLedgerCycle(t, s, ctx, prepared, settlement, cycle, snap, src, paidDate)

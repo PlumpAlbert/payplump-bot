@@ -107,10 +107,15 @@ verified. CI `40029673909` and `40030663139` found test-fixture issues only; the
 fixes preserved production checks. No live API, Telegram, payment, working DB,
 publish, or deployment was used.
 
-## Next agreed slice: 11b.7.1
+## Delivered 11b.7.1: original active imported baseline
 
-11b.7.1 implementation and tests are ready in 15 files; PR #33 is open and exact-HEAD required CI is pending.
-The slice protects only the ORIGINAL ACTIVE imported baseline: current invoice
+PR #33 merged as `4a6522d1b881ef031ef580c67486406237ecf004`; exact final code
+HEAD `e2ca6863aa785681433932f3a9caf82a0d46319b` passed required CI
+`40035675235` (all three jobs, including PostgreSQL 17/race and test aggregator
+with smoke/Docker), and post-merge main CI `40036327450` succeeded on the exact
+base. Runtime passed all three imported-configuration SQL workflows.
+
+This slice protects only the ORIGINAL ACTIVE imported baseline: current invoice
 must equal immutable origin current invoice and paid anchor, with current normal
 proof, strictly future UTC date, static binding/inbounds, legacy price/notes,
 source-scope/public-base GET fences, legitimate immutable origin FK/mode, and
@@ -121,18 +126,57 @@ configuration policy separately and explicitly controls secret Telegram
 delivery. No auto-enable; preserve the per-chat unknown-send barrier.
 
 Independent review `34c46fce-9abc-42a` covered production, both domain/unit tests
-and the PostgreSQL workflow. It found two P2 issues (currency-policy drift and
-test-worker bot scope); both were fixed and confirmed. Final P1/P2/P3 findings:
-zero. Full local unit/race/vet/CGO0 build/module/gofmt/diff checks passed;
-PostgreSQL integration compiled only. The three database workflows are code,
-not runtime results: actual GET/verify/admit/observe/menu/outbox/protected-service/
-Telegram success with outbox status `sent` and guard `outbox_id IS NULL`; config/
-pre-GET policy/source-scope/public-base/currency denial; GET-verified changed-payment sticky review (2007); runtime permission ABA denial; and unknown-send 503
-with durable chat barrier across permission/config revocation, a new request and
-worker restart. The unknown case must not trigger another URL/provider/chat GET. SQL runtime and
-exact-HEAD CI are pending, so there is no consumer-readiness claim.
+and the PostgreSQL workflow. Two P2 findings (currency-policy drift and
+test-worker bot scope) were fixed and confirmed; final findings were zero. The
+three runtime workflows covered original-baseline GET/verify/admit/observe/menu/
+outbox/protected-service/Telegram success with `sent` and guard release;
+public-base policy denial before GET and changed-current native proof sticky
+review 2007 after GET; runtime permission ABA denial; unknown-send 503 with a
+durable chat barrier across revocation/new request/restart. The unknown case
+performs no further URL/provider/chat GET. No live consumer readiness or live
+provider/Telegram/payment/working-DB/publish/deploy result is claimed.
 
-Partial imports, a new current invoice, paused/restored initial baselines, and
-subsequent imported renewal delivery remain denied pending audited 11b.7.2.
-Apply CLI and default-off startup wiring remain future work. The whole 11b
-workflow is incomplete; no live verification/admission or deployment is claimed.
+## Next slice: 11b.7.2 imported current-renewal delivery
+
+11b.7.2 implementation and four PostgreSQL workflow cases are in PR #34 at
+`815d54c6e019e03e5a8391dccaec21e2e7a39fd3`. Eligibility is a protected imported
+CURRENT COMPLETED renewal, covering normal ledger renewal and current debt after
+initial-restoration mode. Require explicit current-payment proof, completed native
+plan/journal/receipts and a strictly future current UTC date. Immutable shared
+origin, historical paid anchor and original proof remain historical, never
+current entitlement/selectors; keep current proof and renewal audit separate.
+
+`RenewalAudit.OriginMode` is new `omitempty` (`ledger` or
+`imported_initial_paused`). Renewal request `request_period='renewal'` retains SQL
+NULL `activation_id`, uses the conditional generated baseline-origin invoice FK
+and existing current-renewal composite FK; old requests/fingerprints remain
+unchanged. No fake activation, ledger row, first invoice, or historical payment
+confirmation. `Current.ImportedBaselineProofHash` is zero for renewal; origin
+proof hash stays in `Entitlement.Imported`. Validate old proof through canonical
+admitted evidence; current proof/date/amount are independent of anchor dates.
+Native audit handles both imported modes, not OWN decoder; exact seven-key plan
+and known receipts are required. Initial mode omits Schedule only when current
+target already is future; empty/past old UTC is replaceable only by a known new
+schedule/future receipt, without Pause. Current admission/runtime/config must
+match; effects may be off after known completion and completion revisions may be
+historical. Preserve GET-only provider/scope/public-base/native-currency/date/UTC
+checks, final DB authorization and in-memory URL.
+
+Keep barriers distinct: unknown Invoice Ninja/S-UI mutations pin the shared
+`activation_write_guard`/epoch and local workflow remains held; unknown secret
+Telegram sends pin `configuration_chat_guards` for that chat. Neither clears the
+other. The new unknown-native case is Resume mutation→503, pinned global guard
+and local overdue, followed by ordinary menu denial without a configuration
+request; it is not a Telegram-unknown test.
+
+The first PR CI run `40038835592` passed fast checks, but PostgreSQL integration
+failed before all feature scenarios while parsing migration 024 (`SQLSTATE
+42601`, mismatched parentheses). This is a real migration syntax defect, not a
+fixture-only failure; Store producer is correcting syntax without weakening
+predicates. No SQL scenario has run in CI; local PG workflows are compile-only.
+The independent full-patch review `e370ed66-465a-4ef` found zero behavioral/
+design findings before this runtime parse failure; the migration fix needs a
+narrow recheck. Parent local unit/race/vet/CGO0 build/module/gofmt and PG
+compile-only checks passed before the migration correction. Corrected-HEAD CI,
+SQL runtime and merge remain pending. Apply CLI/default-off startup wiring is
+later work; 11b and live verification/admission remain incomplete.

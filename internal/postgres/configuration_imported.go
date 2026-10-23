@@ -21,6 +21,15 @@ import (
 // whose originally paid invoice remains the current baseline. It intentionally
 // does not synthesize activation or renewal journal state.
 func readImportedConfigurationEntitlement(ctx context.Context, tx pgx.Tx, botID, actor int64) (configdelivery.Entitlement, error) {
+	var renewal bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM verified_import_origins io JOIN clients c ON c.id=io.client_id
+        JOIN subscriptions s ON s.client_id=c.id WHERE io.bot_id=$1 AND c.telegram_id=$2
+          AND (io.lifecycle='paused' OR s.current_invoice_id<>io.current_invoice_id OR s.current_invoice_id<>io.paid_anchor_invoice_id))`, botID, actor).Scan(&renewal); err != nil {
+		return configdelivery.Entitlement{}, err
+	}
+	if renewal {
+		return readImportedRenewalConfigurationEntitlement(ctx, tx, botID, actor)
+	}
 	var e configdelivery.Entitlement
 	var clientID, telegramID, chatID, originID, originBot int64
 	var firstInvoice *string

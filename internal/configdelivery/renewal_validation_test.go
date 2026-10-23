@@ -80,6 +80,19 @@ func TestRenewalRequestIdentityMismatchesNeverMatch(t *testing.T) {
 	}
 }
 
+func TestOwnedRenewalRejectsUnexpectedPartialReceipt(t *testing.T) {
+	for _, mutate := range []func(*RenewalAudit){
+		func(a *RenewalAudit) { a.StepIDs[0] = "unexpected-step" },
+		func(a *RenewalAudit) { a.StepHashes[0] = [32]byte{1} },
+	} {
+		e, _, _ := renewalEntitlement(t)
+		mutate(&e.Renewal)
+		if e.Validate() == nil {
+			t.Fatal("partial optional renewal receipt was accepted")
+		}
+	}
+}
+
 func TestRenewalEntitlementFingerprintFencesCurrentAuthority(t *testing.T) {
 	e, _, _ := renewalEntitlement(t)
 	base, err := e.Fingerprint()

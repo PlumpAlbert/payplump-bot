@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/billing"
+	"github.com/PlumpAlbert/payplump-bot/internal/importadmission"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/lifecycle"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
@@ -30,7 +31,9 @@ func TestImportedPaidRenewalFromNewLedgerInvoice(t *testing.T) {
 	t.Run("schedule mutation with unknown response is pinned", func(t *testing.T) { runImportedPaidRenewalHappy(t, false, true) })
 }
 
-func runImportedPaidRenewalHappy(t *testing.T, late, unknownSchedule bool) {
+type importedRenewalCompletionHook func(*importedOverdueRig, importadmission.PreparedPlan, int64)
+
+func runImportedPaidRenewalHappy(t *testing.T, late, unknownSchedule bool, hooks ...importedRenewalCompletionHook) {
 	var newPayment map[string]any
 	var renewalPosts, providerOrder []string
 	var afterResumeMutation func(context.Context) error
@@ -372,6 +375,11 @@ func runImportedPaidRenewalHappy(t *testing.T, late, unknownSchedule bool) {
 		t.Fatalf("target=%v datetime=%v want=%s err=%v", target, datetime, wantTarget, e)
 	}
 	paymentSQL(t, trig.s, ctx, `SELECT count(*)=0 FROM operations WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42) AND kind IN ('register_client','activate_first_subscription')`)
+	for _, hook := range hooks {
+		if hook != nil {
+			hook(trig, prepared, botID)
+		}
+	}
 }
 
 func waitRenewalComplete(t *testing.T, parent context.Context, worker *lifecycle.RenewalWorker, s *Store, source *importedOverdueSource) {

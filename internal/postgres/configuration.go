@@ -592,7 +592,7 @@ func enqueueConfigurationIntent(ctx context.Context, tx pgx.Tx, prepared clientm
 		return err
 	}
 	clientID := e.Activation.Account.ClientID
-	if e.Period == configdelivery.ImportedBaselinePeriod {
+	if e.Period == configdelivery.ImportedBaselinePeriod || (e.Period == configdelivery.RenewalPeriod && e.Imported != nil) {
 		clientID = e.Current.ClientID
 	}
 	if clientID != prepared.Snapshot.ClientID || e.Revision != prepared.Snapshot.ConfigurationRevision {
@@ -620,15 +620,20 @@ func enqueueConfigurationIntent(ctx context.Context, tx pgx.Tx, prepared clientm
 	if period == configdelivery.RenewalPeriod {
 		invoiceID, proofHash, renewalID = e.Current.InvoiceID, e.CurrentProof.Hash, e.Renewal.OperationID
 	}
-	if period == configdelivery.ImportedBaselinePeriod {
-		if e.Imported == nil || e.Imported.Origin.ClientID != e.Current.ClientID || e.Imported.InvoiceID != e.Current.InvoiceID {
+	if period == configdelivery.ImportedBaselinePeriod || (period == configdelivery.RenewalPeriod && e.Imported != nil) {
+		if e.Imported == nil || e.Imported.Origin.ClientID != e.Current.ClientID ||
+			(period == configdelivery.ImportedBaselinePeriod && e.Imported.InvoiceID != e.Current.InvoiceID) {
 			return denied()
 		}
 		originKind, clientID, activationID = configdelivery.ImportedOrigin, e.Current.ClientID, 0
-		invoiceID, proofHash = e.Imported.InvoiceID, e.Imported.ProofHash
 		importedOriginID = e.Imported.Origin.ClientID
 		admissionPermissionRevision = e.Imported.AdmissionPermissionRevision
 		runtimeRevision = e.Imported.Origin.RuntimeRevision
+		if period == configdelivery.ImportedBaselinePeriod {
+			invoiceID, proofHash = e.Imported.InvoiceID, e.Imported.ProofHash
+		} else {
+			invoiceID, proofHash = e.Current.InvoiceID, e.CurrentProof.Hash
+		}
 	}
 	id, err := insertOutbox(ctx, tx, queue.Draft{BotID: r.BotID, ChatID: r.ChatID, Key: r.Key(), Text: queue.ConfigurationIntentBody, ProtectedConfiguration: true})
 	if err != nil {
@@ -809,8 +814,32 @@ func lockConfigurationAccount(ctx context.Context, tx pgx.Tx, r configdelivery.R
 	}
 	if r.Origin == configdelivery.ImportedOrigin {
 		var lockedOrigin int64
-		if err := tx.QueryRow(ctx, `SELECT client_id FROM verified_import_origins WHERE client_id=$1 AND bot_id=$2 AND current_invoice_id=$3 FOR KEY SHARE`, r.ImportedOriginClientID, r.BotID, r.InvoiceID).Scan(&lockedOrigin); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT client_id FROM verified_import_origins WHERE client_id=$1 AND bot_id=$2 FOR KEY SHARE`, r.ImportedOriginClientID, r.BotID).Scan(&lockedOrigin); err != nil {
 			return err
+		}
+		if r.Period == configdelivery.RenewalPeriod {
+			var operationID int64
+			if err := tx.QueryRow(ctx, `SELECT id FROM operations WHERE id=$1 AND client_id=$2 AND kind='invoice_paid_renewal' AND status='completed' FOR UPDATE`, r.RenewalID, r.ClientID).Scan(&operationID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `SELECT operation_id FROM invoice_renewal_actions WHERE operation_id=$1 AND client_id=$2 AND bot_id=$3 AND invoice_id=$4 FOR UPDATE`, r.RenewalID, r.ClientID, r.BotID, r.InvoiceID); err != nil {
+				return err
+			}
+			rows, err := tx.Query(ctx, `SELECT step FROM invoice_renewal_steps WHERE operation_id=$1 ORDER BY step FOR UPDATE`, r.RenewalID)
+			if err != nil {
+				return err
+			}
+			for rows.Next() {
+				var step string
+				if err := rows.Scan(&step); err != nil {
+					rows.Close()
+					return err
+				}
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return err
+			}
 		}
 		rows, err := tx.Query(ctx, `SELECT rp.bot_id,ap.bot_id FROM imported_runtime_permissions rp
             JOIN import_admission_policy ap ON ap.bot_id=rp.bot_id WHERE rp.bot_id=$1 FOR SHARE OF rp,ap`, r.BotID)
@@ -832,20 +861,22 @@ func lockConfigurationAccount(ctx context.Context, tx pgx.Tx, r configdelivery.R
 	// Pipeline the remaining ordered locks over remote PostgreSQL links. The
 	// backend still executes each statement serially, with the client held.
 	batch := &pgx.Batch{}
-	for _, q := range []struct {
-		sql string
-		arg any
-	}{
-		{`SELECT operation_id FROM activation_flows WHERE operation_id=$1 FOR UPDATE`, r.ActivationID},
-		{`SELECT client_id FROM activation_sui_bindings WHERE client_id=$1 FOR UPDATE`, r.ClientID},
-		{`SELECT step FROM activation_steps WHERE operation_id=$1 ORDER BY step FOR UPDATE`, r.ActivationID},
-		{`SELECT id FROM operations WHERE client_id=$1 AND kind IN ('register_client','activate_first_subscription') ORDER BY id FOR UPDATE`, r.ClientID},
-		{`SELECT f.operation_id FROM registration_flows f JOIN operations o ON o.id=f.operation_id WHERE o.client_id=$1 FOR UPDATE OF f`, r.ClientID},
-		{`SELECT s.step FROM operation_steps s JOIN operations o ON o.id=s.operation_id WHERE o.client_id=$1 ORDER BY s.step FOR UPDATE OF s`, r.ClientID},
-		{`SELECT operation_id FROM invoice_renewal_actions WHERE operation_id=$1 FOR UPDATE`, r.RenewalID},
-		{`SELECT step FROM invoice_renewal_steps WHERE operation_id=$1 ORDER BY step FOR UPDATE`, r.RenewalID},
-	} {
-		batch.Queue(q.sql, q.arg)
+	if r.Origin != configdelivery.ImportedOrigin {
+		for _, q := range []struct {
+			sql string
+			arg any
+		}{
+			{`SELECT operation_id FROM activation_flows WHERE operation_id=$1 FOR UPDATE`, r.ActivationID},
+			{`SELECT client_id FROM activation_sui_bindings WHERE client_id=$1 FOR UPDATE`, r.ClientID},
+			{`SELECT step FROM activation_steps WHERE operation_id=$1 ORDER BY step FOR UPDATE`, r.ActivationID},
+			{`SELECT id FROM operations WHERE client_id=$1 AND kind IN ('register_client','activate_first_subscription') ORDER BY id FOR UPDATE`, r.ClientID},
+			{`SELECT f.operation_id FROM registration_flows f JOIN operations o ON o.id=f.operation_id WHERE o.client_id=$1 FOR UPDATE OF f`, r.ClientID},
+			{`SELECT s.step FROM operation_steps s JOIN operations o ON o.id=s.operation_id WHERE o.client_id=$1 ORDER BY s.step FOR UPDATE OF s`, r.ClientID},
+			{`SELECT operation_id FROM invoice_renewal_actions WHERE operation_id=$1 FOR UPDATE`, r.RenewalID},
+			{`SELECT step FROM invoice_renewal_steps WHERE operation_id=$1 ORDER BY step FOR UPDATE`, r.RenewalID},
+		} {
+			batch.Queue(q.sql, q.arg)
+		}
 	}
 	results := tx.SendBatch(ctx, batch)
 	for range batch.Len() {
@@ -1018,7 +1049,13 @@ func (s *Store) AuthorizeConfiguration(ctx context.Context, m queue.Message, exp
                     WHERE a.operation_id=$6 AND a.client_id=pc.client_id AND a.bot_id=pc.bot_id AND a.invoice_id=pc.invoice_id
                       AND a.outcome='completed' AND a.review_code=0 AND o.kind='invoice_paid_renewal' AND o.status='completed'
                       AND s.current_invoice_id=pc.invoice_id AND s.state='active' AND s.desired_access
-                      AND c.invoice_ninja_id=pc.customer_id AND c.telegram_id=$7 AND c.chat_id=$7)`, request.InvoiceID, request.ClientID, request.BotID, current.CustomerID, request.ProofHash[:], request.RenewalID, request.ActorID)
+                      AND ((a.origin_mode='ledger' AND $8='owned' AND a.imported_origin_client_id IS NULL)
+                        OR ($8='imported' AND a.imported_origin_client_id=$9
+                          AND a.imported_admission_permission_revision>0
+                          AND a.imported_runtime_revision>0 AND a.imported_effect_revision>0
+                          AND ((a.origin_mode='ledger' AND EXISTS(SELECT 1 FROM verified_import_origins io WHERE io.client_id=a.imported_origin_client_id AND io.client_id=a.client_id AND io.bot_id=a.bot_id AND (io.lifecycle='active' OR (io.lifecycle='paused' AND EXISTS(SELECT 1 FROM invoice_renewal_actions initial JOIN operations initial_op ON initial_op.id=initial.operation_id WHERE initial.client_id=io.client_id AND initial.bot_id=io.bot_id AND initial.imported_origin_client_id=io.client_id AND initial.origin_mode='imported_initial_paused' AND initial.outcome='completed' AND initial.review_code=0 AND initial_op.kind='invoice_paid_renewal' AND initial_op.status='completed')))))
+                            OR (a.origin_mode='imported_initial_paused' AND a.imported_origin_client_id=$9 AND a.imported_admission_permission_revision>0 AND a.imported_runtime_revision>0 AND a.imported_effect_revision>0 AND EXISTS(SELECT 1 FROM verified_import_origins io WHERE io.client_id=a.imported_origin_client_id AND io.client_id=a.client_id AND io.bot_id=a.bot_id AND io.lifecycle='paused' AND io.current_invoice_id=a.invoice_id AND io.paid_anchor_invoice_id<>io.current_invoice_id)))))
+                      AND c.invoice_ninja_id=pc.customer_id AND c.telegram_id=$7 AND c.chat_id=$7)`, request.InvoiceID, request.ClientID, request.BotID, current.CustomerID, request.ProofHash[:], request.RenewalID, request.ActorID, string(request.Origin), request.ImportedOriginClientID)
 				if err != nil {
 					return permit, err
 				}

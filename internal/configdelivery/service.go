@@ -212,7 +212,7 @@ func (s *Service) evaluate(ctx context.Context, m queue.Message, v View) Decisio
 	}
 	e := v.Entitlement
 	if e.Imported != nil {
-		return s.evaluateImportedBaseline(ctx, v)
+		return s.evaluateImported(ctx, v)
 	}
 	deadline, err := e.Deadline()
 	if err != nil {
@@ -251,7 +251,7 @@ func (s *Service) evaluate(ctx context.Context, m queue.Message, v View) Decisio
 	return Decision{Kind: Secret}
 }
 
-func (s *Service) evaluateImportedBaseline(ctx context.Context, v View) Decision {
+func (s *Service) evaluateImported(ctx context.Context, v View) Decision {
 	e, r, b := v.Entitlement, v.Request, v.Entitlement.Imported
 	scope, scopeErr := importverify.SourceScope(s.cfg.BaseURL, s.cfg.Token, invoiceninja.SupportedSettlementVersion, s.cfg.SUIBaseURL, s.cfg.SUIToken, s.cfg.SUIVersion)
 	scopeHash, scopeOK := importorigin.ParseHashHex(scope)
@@ -272,7 +272,11 @@ func (s *Service) evaluateImportedBaseline(ctx context.Context, v View) Decision
 	if err != nil || observed.Validate() != nil {
 		return deny(DeniedUnavailable)
 	}
-	if observed.Kind != payments.Verified || observed.Proof.Hash != b.ProofHash || observed.Proof.InvoiceNumber != e.CurrentProof.InvoiceNumber {
+	expectedHash := b.ProofHash
+	if e.Period == RenewalPeriod {
+		expectedHash = e.CurrentProof.Hash
+	}
+	if observed.Kind != payments.Verified || observed.Proof.Hash != expectedHash || observed.Proof.InvoiceNumber != e.CurrentProof.InvoiceNumber {
 		return Decision{Kind: Denial, Reason: DeniedPayment, PaymentChanged: true}
 	}
 	if result := s.readImportedBound(ctx, e); result.Kind != Secret {
@@ -285,7 +289,11 @@ func (s *Service) evaluateImportedBaseline(ctx context.Context, v View) Decision
 }
 
 func deliveryFutureImported(e Entitlement, r Request, deadline, now time.Time) bool {
-	return !now.Before(r.CreatedAt) && now.Before(r.ExpiresAt) && now.Before(deadline) && e.Current.NextInvoiceDate > now.In(time.Local).Format(time.DateOnly) && e.Imported.NextSendUTC.After(now)
+	instant := e.Imported.NextSendUTC
+	if e.Period == RenewalPeriod {
+		instant = e.Renewal.NextSendUTC
+	}
+	return !now.Before(r.CreatedAt) && now.Before(r.ExpiresAt) && now.Before(deadline) && e.Current.NextInvoiceDate > now.In(time.Local).Format(time.DateOnly) && instant.After(now)
 }
 
 func (s *Service) readImportedBound(ctx context.Context, e Entitlement) Decision {
@@ -305,8 +313,14 @@ func (s *Service) readImportedBound(ctx context.Context, e Entitlement) Decision
 		return deny(DeniedRecurring)
 	}
 	amount, instant, normalizeErr := activation.NormalizeRecurringFacts(recurring.Amount, recurring.NextSendDatetime)
-	frozenAmount, frozenInstant, frozenErr := activation.NormalizeRecurringFacts(json.Number(e.CurrentProof.Amount), b.NextSendUTC.Format(time.RFC3339Nano))
-	if normalizeErr != nil || frozenErr != nil || amount != frozenAmount || instant != frozenInstant || instant != b.NextSendUTC.Format(time.RFC3339Nano) {
+	expectedAmount := e.CurrentProof.Amount
+	expectedInstant := b.NextSendUTC
+	if e.Period == RenewalPeriod {
+		expectedAmount = e.Renewal.Amount
+		expectedInstant = e.Renewal.NextSendUTC
+	}
+	frozenAmount, frozenInstant, frozenErr := activation.NormalizeRecurringFacts(json.Number(expectedAmount), expectedInstant.Format(time.RFC3339Nano))
+	if normalizeErr != nil || frozenErr != nil || amount != frozenAmount || instant != frozenInstant || instant != expectedInstant.Format(time.RFC3339Nano) || e.Period == RenewalPeriod && recurring.NextSendDate != e.Renewal.TargetDate {
 		return deny(DeniedRecurring)
 	}
 	return Decision{Kind: Secret}

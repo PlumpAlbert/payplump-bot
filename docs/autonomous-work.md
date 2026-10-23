@@ -143,26 +143,59 @@ scope; не снимать и не обходить их и не расширя�
   zero. Parent-mode IFF/batch-bound checks were verified. CI `40029673909` and
   `40030663139` exposed test-only fixture issues; fixes preserved production
   checks. No live API, Telegram, payment, working DB, publish or deploy occurred.
-  11b.7.1 code/tests are ready in 15 files; PR #33 is open and exact-HEAD required CI is pending. It covers only
-  the ORIGINAL ACTIVE imported baseline: current invoice equals immutable origin
-  current invoice and paid anchor; current normal proof, strictly future UTC date,
-  static binding/inbounds, legacy price/notes, source-scope/public-base GET
-  fences; legitimate origin FK/mode, current configuration/admission/runtime
-  revisions, SQL NULL first invoice/no fake OWN history. OWN first/renewal paths
-  stay unchanged. GET-only consumers do not require billing-effects permission;
-  configuration policy separately must explicitly allow secret Telegram delivery.
-  No auto-enable; preserve the per-chat unknown-send barrier. Partial/new-current,
-  paused/restored-initial and imported-renewal delivery are denied pending 11b.7.2.
-  Independent review `34c46fce-9abc-42a` completed across production, both
-  domain/unit tests and the PG workflow: two P2 findings (currency-policy drift,
-  test-worker bot scope) were fixed and reviewer-confirmed; final P1/P2/P3 count
-  is zero. Full local unit/race/vet/CGO0 build/module/gofmt/diff passed; PG
-  integration compile-only passed. Three DB workflows are implemented, not run:
-  actual GET/verify/admit/observe/menu/outbox/protected-service/TG success and
-  guard release, pre-GET policy/source-scope/public-base/currency denial, GET-verified changed-payment sticky review (2007), runtime permission ABA, and unknown
-  send 503 with durable chat barrier after revocation/new request/restart. SQL
-  runtime and exact-HEAD PR CI remain pending; no consumer-readiness claim. Apply
-  CLI/default-off startup wiring and 11b.7.2 remain future work; Stage 11 is incomplete.
+  11b.7.1 protected delivery for the ORIGINAL ACTIVE imported baseline merged as
+  PR #33 at `4a6522d1b881ef031ef580c67486406237ecf004`; exact final HEAD
+  `e2ca6863aa785681433932f3a9caf82a0d46319b` passed required CI `40035675235`
+  (all three jobs, including PostgreSQL 17 integration/race and smoke/Docker)
+  and post-merge main CI `40036327450` succeeded on the exact base. All three
+  imported-configuration SQL workflows passed: original paid-baseline GET→verify→
+  admit→observe→private menu/outbox/protected service/Telegram success and guard
+  release; public-base denial before provider GET and changed-current native proof
+  sticky review 2007 after GET; runtime permission ABA denial and unknown-send 503
+  with durable per-chat barrier across revocation/new request/restart. Review
+  `34c46fce-9abc-42a` fixed both P2 findings (currency-policy drift, test-worker
+  bot scope); final findings zero. No live provider/Telegram/payment/working DB/
+  publish/deploy. This does not claim live consumer readiness.
+
+  11b.7.2 implementation and four workflow cases were ready; PR #34 is now open
+  at `815d54c6e019e03e5a8391dccaec21e2e7a39fd3`. Scope is protected imported
+  CURRENT COMPLETED renewal: explicit current proof, completed native
+  plan/journal/receipts, future current UTC date. Immutable origin/paid anchor is
+  history, not entitlement/current selector; current proof/audit stays separate.
+  Renewal `Current.ImportedBaselineProofHash` is zero; pinned origin proof stays
+  in `Entitlement.Imported`. Preserve old OWN/baseline fingerprints and
+  `RenewalAudit.OriginMode` `omitempty` (`ledger`/`imported_initial_paused`);
+  renewal request `activation_id` remains SQL NULL with conditional generated
+  baseline-origin invoice FK plus current-renewal composite FK. No fake
+  activation, ledger, or historical payment-confirmation rows. Validate origin
+  proof via canonical admitted evidence; current proof/date/amount are independent
+  of anchor dates. Native audit covers both imported modes, not OWN decoder;
+  require exact seven-key plan and known receipts. Initial mode may omit Schedule
+  only if target is already future; past/empty old UTC needs a known new schedule
+  and future receipt, with no Pause. Current gates match; completed actions may
+  survive effects-off and their revisions may be historical.
+
+  Distinguish barriers: unknown native Invoice Ninja/S-UI write pins the shared
+  global `activation_write_guard`/epoch and leaves local workflow held. Unknown
+  secret Telegram transmission pins `configuration_chat_guards` for that chat.
+  Neither clears or substitutes for the other. The new unknown-native test is
+  Resume mutation→503, pinned global guard/local overdue, then ordinary menu
+  denial without a configuration request; it is not a Telegram-unknown test.
+
+  Domain `dcb4a0e2-70f3-4ca`, tests `bda905ec-faef-45c`, and initial Store
+  producer `e7576737-ba1d-471` completed implementation; Store is correcting a
+  migration 024 syntax error without weakening predicates. Parent full
+  `-count=1 ./...`, race, vet, CGO0 build, mod verify, gofmt and PG compile-only
+  checks passed (logs `/tmp/payplump-imported-renewal-config-{unit,race}.log`
+  and `/tmp/payplump-imported-renewal-config-domain-race.log`). Four workflows
+  compile locally but have not reached SQL runtime. First PR CI `40038835592`:
+  fast checks passed; PostgreSQL integration failed before scenarios parsing
+  migration 024 (`SQLSTATE 42601`, mismatched parentheses). This is a real
+  migration parse failure, not a fixture-only issue. Independent review
+  `e370ed66-465a-4ef` had zero behavioral/design findings on the pre-CI full
+  patch; narrow recheck after syntax fix is pending. Corrected-HEAD CI, SQL
+  runtime, merge and PR34 delivery remain pending. No owner blocker; Stage 11
+  remains incomplete.
 
   Непереговорные TODO: actor/pilot ограничения сохраняются; будущий managed
   consumer обязан подавлять устаревшие операции/уведомления. Неоплаченные долги
@@ -190,10 +223,12 @@ and post-merge CI `40015300957`, including the full PostgreSQL runtime workflow.
 `19d45cf7f85c784b74cdc0cb2b71f5d15cddb758`; exact code HEAD
 `b8efc247fe09b78e078b0c115c52317d47311939` passed required CI `40019995948`
 and post-merge CI `40020785993`, all green. 11b.6.1/11b.6.2 merge, runtime
-and CI evidence is recorded above. 11b.7.1 code/tests are ready, independently reviewed with final findings zero,
-and PR #33 is open; exact-HEAD required CI is pending. Local checks passed and the PG workflow compiles; SQL
-runtime/exact-HEAD CI remain pending. Remaining 11b includes 11b.7.2, apply CLI
-and default-off startup wiring. Stage 11 is incomplete.
+and CI evidence is recorded above. 11b.7.1 is merged and runtime/CI verified as
+recorded above. 11b.7.2 implementation and four PG workflow cases are ready;
+parent checks passed and independent review `e370ed66-465a-4ef` found zero
+behavioral/design findings. The cases only compile; SQL runtime, exact-HEAD CI,
+PR #34 and merge remain pending. Remaining 11b includes 11b.7.2 delivery,
+apply CLI and default-off startup wiring. Stage 11 is incomplete.
 No live verification/admission or deployment was done.
 
 ## Проверенные срезы
