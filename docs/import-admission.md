@@ -20,11 +20,16 @@ or advances the shared external-write guard. Conflicts roll back the batch.
 
 Origins retain the paid anchor, invoice history and watermark, verified facts,
 legacy recurring template, and credential fingerprint. `subscriptions.first_invoice_id`
-remains null. Historical lifecycle ledgers are **not** initialized here. The
-payment-tracking slice below is the only current runtime consumer; other
-lifecycle workers still do not treat imported origins as eligible, and this
-store API alone does not make an imported client fully managed or historically
-suppressed.
+remains null. Admission does not initialize historical lifecycle ledger rows.
+Imported invoice tracking is a separate read-only lifecycle-worker capability
+under the same explicit imported-runtime permission. It uses source GETs to
+find ordinary newly issued recurring invoices, records those new observations
+in the normal invoice ledger, advances the current invoice, and queues the
+normal new-invoice notices. It unions frozen historical invoice IDs into the
+seen set so old invoices do not generate replay notices; it never invents
+historical ledger rows or sent dates. The tracking path performs no source
+writes. The lifecycle worker is not wired into startup/runtime configuration,
+so this capability is not automatically running.
 
 PR #26 merged the 11b.1 DB-only foundation as `76dfcda`; exact code HEAD
 `d0a2ca665be507d1913db9bbe2301e945be34e0a` passed required CI `40001910084` and
@@ -50,16 +55,23 @@ the existing payment verifier may record GET-verified payment evidence for an
 imported current invoice. For the already-paid active invoice in the imported
 baseline, it pins the original verified proof hash and suppresses historical
 payment notices when that proof still matches. A contradictory baseline proof
-is escalated for review. This is payment observation only: it does not grant
-access, create activation history, or make the other lifecycle workers manage
-imports. The existing OWN registration-provenance predicate remains unchanged.
+is escalated for review. This is payment observation only: it does not grant access or create
+activation history. The existing OWN registration-provenance predicate remains
+unchanged. Imported invoice tracking separately performs only Invoice Ninja
+GET discovery and normal ledger/current-invoice/ordinary-notice updates for
+new invoices; neither tracking path writes to Invoice Ninja or S-UI. Overdue
+and renewal processing remain OWN-only, and imported overdue/renewal effects
+are not implemented.
 
-The overall 11b workflow remains incomplete: there is no apply CLI, lifecycle
-discovery/effect consumer, history-ledger initialization/suppression, protected
-origin-mode configuration, or secret-mode design. The payment-tracking slice
-awaits independent review and required PR #28 CI. Frozen invoice
-history must later be suppressed via the immutable origin's seen-invoice set;
-legacy invoice sent dates must not be fabricated from payment dates. The
-adapter is not an import consumer and does not enable imported clients. Never
-use this API for a real import until the exact implementation has passed
-independent review and required PostgreSQL 17 CI.
+The overall 11b workflow remains incomplete: there is no apply CLI, protected
+origin-mode/configuration with origin FK and current database proof, or
+runtime-configuration wiring. Imported-runtime permission is explicitly stored
+and is not enabled automatically at startup. The lifecycle discovery/notice
+code exists but is not wired into startup. Frozen invoice history is suppressed
+through the immutable origin's seen-invoice set; legacy sent dates are never
+fabricated from payment dates. The adapter is not an import consumer. No owner,
+production API, deployment, or real-import permission has changed. The 11b.4
+read-only cycle-reader/worker/store workflow test is still being completed;
+compiled code is not a PostgreSQL runtime test result. Do not use this API for a
+real import until the exact implementation passes independent review and
+required PostgreSQL 17 CI.

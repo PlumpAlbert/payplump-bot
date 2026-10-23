@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,6 +67,11 @@ func importedRuntimeSettlementReader(t *testing.T, snapshot payments.Snapshot, p
 }
 
 func importedRuntimeAdmissionFixture(t *testing.T, ctx context.Context) (func(time.Time) (importadmission.PreparedPlan, error), *invoiceninja.SettlementClient, func(bool)) {
+	prepare, settle, setPayment, _, _, _ := importedRuntimeAdmissionFixtureWithCycle(t, ctx)
+	return prepare, settle, setPayment
+}
+
+func importedRuntimeAdmissionFixtureWithCycle(t *testing.T, ctx context.Context) (func(time.Time) (importadmission.PreparedPlan, error), *invoiceninja.SettlementClient, func(bool), *invoiceninja.CycleReader, func(map[string]any), string) {
 	t.Helper()
 	now := time.Now().UTC()
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -10).Format(time.DateOnly)
@@ -77,10 +83,15 @@ func importedRuntimeAdmissionFixture(t *testing.T, ctx context.Context) (func(ti
 	line := map[string]any{"product_key": "legacy", "notes": "legacy monthly", "cost": 100, "quantity": 1, "discount": 0, "is_amount_discount": false, "type_id": "1", "tax_name1": "", "tax_name2": "", "tax_name3": "", "tax_rate1": 0, "tax_rate2": 0, "tax_rate3": 0, "tax_id": ""}
 	recurring := map[string]any{"id": admissionFixtureRec, "client_id": admissionFixtureCust, "status_id": "2", "private_notes": "historical legacy note", "frequency_id": "5", "next_send_date": end, "next_send_datetime": end + "T00:00:00.000000Z", "last_sent_date": start, "due_date": end, "due_date_days": "on_receipt", "auto_bill": "off", "auto_bill_enabled": false, "remaining_cycles": -1, "amount": 100, "balance": 100, "uses_inclusive_taxes": false, "line_items": []any{line}, "is_deleted": false, "archived_at": 0, "discount": 0, "is_amount_discount": true, "tax_rate1": 0, "tax_rate2": 0, "tax_rate3": 0, "custom_surcharge1": 0, "custom_surcharge2": 0, "custom_surcharge3": 0, "custom_surcharge4": 0, "partial": 0, "paid_to_date": 0, "exchange_rate": 1}
 	invoice := map[string]any{"id": admissionFixtureInv, "client_id": admissionFixtureCust, "recurring_id": admissionFixtureRec, "number": "N-42", "private_notes": "paid current cycle", "status_id": "4", "date": start, "due_date": start, "amount": 100, "balance": 0, "paid_to_date": 100, "exchange_rate": 1, "is_deleted": false, "archived_at": 0, "updated_at": 0, "invitations": []any{}}
+	olderDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -40).Format(time.DateOnly)
+	olderInvoice := map[string]any{"id": "invoice-older-42", "client_id": admissionFixtureCust, "recurring_id": admissionFixtureRec, "number": "N-41", "private_notes": "older historic private note", "status_id": "4", "date": olderDate, "due_date": olderDate, "amount": 100, "balance": 0, "paid_to_date": 100, "exchange_rate": 1, "is_deleted": false, "archived_at": 0, "updated_at": 0, "invitations": []any{}}
 	customer := map[string]any{"id": admissionFixtureCust, "id_number": admissionFixtureTG, "private_notes": "legacy customer", "is_deleted": false, "archived_at": 0}
 	settlementCustomer := map[string]any{"id": admissionFixtureCust, "id_number": admissionFixtureTG, "group_settings_id": "", "settings": map[string]any{"currency_id": "1"}, "currency_id": "ignored", "is_deleted": false, "archived_at": 0}
 	allocation := map[string]any{"id": "allocation-42", "invoice_id": admissionFixtureInv, "payment_id": "payment-42", "amount": 100, "refunded": 0, "archived_at": 0}
 	payment := map[string]any{"id": "payment-42", "client_id": admissionFixtureCust, "date": start, "status_id": "4", "currency_id": "1", "exchange_currency_id": "", "amount": 100, "refunded": 0, "applied": 100, "exchange_rate": 1, "is_manual": true, "is_deleted": false, "archived_at": 0, "paymentables": []any{allocation}, "invoices": []any{}}
+	var cycleMu sync.RWMutex
+	cycleInvoices := []any{olderInvoice, invoice}
+	var cycleInvoice map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Errorf("non-GET source request: %s", r.Method)
@@ -98,9 +109,23 @@ func importedRuntimeAdmissionFixture(t *testing.T, ctx context.Context) (func(ti
 		case "/ninja/api/v1/recurring_invoices/" + admissionFixtureRec:
 			admissionJSON(w, map[string]any{"data": recurring})
 		case "/ninja/api/v1/invoices":
-			admissionPage(w, []any{invoice})
+			cycleMu.RLock()
+			page := append([]any(nil), cycleInvoices...)
+			cycleMu.RUnlock()
+			admissionPage(w, page)
 		case "/ninja/api/v1/invoices/" + admissionFixtureInv:
 			admissionJSON(w, map[string]any{"data": invoice})
+		case "/ninja/api/v1/invoices/invoice-older-42":
+			admissionJSON(w, map[string]any{"data": olderInvoice})
+		case "/ninja/api/v1/invoices/invoice-new-42":
+			cycleMu.RLock()
+			fresh := cycleInvoice
+			cycleMu.RUnlock()
+			if fresh == nil {
+				http.NotFound(w, r)
+				return
+			}
+			admissionJSON(w, map[string]any{"data": fresh})
 		case "/ninja/api/v1/clients/" + admissionFixtureCust:
 			admissionJSON(w, map[string]any{"data": settlementCustomer})
 		case "/ninja/api/v1/payments":
@@ -180,7 +205,13 @@ func importedRuntimeAdmissionFixture(t *testing.T, ctx context.Context) (func(ti
 		}
 		payment["date"] = paymentDate
 	}
-	return prepare, settle, setChangedPayment
+	setNewInvoice := func(fresh map[string]any) {
+		cycleMu.Lock()
+		cycleInvoice = fresh
+		cycleInvoices = append(append([]any(nil), cycleInvoices...), fresh)
+		cycleMu.Unlock()
+	}
+	return prepare, settle, setChangedPayment, cyc, setNewInvoice, server.URL + "/ninja"
 }
 
 func TestImportedPausedRuntimeUsesCurrentDebtNotHistoricalAnchor(t *testing.T) {

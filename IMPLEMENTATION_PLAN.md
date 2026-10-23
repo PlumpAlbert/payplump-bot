@@ -8,8 +8,14 @@
 точный code HEAD `d0a2ca665be507d1913db9bbe2301e945be34e0a` прошёл required CI
 `40001910084` и post-merge CI `40002786608`. 11b.2 provider-only adapter merged in PR #27; exact HEAD
 `0fad9355c818424089a72aa1211bf33be5ab6ced` passed required CI `40005099529`
-and post-merge CI `40005923953`, both green. The 11b.3 payment-tracking-only
-slice is implemented and awaits independent review / PR #28 CI.
+and post-merge CI `40005923953`, both green. 11b.3 payment tracking merged as
+`925d994619864e4f07b9d72fcb2e68cdfcd8e449`; exact HEAD
+`839144922e91fb27bfea7b08b8f204b437c38545` passed required CI
+`40010097193` and post-merge CI `40010923644`, all green. 11b.4 read-only
+invoice tracking is implemented on the current branch; review
+`68092e25-a6f3-41a` found no behavioral issues, and its P3 documentation finding
+is fixed. The full PostgreSQL worker/GET workflow is still being completed;
+PR #29 is not open and its CI/merge are pending.
 
 ## Как вести план
 
@@ -335,9 +341,10 @@ Live-проверки и реальные импорты не выполняют
 - [x] 11a.2 operator CLI: command and real-reader synthetic HTTP workflow bridge pass positive factory/source-reader and private-artifact checks plus exclusion, bad-hash and no-payment-source cases. PR #25 merged as `3b54c82`; exact code HEAD `02b0c8c7d882e37c713416f39ddcad42ff711baa` passed required CI `39992168476` and post-merge main CI `39992922113`. No live reads, DB admission or capability grants.
 - [x] 11b.1 DB-only foundation: opaque typed preparation performs fresh GET verification of the complete plan; default-disabled, revisioned policy; atomic PostgreSQL admission/staging with immutable imported origin, actual paid anchor and invoice history. No fake first invoice, registration/activation journals, outbox, or external writes. Policy disable/re-enable requires revision advancement to prevent ABA; shared write guard and cross-origin SUI identity checks are preserved. PR #26 merged as `76dfcda`; exact HEAD `d0a2ca665be507d1913db9bbe2301e945be34e0a` passed required CI `40001910084` and post-merge CI `40002786608`, including PostgreSQL 17 integration coverage.
 - [x] 11b.2 provider-only slice: separate imported recurring profile and typed pause/schedule/resume adapter preserves legacy notes and frozen price, with GET preflight and final authorization. PR #27 exact HEAD `0fad9355c818424089a72aa1211bf33be5ab6ced` passed required CI `40005099529` and post-merge CI `40005923953`, both green. It remains unwired and does not make imported origins generally managed.
-- [ ] 11b.3 payment-tracking-only: separate default-off imported-runtime permission; DB-validated comparable imported-origin snapshot with current configuration revision; imported-only payment tracking; active paid-baseline proof pin and storage-boundary suppression of historical confirmation notices. Implemented; awaiting independent review and PR #28 PostgreSQL runtime CI. Permission sync is an explicit API only, not startup configuration. No fake first invoice or effects.
-- [ ] Remaining full 11b: lifecycle/discovery consumers, historical ledger initialization and seen-invoice suppression, effect workers, protected origin-mode/configuration with origin FK and current DB proof, and apply CLI. Do not consider all of 11b or stage 11 complete; saved verification reports are not admission authority.
-- [ ] Сохранить actor/pilot ограничения. При будущем import admission исторические счета не должны порождать устаревшие уведомления или операции: такую history suppression требуется реализовать. Накопившиеся неоплаченные долги оставить ручному разбору, без прощения или автоматизации.
+- [x] 11b.3 payment-tracking-only: separate default-off imported-runtime permission; DB-validated comparable imported-origin snapshot with current configuration revision; imported-only payment tracking; active paid-baseline proof pin and storage-boundary suppression of historical confirmation notices. PR #28 squash `925d994619864e4f07b9d72fcb2e68cdfcd8e449`; exact HEAD `839144922e91fb27bfea7b08b8f204b437c38545` passed required CI `40010097193` and post-merge CI `40010923644`, all green. Coverage included real GET active/paused workflows, first-proof pinning, multibot scoping, due/privacy and pre-010 unknown-migration fixtures, full PG17, smoke, and Docker. Permission sync is explicit, not startup configuration. No fake first invoice or source effects.
+- [ ] 11b.4 read-only imported invoice tracking: current branch implements GET discovery of ordinary new recurring invoices, normal new-invoice ledger/current-ID updates and notices, plus frozen historical-ID seen-union suppression with no fake historical dates. Independent review `68092e25-a6f3-41a` found zero behavioral findings; its P3 documentation issue is fixed. Parent reports full unit/race/vet/CGO0/module verification/gofmt and PostgreSQL compile-only checks passed. The three-phase real CycleReader → Worker → Store workflow and metadata assertions are still being completed; no 11b.4 PostgreSQL runtime result yet. PR #29 is not open; CI and merge are pending.
+- [ ] Remaining 11b: imported overdue/renewal effect consumers, protected origin configuration/FK with current DB proof, explicit apply CLI, and runtime-environment wiring. Keep OWN-only overdue/renewal behavior strict. The entire 11b and stage 11 remain incomplete; saved verification reports are not admission authority.
+- [ ] Preserve actor/pilot restrictions. Historical invoices must not produce stale notices or operations; 11b.4 suppresses their IDs without fabricated sent dates or first-activation history. Leave unpaid imported debts for manual review, without forgiveness or automation.
 - [ ] Перед любым будущим admission выделять дубли, отсутствующие пары и противоречия для ручного разбора; реальные данные и live API требуют отдельного owner gate.
 
 ## 12. Резервное копирование и восстановление

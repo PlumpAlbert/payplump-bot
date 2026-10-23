@@ -16,6 +16,7 @@ import (
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
 	"github.com/PlumpAlbert/payplump-bot/internal/billing"
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
@@ -165,7 +166,7 @@ func (w *Worker) handle(service context.Context, claim Claim) {
 		w.finishReview(claim, snapshot, &Invoice{ID: candidateIDs[0]}, ReviewAssociation)
 		return
 	}
-	if fresh.ClientID != snapshot.CustomerID || fresh.RecurringID != snapshot.RecurringID || fresh.PrivateNotes != activation.Marker(snapshot.ActivationToken) {
+	if fresh.ClientID != snapshot.CustomerID || fresh.RecurringID != snapshot.RecurringID || fresh.PrivateNotes != expectedPrivateNotes(snapshot) {
 		w.finishReview(claim, snapshot, &Invoice{ID: fresh.ID, Number: fresh.Number, Status: fresh.StatusID}, ReviewAssociation)
 		return
 	}
@@ -187,8 +188,24 @@ func (w *Worker) handle(service context.Context, claim Claim) {
 	w.finish(claim, snapshot, &candidate, 0, notices)
 }
 
+func expectedPrivateNotes(s Snapshot) string {
+	if s.ImportedOrigin != (importorigin.Ref{}) {
+		return s.ImportedPrivateNotes
+	}
+	return activation.Marker(s.ActivationToken)
+}
+
 func (w *Worker) validateSnapshot(s Snapshot) int {
-	if s.BotID != w.botID || s.ClientID <= 0 || s.TelegramID <= 0 || s.ChatID != s.TelegramID || !validInvoiceID(s.CustomerID) || !validInvoiceID(s.FirstInvoiceID) || !validInvoiceID(s.CurrentInvoiceID) || !validInvoiceID(s.RecurringID) || s.SUIID == "" || s.RegistrationToken == "" || s.ActivationToken == "" || !s.ManagedProvenance || s.State != "active" || !s.DesiredAccess {
+	imported := s.ImportedOrigin != (importorigin.Ref{})
+	commonInvalid := s.BotID != w.botID || s.ClientID <= 0 || s.TelegramID <= 0 || s.ChatID != s.TelegramID || !validInvoiceID(s.CustomerID) || !validInvoiceID(s.CurrentInvoiceID) || !validInvoiceID(s.RecurringID) || s.SUIID == "" || !s.ManagedProvenance || s.State != "active" || !s.DesiredAccess
+	if commonInvalid {
+		return ReviewAssociation
+	}
+	if imported {
+		if !s.ImportedOrigin.Valid() || s.ImportedOrigin.ClientID != s.ClientID || s.ImportedOrigin.BotID != s.BotID || s.FirstInvoiceID != "" || s.RegistrationToken != "" || s.ActivationToken != "" || !slices.Contains(s.SeenInvoiceIDs, s.CurrentInvoiceID) {
+			return ReviewAssociation
+		}
+	} else if !validInvoiceID(s.FirstInvoiceID) || s.RegistrationToken == "" || s.ActivationToken == "" {
 		return ReviewAssociation
 	}
 	if s.SeenInvoiceOverflow {
