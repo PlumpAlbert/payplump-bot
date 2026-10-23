@@ -29,8 +29,28 @@ func (s *Store) StageImport(ctx context.Context, p importplan.Plan, expectedHash
 	if _, err = tx.Exec(ctx, `SET LOCAL synchronous_commit=on`); err != nil {
 		return false, errors.New("could not require durable import staging")
 	}
+	repeated, err := stageImportTx(ctx, tx, p, expectedHash)
+	if err != nil {
+		return false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		if repeated {
+			return false, errors.New("could not confirm existing staged plan")
+		}
+		return false, errors.New("could not commit import staging")
+	}
+	return repeated, nil
+}
+
+// stageImportTx stages or verifies an identical immutable plan in the caller's
+// transaction. The caller owns serialization, durability, and commit.
+func stageImportTx(ctx context.Context, tx pgx.Tx, p importplan.Plan, expectedHash string) (bool, error) {
+	if err := p.ValidateHash(expectedHash); err != nil {
+		return false, err
+	}
+	hash, _ := hex.DecodeString(p.Hash)
 	var total, count int
-	err = tx.QueryRow(ctx, `SELECT total_records,candidate_count FROM import_batches WHERE plan_hash=$1 FOR UPDATE`, hash).Scan(&total, &count)
+	err := tx.QueryRow(ctx, `SELECT total_records,candidate_count FROM import_batches WHERE plan_hash=$1 FOR UPDATE`, hash).Scan(&total, &count)
 	if err == nil {
 		if total != p.Total || count != len(p.Candidates) {
 			return false, errors.New("staging hash conflict")
@@ -66,9 +86,6 @@ func (s *Store) StageImport(ctx context.Context, p importplan.Plan, expectedHash
 				return false, errors.New("staging hash conflict")
 			}
 		}
-		if err = tx.Commit(ctx); err != nil {
-			return false, errors.New("could not confirm existing staged plan")
-		}
 		return true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -85,9 +102,6 @@ func (s *Store) StageImport(ctx context.Context, p importplan.Plan, expectedHash
 		if _, err = tx.Exec(ctx, `INSERT INTO import_candidates_staging(plan_hash,source_index,candidate_facts) VALUES($1,$2,$3::jsonb)`, hash, candidate.Index, facts); err != nil {
 			return false, errors.New("could not stage import candidates")
 		}
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return false, errors.New("could not commit import staging")
 	}
 	return false, nil
 }

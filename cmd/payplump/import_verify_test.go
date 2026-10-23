@@ -65,7 +65,14 @@ func assertVerifyConfigRedacted(t *testing.T, cfg verifyConfig, secrets []string
 		t.Fatal("redacted configuration JSON failed")
 	}
 	var logged bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logged, nil))
+	logger := slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{
+		ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+			if attr.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return attr
+		},
+	}))
 	logger.Info("config", "value", cfg)
 	for _, output := range []string{formatted, string(encoded), logged.String()} {
 		for _, secret := range secrets {
