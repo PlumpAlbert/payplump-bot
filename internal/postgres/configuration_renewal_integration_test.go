@@ -6,10 +6,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/configdelivery"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func configurationBaseline(recurring string, suiID int64, target string) []byte {
@@ -81,7 +83,7 @@ func TestConfigurationRenewalRequestAndFinalAuthorizationUseCurrentPeriod(t *tes
 	configFinish(t, s, ctx, m)
 }
 
-func TestConfigurationRenewalMutationFencesLoadedRequest(t *testing.T) {
+func TestConfigurationRenewalCurrentProofReviewFencesLoadedRequest(t *testing.T) {
 	s, ctx, clientID, policy := configFixture(t)
 	operationID := seedConfigurationRenewal(t, s, ctx, clientID)
 	if err := s.InstallConfigurationPolicy(ctx, 123, policy); err != nil {
@@ -92,12 +94,21 @@ func TestConfigurationRenewalMutationFencesLoadedRequest(t *testing.T) {
 	if !view.Matches() || view.Request.RenewalID != operationID {
 		t.Fatal("renewal fixture did not load")
 	}
-	configExec(t, s, ctx, `UPDATE invoice_renewal_actions SET review_code=5302,outcome='review',finished_at=clock_timestamp() WHERE operation_id=$1`, operationID)
-	permit, err := s.AuthorizeConfiguration(ctx, m, view, configdelivery.Decision{Kind: configdelivery.Secret})
-	if err == nil || permit.Kind == configdelivery.Secret {
-		t.Fatal("reviewed renewal retained an old secret permit")
+
+	_, err := s.pool.Exec(ctx, `UPDATE invoice_renewal_actions SET review_code=5302,outcome='review',finished_at=clock_timestamp() WHERE operation_id=$1`, operationID)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Fatalf("completed renewal rearm should fail with check violation, got %v", err)
 	}
-	configAssert(t, s, ctx, `SELECT configuration_revision>0 FROM clients WHERE id=$1`, clientID)
+	configAssert(t, s, ctx, `SELECT outcome='completed' AND invoice_id='configuration-current-invoice' FROM invoice_renewal_actions WHERE operation_id=$1`, operationID)
+
+	configExec(t, s, ctx, `UPDATE payment_confirmations SET review_required=true,review_code=2007 WHERE invoice_id='configuration-current-invoice'`)
+	permit, err := s.AuthorizeConfiguration(ctx, m, view, configdelivery.Decision{Kind: configdelivery.Secret})
+	if err != nil || permit.Kind != configdelivery.Denial {
+		t.Fatalf("reviewed current proof authorization was not denied: error=%v kind=%q", err, permit.Kind)
+	}
+	configAssert(t, s, ctx, `SELECT review_required AND review_code=2007 FROM payment_confirmations WHERE invoice_id='configuration-current-invoice'`)
+	configAssert(t, s, ctx, `SELECT NOT review_required AND review_code=0 FROM payment_confirmations WHERE invoice_id=(SELECT first_invoice_id FROM subscriptions WHERE client_id=$1)`, clientID)
 }
 
 func TestConfigurationRenewalChangedPaymentTargetsCurrentConfirmation(t *testing.T) {
