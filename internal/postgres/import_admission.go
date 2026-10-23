@@ -49,7 +49,7 @@ func (s *Store) SyncImportAdmissionPolicy(ctx context.Context, botID int64, revi
 	if _, err = tx.Exec(ctx, `SET LOCAL synchronous_commit=on`); err != nil {
 		return errors.New("could not require durable import policy update")
 	}
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':import-admission-policy:' || $1::text,0))`, botID); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':import-admission-policy:' || $1::bigint::text,0))`, botID); err != nil {
 		return errors.New("could not serialize import policy update")
 	}
 	var botExists bool
@@ -142,7 +142,7 @@ func (s *Store) ApplyVerifiedImport(ctx context.Context, prepared importadmissio
 	if prepared.VerifiedAt().After(dbNow) || !prepared.NotAfter().After(dbNow) || prepared.NotAfter().Sub(prepared.VerifiedAt()) > 15*time.Minute {
 		return ImportAdmissionResult{}, errors.New("verified import evidence is stale")
 	}
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':import-identities:' || $1::text,0))`, prepared.BotID()); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':import-identities:' || $1::bigint::text,0))`, prepared.BotID()); err != nil {
 		return ImportAdmissionResult{}, errors.New("could not serialize import identities")
 	}
 	if _, err = stageImportTx(ctx, tx, plan, prepared.PlanHash()); err != nil {

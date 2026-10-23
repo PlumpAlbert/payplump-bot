@@ -170,11 +170,18 @@ func admissionBatchPreparedFixture(t *testing.T, ctx context.Context, botID int6
 			admissionJSON(w, map[string]any{"success": true, "obj": map[string]any{"sys": map[string]any{"appVersion": "1.6.4"}}})
 		case "/panel/apiv2/clients":
 			if id := r.URL.Query().Get("id"); id != "" {
-				idx := 0
-				if id == "43" {
-					idx = 1
+				selected := make([]json.RawMessage, 0, 2)
+				for _, requested := range strings.Split(id, ",") {
+					switch requested {
+					case "42":
+						selected = append(selected, suiRecords[0])
+					case "43":
+						selected = append(selected, suiRecords[1])
+					default:
+						t.Errorf("unexpected SUI record request id=%q", requested)
+					}
 				}
-				admissionJSON(w, map[string]any{"success": true, "obj": map[string]any{"clients": []json.RawMessage{suiRecords[idx]}}})
+				admissionJSON(w, map[string]any{"success": true, "obj": map[string]any{"clients": selected}})
 				return
 			}
 			admissionJSON(w, map[string]any{"success": true, "obj": map[string]any{"clients": []json.RawMessage{suiRecords[0], suiRecords[1]}}})
