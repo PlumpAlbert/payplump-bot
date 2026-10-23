@@ -181,9 +181,26 @@ func TestVerifiedImportAdmissionGETBridgeAndIdempotence(t *testing.T) {
 	if _, err := s.ApplyVerifiedImport(ctx, preparedAgain); err == nil {
 		t.Fatal("old prepared revision admitted after policy revision advanced")
 	}
+}
 
-	// Reverse identity exclusion: a valid OWN activation can't finalize an ID
-	// already recorded by import provenance.
+func TestVerifiedImportIdentityExclusionAgainstOwnActivation(t *testing.T) {
+	s, ctx := activationTestStore(t)
+	if _, err := s.pool.Exec(ctx, `INSERT INTO telegram_bots(bot_id) VALUES($1) ON CONFLICT DO NOTHING`, admissionFixtureBotID); err != nil {
+		t.Fatal(err)
+	}
+	prepared := admissionPreparedFixture(t, ctx)
+	if err := s.SyncImportAdmissionPolicy(ctx, admissionFixtureBotID, 1, prepared.PolicyHash(), prepared.SourceScopeHash(), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyVerifiedImport(ctx, prepared); err != nil {
+		t.Fatalf("admit imported identity: %v", err)
+	}
+
+	// Use a fresh OWN activation intent. The idempotence test's earlier
+	// uncertain write intent must remain immutable and cannot be replayed.
+	seedActivationAccounts(t, s, ctx, 123, 19999, 1)
+	seedActivationBatch(t, s, ctx, 123, activationAllow(19999, 1), 1)
+	owner, _ := claimOneActivation(t, s, ctx, 123)
 	if err := finishOwnedActivationWithSUIID(t, s, ctx, owner, "42"); err == nil {
 		t.Fatal("own activation adopted imported SUI ID")
 	} else {
@@ -192,6 +209,7 @@ func TestVerifiedImportAdmissionGETBridgeAndIdempotence(t *testing.T) {
 			t.Fatalf("wrong OWN/import collision error: %v", err)
 		}
 	}
+	var count int
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM activation_sui_bindings WHERE operation_id=$1`, owner.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("failed OWN finalization persisted binding: %d %v", count, err)
 	}
@@ -238,6 +256,10 @@ func TestVerifiedImportRejectsExistingOwnedSUIBindingAtomically(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, `SELECT id FROM clients WHERE telegram_id=20000 AND sui_id='42'`).Scan(&clientID); err != nil {
 		t.Fatal(err)
 	}
+	var bindingNameBefore string
+	if err := s.pool.QueryRow(ctx, `SELECT name FROM activation_sui_bindings WHERE operation_id=$1 AND sui_id=42`, owner.ID).Scan(&bindingNameBefore); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.ApplyVerifiedImport(ctx, prepared); err == nil {
 		t.Fatal("import accepted an existing OWN SUI binding")
 	}
@@ -263,13 +285,13 @@ func TestVerifiedImportRejectsExistingOwnedSUIBindingAtomically(t *testing.T) {
 		t.Fatalf("OWN collision changed state: clients=%d subscriptions=%d origins=%d batches=%d bindings=%d", clients, subscriptions, origins, batches, bindings)
 	}
 	var ownClientID int64
-	if err := s.pool.QueryRow(ctx, `SELECT id FROM clients WHERE id=$1 AND telegram_id=20000 AND sui_id=42`, clientID).Scan(&ownClientID); err != nil || ownClientID != clientID {
+	if err := s.pool.QueryRow(ctx, `SELECT id FROM clients WHERE id=$1 AND telegram_id=20000 AND sui_id='42'`, clientID).Scan(&ownClientID); err != nil || ownClientID != clientID {
 		t.Fatalf("existing OWN client changed: id=%d err=%v", ownClientID, err)
 	}
-	var bindingName string
+	var bindingNameAfter string
 	var journalCount int
-	if err := s.pool.QueryRow(ctx, `SELECT name FROM activation_sui_bindings WHERE operation_id=$1 AND sui_id=42`, owner.ID).Scan(&bindingName); err != nil || bindingName != "42" {
-		t.Fatalf("existing OWN binding changed: name=%q err=%v", bindingName, err)
+	if err := s.pool.QueryRow(ctx, `SELECT name FROM activation_sui_bindings WHERE operation_id=$1 AND sui_id=42`, owner.ID).Scan(&bindingNameAfter); err != nil || bindingNameAfter != bindingNameBefore {
+		t.Fatalf("existing OWN binding changed: before=%q after=%q err=%v", bindingNameBefore, bindingNameAfter, err)
 	}
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM operations WHERE id=$1`, owner.ID).Scan(&journalCount); err != nil || journalCount != 1 {
 		t.Fatalf("existing OWN activation journal changed: count=%d err=%v", journalCount, err)
