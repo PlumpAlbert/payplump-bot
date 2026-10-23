@@ -201,13 +201,29 @@ func TestVerifiedImportIdentityExclusionAgainstOwnActivation(t *testing.T) {
 	seedActivationAccounts(t, s, ctx, 123, 19999, 1)
 	seedActivationBatch(t, s, ctx, 123, activationAllow(19999, 1), 1)
 	owner, _ := claimOneActivation(t, s, ctx, 123)
-	if err := finishOwnedActivationWithSUIID(t, s, ctx, owner, "42"); err == nil {
-		t.Fatal("own activation adopted imported SUI ID")
-	} else {
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
-			t.Fatalf("wrong OWN/import collision error: %v", err)
-		}
+	if err := finishOwnedActivationWithSUIID(t, s, ctx, owner, "42"); !errors.Is(err, queue.ErrConflict) {
+		t.Fatalf("OWN/import collision was not safely classified: %v", err)
+	}
+	snapshot := loadActivation(t, s, ctx, owner.Lease, 123)
+	if err := activation.ValidateSnapshot(snapshot); err != nil {
+		t.Fatalf("completed OWN snapshot invalid: %v", err)
+	}
+	if next, err := activation.NextStep(snapshot); err != nil || next != "" {
+		t.Fatalf("OWN activation not fully confirmed: next=%q err=%v", next, err)
+	}
+	binding, err := activation.SUIBinding(snapshot)
+	if err != nil || binding.ID != 42 {
+		t.Fatalf("derive OWN SUI binding: id=%d err=%v", binding.ID, err)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rawErr := tx.Exec(ctx, `INSERT INTO activation_sui_bindings(client_id,bot_id,sui_id,name,credentials_hash,operation_id) VALUES($1,$2,$3,$4,$5,$6)`, snapshot.Account.ClientID, snapshot.Account.BotID, binding.ID, binding.Name, binding.CredentialsHash[:], owner.ID)
+	_ = tx.Rollback(ctx)
+	var rawPGErr *pgconn.PgError
+	if !errors.As(rawErr, &rawPGErr) || rawPGErr.Code != "23505" {
+		t.Fatalf("raw OWN/import binding insert did not hit uniqueness trigger: %v", rawErr)
 	}
 	var count int
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM activation_sui_bindings WHERE operation_id=$1`, owner.ID).Scan(&count); err != nil || count != 0 {
