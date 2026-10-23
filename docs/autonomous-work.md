@@ -40,14 +40,16 @@ scope; не снимать и не обходить их и не расширя�
 - [x] 9a: durable renewal/reactivation PR #20 merged in base `94095a8`; its
   final HEAD `952bce4063065c71462d936f71507ee151d557f3` passed required Actions
   run `39961598201`, including PG17/race, normal/late/unknown renewal and smoke.
-- [x] 9b: реализация и тесты добавлены в текущую ветку; обычные и race-тесты,
-  vet/build и компиляция integration-тестов прошли локально. Добавлен сквозной
-  loopback-сценарий с настоящими renewal worker и адаптерами, защищённым
-  Telegram-отправителем, обычным и поздним продлением и проверкой неизвестной
-  доставки без повтора. Изменения переданы на review и финальный CI; runtime
-  PostgreSQL пока не подтверждён.
-- [ ] 9b: required CI должен подтвердить PostgreSQL runtime на точном HEAD до
-  слияния. Локально SQL runtime не запускать.
+- [x] 9b: код и тесты PR #21 прошли required CI на точном code HEAD
+  `925364d85ac733d6f582d5f2bc83d5f2a0b40525`: [run 39975961988](https://github.com/PlumpAlbert/payplump-bot/actions/runs/39975961988).
+  Прошли `fast-checks`, `postgres-integration`, `test`, полный PostgreSQL
+  SQL/race, smoke и Docker checks. В [логе job](https://github.com/PlumpAlbert/payplump-bot/actions/runs/39975961988/job/120491239073)
+  прошли `TestRealRenewalToProtectedConfigurationWorkflow` для обычного
+  (`active_reschedule`, 2.83 s) и позднего (`late_overdue_restoration`, 2.87 s)
+  renewal, а также `TestConfigurationUnknownSecretCannotReplayAfterNewPaidPeriod`.
+  Указанный HEAD — исходный проверенный code HEAD, не новый документационный HEAD.
+- [ ] PR #21 ожидает merge; родитель завершает delivery после required CI на
+  документационном HEAD. Отдельные live-проверки владельца остаются pending.
 - [x] 10: приватная административная рассылка с неизменяемым подтверждением,
   снимком получателей, долговечным прогрессом и ограниченной доставкой.
 - [ ] 11: далее — проверенная capability admission и managed import. Инертный
@@ -95,9 +97,10 @@ Stage 8a/8b реализованы. Финансовая проверка уже
 invoice только с точным recurring ID; подтверждения хранятся per invoice, а
 `FinishPaymentCheck` сохраняет доказательство и наблюдаемые даты без выдачи доступа.
 Этап 9a влит в основу `94095a8`; финальный PR HEAD и успешный Actions run указаны
-выше. Реализация и сквозные тесты 9b добавлены в текущую ветку и переданы на
-review и финальный CI; PostgreSQL runtime пока не подтверждён, локально его не
-запускать. Использовать существующий payment-check pipeline, не создавать
+выше. Код и сквозные тесты 9b прошли required CI на исходном code HEAD
+`925364d85ac733d6f582d5f2bc83d5f2a0b40525`, включая PostgreSQL runtime; см. run
+`39975961988` и job `120491239073` выше. PR #21 ожидает merge. Этот CI не
+подтверждает live-проверки владельца. Использовать существующий payment-check pipeline, не создавать
 новый verifier-worker. Автоматизация не получает разрешение на production API даже
 GET. Recurring может создавать draft, поэтому workflow проверяет фактическое
 состояние и не предполагает issued invoice. Не менять чужие company/client-wide
