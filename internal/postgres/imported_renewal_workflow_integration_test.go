@@ -339,7 +339,7 @@ func runImportedPaidRenewalHappy(t *testing.T, late, unknownSchedule bool) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	paymentSQL(t, trig.s, ctx, `SELECT current_invoice_id='invoice-imported-new' AND first_invoice_id IS NULL AND state='active' AND desired_access AND period_start=CURRENT_DATE AND period_end=$1::date FROM subscriptions WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`, wantEnd)
+	paymentSQL(t, trig.s, ctx, `SELECT current_invoice_id='invoice-imported-new' AND first_invoice_id IS NULL AND state='active' AND desired_access AND payment_date=$1::date AND next_invoice_date=$2::date FROM subscriptions WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`, paidDate, wantEnd)
 	paymentSQL(t, trig.s, ctx, `SELECT count(*)=1 FROM invoice_renewal_actions a JOIN operations o ON o.id=a.operation_id WHERE a.invoice_id='invoice-imported-new' AND a.outcome='completed' AND o.status='completed'`)
 	paymentSQL(t, trig.s, ctx, `SELECT count(*)=3 AND count(*) FILTER(WHERE step IN ('pause_recurring','schedule_recurring','resume_recurring','enable_sui') AND confirmed_at IS NOT NULL)=3 FROM invoice_renewal_steps WHERE operation_id=(SELECT operation_id FROM invoice_renewal_actions WHERE invoice_id='invoice-imported-new')`)
 	paymentSQL(t, trig.s, ctx, `SELECT revision=1 AND enabled=false FROM imported_effect_permissions WHERE bot_id=$1`, botID)
