@@ -10,7 +10,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -561,6 +563,31 @@ func (r *renewalLoopback) ninjaHandler() http.Handler {
 	})
 	return mux
 }
+func TestRenewalLoopbackSUIRejectsCreateAndNonPOSTWithoutDatabase(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		method string
+		action string
+		want   int
+	}{{"create action", http.MethodPost, "new", http.StatusBadRequest}, {"non-POST method", http.MethodGet, "edit", http.StatusMethodNotAllowed}} {
+		t.Run(tc.name, func(t *testing.T) {
+			writes := 0
+			state := &renewalLoopback{
+				panel:             json.RawMessage(`{"id":71,"enable":false}`),
+				verifyBeforeWrite: func(string) error { writes++; return nil },
+			}
+			form := url.Values{"object": {"clients"}, "action": {tc.action}, "data": {`{"id":71,"enable":true}`}}
+			request := httptest.NewRequest(tc.method, "/apiv2/save", strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			recorder := httptest.NewRecorder()
+			state.panelHandler().ServeHTTP(recorder, request)
+			if recorder.Code != tc.want || writes != 0 || state.panelWrites != 0 {
+				t.Fatalf("status=%d writes=%d panelWrites=%d want_status=%d", recorder.Code, writes, state.panelWrites, tc.want)
+			}
+		})
+	}
+}
+
 func (r *renewalLoopback) panelHandler() http.Handler {
 	mux := http.NewServeMux()
 	envelope := func(w http.ResponseWriter, obj map[string]any) {
@@ -585,15 +612,30 @@ func (r *renewalLoopback) panelHandler() http.Handler {
 		envelope(w, map[string]any{"sys": map[string]any{"appVersion": "1.6.4"}})
 	})
 	mux.HandleFunc("/apiv2/save", func(w http.ResponseWriter, q *http.Request) {
+		if q.Method != http.MethodPost {
+			http.Error(w, "S-UI save requires POST", http.StatusMethodNotAllowed)
+			return
+		}
+		if q.URL.RawQuery != "" || q.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+			http.Error(w, "invalid S-UI save request", http.StatusBadRequest)
+			return
+		}
+		if err := q.ParseForm(); err != nil {
+			http.Error(w, "invalid S-UI save form", http.StatusBadRequest)
+			return
+		}
+		if len(q.PostForm) != 3 || len(q.PostForm["object"]) != 1 || len(q.PostForm["action"]) != 1 || len(q.PostForm["data"]) != 1 || q.PostForm.Get("object") != "clients" || q.PostForm.Get("action") != "edit" || q.PostForm.Get("data") == "" {
+			http.Error(w, "invalid S-UI edit form", http.StatusBadRequest)
+			return
+		}
 		if r.verifyBeforeWrite != nil {
 			if err := r.verifyBeforeWrite(string(lifecycle.RenewalEnable)); err != nil {
 				http.Error(w, "missing committed renewal intent", http.StatusConflict)
 				return
 			}
 		}
-		_ = q.ParseForm()
 		var record map[string]any
-		if json.Unmarshal([]byte(q.Form.Get("data")), &record) != nil || record["id"] != float64(71) || record["enable"] != true {
+		if json.Unmarshal([]byte(q.PostForm.Get("data")), &record) != nil || record["id"] != float64(71) || record["enable"] != true {
 			http.Error(w, "invalid S-UI enable payload", http.StatusBadRequest)
 			return
 		}
