@@ -94,22 +94,29 @@ scope; не снимать и не обходить их и не расширя�
   compile-only. No live provider/API access or deployment was performed.
 
   11b.2 provider-only imported Invoice Ninja profile and typed pause/schedule/
-  resume adapter is implemented in the current branch. It preserves frozen
-  source facts and legacy notes, remains unwired/default-inert, and adds strict
-  exact-shape v1 journal decoding without tightening provider GET DTOs.
-  Independent review `2b1af0d5-5d94-40f` completed with one P3 journal-shape
-  finding fixed; parent also fixed current tax/surcharge and legacy zero-flag
-  compatibility, durable expired-journal decoding, and resume local-date/UTC
-  checks. Parent reports unit/race/vet/CGO0-build/module verification, SQL
-  compile-only, and gofmt all passing after fixes. PR #27 has not yet been
-  opened; its required CI and merge remain pending. No live API access or
+  resume adapter merged in PR #27. It preserves frozen source facts and legacy
+  notes, remains unwired/default-inert, and adds strict exact-shape v1 journal
+  decoding without tightening provider GET DTOs. Independent review
+  `2b1af0d5-5d94-40f` completed with one P3 journal-shape finding fixed; parent
+  also fixed current tax/surcharge and legacy zero-flag compatibility, durable
+  expired-journal decoding, and resume local-date/UTC checks. PR #27 exact HEAD
+  `0fad9355c818424089a72aa1211bf33be5ab6ced` passed required CI `40005099529`
+  and post-merge main CI `40005923953`, all green. No live API access or
   unapproved deployment occurred.
 
-  Remaining 11b work is not complete: explicit runtime managed-origin consumer
-  branches; historical lifecycle-ledger initialization before eligibility;
-  protected origin-mode/configuration with origin FK and current DB proof;
-  and the apply CLI. Preserve default-off behavior and keep imported origins
-  ineligible until those slices land. No real import was performed.
+  11b.3 payment-tracking-only imported-origin bridge is implemented in this
+  slice and awaits independent review and PR #28 CI. It adds a separate
+  default-off runtime permission, DB-validated comparable origin snapshot
+  reference, and imported-only payment provenance; no lifecycle discovery,
+  history initialization/suppression, effect writer, configuration delivery,
+  protected origin mode, or apply CLI is included. Preserve default-off
+  behavior and keep other imported-origin consumers ineligible. No real import
+  was performed.
+
+  Remaining 11b work is not complete: lifecycle/discovery consumers and
+  historical ledger initialization before eligibility; protected
+  origin-mode/configuration with origin FK and current DB proof; and the apply
+  CLI. Preserve default-off behavior. No real import was performed.
 
   Непереговорные TODO: actor/pilot ограничения сохраняются; будущий managed
   consumer обязан подавлять устаревшие операции/уведомления. Неоплаченные долги
@@ -126,11 +133,14 @@ scope; не снимать и не обходить их и не расширя�
 Очередь последовательная по небольшим PR: 9a и 9b завершены; 11a.1, 11a.2
 core/history и operator CLI merged. PR #25 exact-HEAD required CI `39992168476`
 и post-merge CI `39992922113` зелёные. 11b.1 merged и прошёл полный required
-PostgreSQL 17 CI; 11b.2 provider-only adapter реализован, P3 исправлен, PR #27
-required CI и merge pending. Runtime managed-origin consumers, history-ledger
-initialization, protected origin configuration/current DB proof и apply CLI ещё
-не сделаны. Весь этап 11 не завершён. Live verification/admission не выполнялись;
-не обращаться к provider API и не выполнять unapproved deployment.
+PostgreSQL 17 CI; 11b.2 merged as PR #27, exact HEAD
+`0fad9355c818424089a72aa1211bf33be5ab6ced`, required CI `40005099529` and
+post-merge CI `40005923953` all green. 11b.3 payment-tracking-only
+implementation awaits review and PR #28 CI. Full lifecycle/discovery consumers,
+history-ledger initialization/suppression, protected origin configuration/
+current DB proof и apply CLI ещё не сделаны. Весь этап 11 не завершён. Live
+verification/admission не выполнялись; не обращаться к provider API и не
+выполнять unapproved deployment.
 
 ## Проверенные срезы
 

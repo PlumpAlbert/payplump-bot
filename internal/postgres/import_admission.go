@@ -132,7 +132,7 @@ func (s *Store) ApplyVerifiedImport(ctx context.Context, prepared importadmissio
 	var enabled bool
 	var currentRevision int64
 	var currentPolicy, currentScope []byte
-	if err = tx.QueryRow(ctx, `SELECT revision,policy_hash,source_scope_hash,enabled FROM import_admission_policy WHERE bot_id=$1 FOR UPDATE`, prepared.BotID()).Scan(&currentRevision, &currentPolicy, &currentScope, &enabled); err != nil || !enabled || currentRevision != prepared.Revision() || !equalImportBytes(currentPolicy, policyHash) || !equalImportBytes(currentScope, scopeHash) {
+	if err = tx.QueryRow(ctx, `SELECT revision,policy_hash,source_scope_hash,enabled FROM import_admission_policy WHERE bot_id=$1`, prepared.BotID()).Scan(&currentRevision, &currentPolicy, &currentScope, &enabled); err != nil || !enabled || currentRevision != prepared.Revision() || !equalImportBytes(currentPolicy, policyHash) || !equalImportBytes(currentScope, scopeHash) {
 		return ImportAdmissionResult{}, errors.New("import admission policy is not currently enabled")
 	}
 	var dbNow time.Time
@@ -228,8 +228,14 @@ func (s *Store) ApplyVerifiedImport(ctx context.Context, prepared importadmissio
 		}
 		result.Admitted++
 	}
-	// This is the shared global barrier. Lock it only after identity and
-	// subscription rows; never clear its owner or advance its epoch here.
+	// Client and subscription rows precede permission rows in the global lock
+	// order. Recheck while holding the admission permission through commit;
+	// the initial read above was only preflight and did not authorize writes.
+	if err = tx.QueryRow(ctx, `SELECT revision,policy_hash,source_scope_hash,enabled FROM import_admission_policy WHERE bot_id=$1 FOR SHARE`, prepared.BotID()).Scan(&currentRevision, &currentPolicy, &currentScope, &enabled); err != nil || !enabled || currentRevision != prepared.Revision() || !equalImportBytes(currentPolicy, policyHash) || !equalImportBytes(currentScope, scopeHash) {
+		return ImportAdmissionResult{}, errors.New("import admission policy changed during admission")
+	}
+	// This is the shared global barrier. Lock it only after identity,
+	// subscription, and permission rows; never clear its owner or advance its epoch.
 	var operationFree, stepFree bool
 	if err = tx.QueryRow(ctx, `SELECT operation_id IS NULL,step IS NULL FROM activation_write_guard WHERE id=1 FOR UPDATE`).Scan(&operationFree, &stepFree); err != nil || !operationFree || !stepFree {
 		return ImportAdmissionResult{}, errors.New("external write guard is occupied")
