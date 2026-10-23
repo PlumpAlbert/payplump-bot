@@ -3,10 +3,14 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -26,15 +30,105 @@ type renewalLoopback struct {
 	invoiceDate, invoiceNext                            string
 	pauseCalls, scheduleCalls, resumeCalls, panelWrites int
 	unknownPause                                        bool
+	verifyBeforeWrite                                   func(string) error
 }
 
 func TestInvoicePaidRenewalRealStoreAdaptersLoopbackSuccessAndUnknown(t *testing.T) {
-	for _, unknown := range []bool{false, true} {
-		t.Run(map[bool]string{false: "confirmed schedule and resume", true: "unknown pause is pinned"}[unknown], func(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		unknown        bool
+		paidRace       bool
+		overdueRestore bool
+	}{{name: "confirmed schedule and resume"}, {name: "unknown pause is pinned", unknown: true}, {name: "paid after owned overdue pause", paidRace: true}, {name: "late overdue schedule enable resume", overdueRestore: true}} {
+		t.Run(tc.name, func(t *testing.T) {
 			s, ctx := invoiceLifecycleTestStore(t)
 			clientID, botID := seedInvoiceLifecycleAccount(t, s, ctx, false)
+			if tc.paidRace {
+				seedRenewalPaidRaceAfterOverduePause(t, s, ctx, clientID, botID)
+			}
+			if tc.overdueRestore {
+				seedRenewalFullOverduePrefix(t, s, ctx, clientID, botID)
+			}
 			state, target := prepareRenewalDatabaseFixture(t, s, ctx, clientID, botID)
-			state.unknownPause = unknown
+			if tc.paidRace || tc.overdueRestore {
+				state.recurring.StatusID = "3"
+				state.recurring.NextSendDatetime = time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+			}
+			if tc.overdueRestore {
+				prepareRenewalOverdueExternalState(t, s, ctx, state, clientID)
+			}
+			assertRenewalActionInvoiceBinding(t, s, ctx, clientID, botID, tc.paidRace, tc.overdueRestore)
+			state.unknownPause = tc.unknown
+			state.verifyBeforeWrite = func(step string) error {
+				auditCtx, stop := context.WithTimeout(ctx, time.Second)
+				defer stop()
+				var opID, owner, guardEpoch int64
+				var outcome, opStatus, guardStep, requestText string
+				var attempt, dispatchAttempt int
+				var confirmed, pauseRequired, scheduleRequired, enableRequired bool
+				var pauseConfirmed, scheduleConfirmed, enableConfirmed bool
+				var requestHash []byte
+				err := s.pool.QueryRow(auditCtx, `SELECT a.operation_id,a.outcome,o.status,o.attempts,g.operation_id,COALESCE(g.step,''),g.epoch,
+                    st.request::text,st.dispatch_attempt,st.confirmed_at IS NOT NULL,i.request_hash,
+                    a.requires_pause,a.requires_schedule,a.requires_enable,
+                    COALESCE(p.confirmed_at IS NOT NULL,false),COALESCE(sc.confirmed_at IS NOT NULL,false),COALESCE(en.confirmed_at IS NOT NULL,false)
+                    FROM invoice_renewal_actions a JOIN operations o ON o.id=a.operation_id
+                    JOIN invoice_renewal_steps st ON st.operation_id=a.operation_id AND st.step=$2
+                    JOIN external_write_intents i ON i.operation_id=st.operation_id AND i.step=st.step AND i.origin='lifecycle'
+                    CROSS JOIN activation_write_guard g
+                    LEFT JOIN invoice_renewal_steps p ON p.operation_id=a.operation_id AND p.step='pause_recurring'
+                    LEFT JOIN invoice_renewal_steps sc ON sc.operation_id=a.operation_id AND sc.step='schedule_recurring'
+                    LEFT JOIN invoice_renewal_steps en ON en.operation_id=a.operation_id AND en.step='enable_sui'
+                    WHERE g.id=1 AND a.client_id=$1 AND a.invoice_id='invoice-current' AND a.outcome='pending' AND a.plan_frozen_at IS NOT NULL`, clientID, step).Scan(
+					&opID, &outcome, &opStatus, &attempt, &owner, &guardStep, &guardEpoch, &requestText, &dispatchAttempt, &confirmed, &requestHash,
+					&pauseRequired, &scheduleRequired, &enableRequired, &pauseConfirmed, &scheduleConfirmed, &enableConfirmed)
+				if err != nil {
+					return err
+				}
+				hash := sha256.Sum256([]byte(requestText))
+				expectedEpoch := int64(1)
+				switch step {
+				case string(lifecycle.RenewalSchedule):
+					if pauseRequired {
+						expectedEpoch++
+					}
+				case string(lifecycle.RenewalEnable):
+					if pauseRequired {
+						expectedEpoch++
+					}
+					if scheduleRequired {
+						expectedEpoch++
+					}
+				case string(lifecycle.RenewalResume):
+					if pauseRequired {
+						expectedEpoch++
+					}
+					if scheduleRequired {
+						expectedEpoch++
+					}
+					if enableRequired {
+						expectedEpoch++
+					}
+				}
+				if outcome != "pending" || opStatus != "running" || attempt != dispatchAttempt || confirmed || owner != opID || guardStep != step || guardEpoch != expectedEpoch || !bytes.Equal(hash[:], requestHash) {
+					return errors.New("renewal write lacks a committed immutable intent and shared guard")
+				}
+				switch step {
+				case string(lifecycle.RenewalSchedule):
+					if pauseRequired && !pauseConfirmed {
+						return errors.New("schedule write preceded required pause")
+					}
+				case string(lifecycle.RenewalEnable):
+					if scheduleRequired && !scheduleConfirmed {
+						return errors.New("enable write preceded schedule receipt")
+					}
+				case string(lifecycle.RenewalResume):
+					if scheduleRequired && !scheduleConfirmed || enableRequired && !enableConfirmed {
+						return errors.New("resume write preceded required receipts")
+					}
+				}
+				return nil
+			}
 			ninja := httptest.NewServer(state.ninjaHandler())
 			defer ninja.Close()
 			panelServer := httptest.NewServer(state.panelHandler())
@@ -64,7 +158,7 @@ func TestInvoicePaidRenewalRealStoreAdaptersLoopbackSuccessAndUnknown(t *testing
 			done := make(chan error, 1)
 			go func() { done <- worker.Run(service) }()
 			wantOutcome := "completed"
-			if unknown {
+			if tc.unknown {
 				wantOutcome = "review"
 			}
 			deadline := time.Now().Add(15 * time.Second)
@@ -84,8 +178,25 @@ func TestInvoicePaidRenewalRealStoreAdaptersLoopbackSuccessAndUnknown(t *testing
 			case <-time.After(3 * time.Second):
 				t.Fatal("renewal worker did not join")
 			}
-			if outcome != wantOutcome {
-				t.Fatalf("renewal outcome=%q want=%q", outcome, wantOutcome)
+			var reviewCode int
+			var operationStatus string
+			var planFrozen bool
+			if err := s.pool.QueryRow(ctx, `SELECT a.review_code,o.status,a.plan_frozen_at IS NOT NULL FROM invoice_renewal_actions a JOIN operations o ON o.id=a.operation_id WHERE a.client_id=$1 AND a.invoice_id='invoice-current'`, clientID).Scan(&reviewCode, &operationStatus, &planFrozen); err != nil {
+				t.Fatalf("read renewal completion state: %v", err)
+			}
+			if outcome != wantOutcome || operationStatus != "completed" || !planFrozen {
+				t.Fatalf("renewal outcome=%q want=%q review_code=%d operation=%q plan_frozen=%v", outcome, wantOutcome, reviewCode, operationStatus, planFrozen)
+			}
+			var noticeCount, clientNoticeCount, secretNoticeCount int
+			if err := s.pool.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE chat_id=101),count(*) FILTER(WHERE body LIKE '%synthetic-ninja-token%' OR body LIKE '%synthetic-panel-token%') FROM outbox WHERE bot_id=$1 AND message_key LIKE 'renewal:%'`, botID).Scan(&noticeCount, &clientNoticeCount, &secretNoticeCount); err != nil {
+				t.Fatal(err)
+			}
+			wantNotices, wantClientNotices := 2, 1
+			if tc.unknown {
+				wantNotices, wantClientNotices = 1, 0
+			}
+			if noticeCount != wantNotices || clientNoticeCount != wantClientNotices || secretNoticeCount != 0 {
+				t.Fatalf("renewal notices=%d client=%d secret-bearing=%d want=%d/%d/0", noticeCount, clientNoticeCount, secretNoticeCount, wantNotices, wantClientNotices)
 			}
 			var guardOwner int64
 			var guardStep string
@@ -95,13 +206,24 @@ func TestInvoicePaidRenewalRealStoreAdaptersLoopbackSuccessAndUnknown(t *testing
 			state.mu.Lock()
 			pause, schedule, resume, panelWrites := state.pauseCalls, state.scheduleCalls, state.resumeCalls, state.panelWrites
 			state.mu.Unlock()
-			if unknown {
+			if tc.unknown {
 				if pause != 1 || schedule != 0 || resume != 0 || panelWrites != 0 || guardOwner == 0 || guardStep != "pause_recurring" {
 					t.Fatalf("unknown action replay or guard release: writes=%d/%d/%d panel=%d owner=%d step=%q", pause, schedule, resume, panelWrites, guardOwner, guardStep)
 				}
+				var unconfirmed int
+				if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM invoice_renewal_steps WHERE operation_id=(SELECT operation_id FROM invoice_renewal_actions WHERE client_id=$1 AND invoice_id='invoice-current') AND confirmed_at IS NULL`, clientID).Scan(&unconfirmed); err != nil || unconfirmed != 1 {
+					t.Fatalf("unknown intent unconfirmed=%d err=%v", unconfirmed, err)
+				}
 			} else {
-				if pause != 1 || schedule != 1 || resume != 1 || panelWrites != 0 || guardOwner != 0 || guardStep != "" {
-					t.Fatalf("success actions/guard: writes=%d/%d/%d panel=%d owner=%d step=%q", pause, schedule, resume, panelWrites, guardOwner, guardStep)
+				wantPause, wantPanelWrites := 1, 0
+				if tc.paidRace || tc.overdueRestore {
+					wantPause = 0
+				}
+				if tc.overdueRestore {
+					wantPanelWrites = 1
+				}
+				if pause != wantPause || schedule != 1 || resume != 1 || panelWrites != wantPanelWrites || guardOwner != 0 || guardStep != "" {
+					t.Fatalf("success actions/guard: writes=%d/%d/%d want_pause=%d panel=%d owner=%d step=%q", pause, schedule, resume, wantPause, panelWrites, guardOwner, guardStep)
 				}
 				var status, next string
 				var desired bool
@@ -111,12 +233,162 @@ func TestInvoicePaidRenewalRealStoreAdaptersLoopbackSuccessAndUnknown(t *testing
 				if status != "active" || !desired || next != target {
 					t.Fatalf("subscription=%s desired=%v next=%s want=%s", status, desired, next, target)
 				}
-				var intents int
-				if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM external_write_intents i JOIN operations o ON o.id=i.operation_id WHERE o.client_id=$1 AND o.kind=$2 AND i.origin='lifecycle'`, clientID, lifecycle.RenewalOperationKind).Scan(&intents); err != nil || intents != 3 {
-					t.Fatalf("lifecycle intents=%d err=%v", intents, err)
+				if tc.paidRace || tc.overdueRestore {
+					var pauseRequired, scheduleRequired, enableRequired, resumeRequired bool
+					if err := s.pool.QueryRow(ctx, `SELECT requires_pause,requires_schedule,requires_enable,requires_resume FROM invoice_renewal_actions WHERE client_id=$1 AND invoice_id='invoice-current'`, clientID).Scan(&pauseRequired, &scheduleRequired, &enableRequired, &resumeRequired); err != nil {
+						t.Fatal(err)
+					}
+					if pauseRequired || !scheduleRequired || enableRequired != tc.overdueRestore || !resumeRequired {
+						t.Fatalf("frozen plan flags pause=%v schedule=%v enable=%v resume=%v", pauseRequired, scheduleRequired, enableRequired, resumeRequired)
+					}
+				}
+				var intents, confirmedSteps, scheduleReceipts int
+				wantIntents := 3
+				if tc.paidRace {
+					wantIntents = 2
+				}
+				if err := s.pool.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE confirmed_at IS NOT NULL),count(*) FILTER(WHERE step='schedule_recurring' AND receipt IS NOT NULL) FROM invoice_renewal_steps WHERE operation_id=(SELECT operation_id FROM invoice_renewal_actions WHERE client_id=$1 AND invoice_id='invoice-current')`, clientID).Scan(&intents, &confirmedSteps, &scheduleReceipts); err != nil || intents != wantIntents || confirmedSteps != wantIntents || scheduleReceipts != 1 {
+					t.Fatalf("lifecycle steps=%d confirmed=%d schedule_receipts=%d want=%d/1 err=%v", intents, confirmedSteps, scheduleReceipts, wantIntents, err)
 				}
 			}
+			service, cancel = context.WithCancel(ctx)
+			restartDone := make(chan error, 1)
+			go func() { restartDone <- worker.Run(service) }()
+			time.Sleep(250 * time.Millisecond)
+			cancel()
+			select {
+			case err := <-restartDone:
+				if err != nil {
+					t.Fatalf("restarted renewal worker stopped: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("restarted renewal worker did not join")
+			}
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			if state.pauseCalls != pause || state.scheduleCalls != schedule || state.resumeCalls != resume || state.panelWrites != panelWrites {
+				t.Fatalf("restart replayed writes: before=%d/%d/%d/%d after=%d/%d/%d/%d", pause, schedule, resume, panelWrites, state.pauseCalls, state.scheduleCalls, state.resumeCalls, state.panelWrites)
+			}
 		})
+	}
+}
+
+func seedRenewalPaidRaceAfterOverduePause(t *testing.T, s *Store, ctx context.Context, clientID, botID int64) {
+	t.Helper()
+	yesterday := time.Now().In(time.Local).AddDate(0, 0, -1).Format(time.DateOnly)
+	if _, err := s.pool.Exec(ctx, `UPDATE invoice_lifecycle_invoices SET sent_date=$2::date WHERE client_id=$1 AND invoice_id='invoice-current'`, clientID, yesterday); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO invoice_lifecycle_checks(client_id,bot_id) VALUES($1,$2) ON CONFLICT(client_id) DO UPDATE SET review_code=0`, clientID, botID); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := s.SeedOverdueOperations(ctx, botID, []int64{101}, time.Now().In(time.Local).Format(time.DateOnly), 10); err != nil || count != 1 {
+		t.Fatalf("seed prior overdue action count=%d err=%v", count, err)
+	}
+	claims, err := s.ClaimOperations(ctx, []string{lifecycle.OverdueOperationKind}, 1, time.Minute)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claim prior overdue action count=%d err=%v", len(claims), err)
+	}
+	claim := claims[0]
+	if _, err = s.pool.Exec(ctx, `INSERT INTO invoice_overdue_steps(operation_id,step,request,dispatch_attempt,external_id,confirmed_at) VALUES($1,'pause_recurring',$2::jsonb,$3,'recurring-synthetic',clock_timestamp())`, claim.ID, `{"synthetic":"owned pause receipt"}`, claim.Attempt); err != nil {
+		t.Fatalf("record prior confirmed overdue pause: %v", err)
+	}
+	if _, err = s.pool.Exec(ctx, `UPDATE invoice_overdue_actions SET outcome='review',review_code=$2,finished_at=clock_timestamp() WHERE operation_id=$1 AND outcome='pending'`, claim.ID, lifecycle.ReviewOverduePayment); err != nil {
+		t.Fatalf("freeze prior paid-overdue review: %v", err)
+	}
+	if _, err = s.pool.Exec(ctx, `UPDATE operations SET status='completed',locked_until=NULL,completed_at=clock_timestamp(),last_error_code=$2 WHERE id=$1 AND status='running'`, claim.ID, lifecycle.ReviewOverduePayment); err != nil {
+		t.Fatalf("complete prior overdue operation: %v", err)
+	}
+}
+
+func seedRenewalFullOverduePrefix(t *testing.T, s *Store, ctx context.Context, clientID, botID int64) {
+	t.Helper()
+	yesterday := time.Now().In(time.Local).AddDate(0, 0, -1).Format(time.DateOnly)
+	if _, err := s.pool.Exec(ctx, `UPDATE invoice_lifecycle_invoices SET sent_date=$2::date WHERE client_id=$1 AND invoice_id='invoice-current'`, clientID, yesterday); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO invoice_lifecycle_checks(client_id,bot_id) VALUES($1,$2) ON CONFLICT(client_id) DO UPDATE SET review_code=0`, clientID, botID); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := s.SeedOverdueOperations(ctx, botID, []int64{101}, time.Now().In(time.Local).Format(time.DateOnly), 10); err != nil || count != 1 {
+		t.Fatalf("seed full overdue action count=%d err=%v", count, err)
+	}
+	claims, err := s.ClaimOperations(ctx, []string{lifecycle.OverdueOperationKind}, 1, time.Minute)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claim full overdue action count=%d err=%v", len(claims), err)
+	}
+	claim := claims[0]
+	for _, step := range []struct{ name, external string }{{"pause_recurring", "recurring-synthetic"}, {"disable_sui", "71"}} {
+		if _, err = s.pool.Exec(ctx, `INSERT INTO invoice_overdue_steps(operation_id,step,request,dispatch_attempt,external_id,confirmed_at) VALUES($1,$2,$3::jsonb,$4,$5,clock_timestamp())`, claim.ID, step.name, `{"synthetic":"owned overdue receipt"}`, claim.Attempt, step.external); err != nil {
+			t.Fatalf("record prior overdue %s receipt: %v", step.name, err)
+		}
+	}
+	if _, err = s.pool.Exec(ctx, `UPDATE invoice_overdue_actions SET outcome='completed',finished_at=clock_timestamp() WHERE operation_id=$1 AND outcome='pending'`, claim.ID); err != nil {
+		t.Fatalf("complete prior overdue action: %v", err)
+	}
+	if _, err = s.pool.Exec(ctx, `UPDATE operations SET status='completed',locked_until=NULL,completed_at=clock_timestamp() WHERE id=$1 AND status='running'`, claim.ID); err != nil {
+		t.Fatalf("complete prior overdue operation: %v", err)
+	}
+}
+
+func prepareRenewalOverdueExternalState(t *testing.T, s *Store, ctx context.Context, state *renewalLoopback, clientID int64) {
+	t.Helper()
+	if _, err := s.pool.Exec(ctx, `UPDATE subscriptions SET state='overdue',desired_access=false WHERE client_id=$1`, clientID); err != nil {
+		t.Fatal(err)
+	}
+	var panel map[string]any
+	if err := json.Unmarshal(state.panel, &panel); err != nil {
+		t.Fatal(err)
+	}
+	panel["enable"] = false
+	state.panel, _ = json.Marshal(panel)
+	record, err := sui.ParseClientRecord(state.panel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := record.CredentialsHash()
+	if _, err = s.pool.Exec(ctx, `UPDATE activation_sui_bindings SET credentials_hash=$2 WHERE client_id=$1`, clientID, hash[:]); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertRenewalActionInvoiceBinding(t *testing.T, s *Store, ctx context.Context, clientID, botID int64, wantPaidRace, wantOverdueRestore bool) {
+	t.Helper()
+	allowed := []int64{101}
+	if _, err := s.SeedRenewalOperations(ctx, botID, allowed, 10); err != nil {
+		t.Fatalf("seed renewal diagnostic action: %v", err)
+	}
+	claims, err := s.ClaimOperations(ctx, []string{lifecycle.RenewalOperationKind}, 1, time.Minute)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claim renewal diagnostic action: count=%d err=%v", len(claims), err)
+	}
+	claim := claims[0]
+	snapshot, err := s.LoadRenewalSnapshot(ctx, claim, botID)
+	if err != nil {
+		t.Fatalf("load initial managed renewal snapshot: %v", err)
+	}
+	wantState, wantDesired := "active", true
+	if wantOverdueRestore {
+		wantState, wantDesired = "overdue", false
+	}
+	if snapshot.ClientID != clientID || snapshot.InvoiceID != "invoice-current" || snapshot.CurrentInvoiceID != snapshot.InvoiceID || snapshot.FirstInvoiceID != "invoice-first" || !snapshot.ManagedProvenance || snapshot.Proof.Validate() != nil || snapshot.Proof.InvoiceID != snapshot.InvoiceID || snapshot.RecurringID != "recurring-synthetic" || snapshot.SUIBinding.ID != 71 || snapshot.SUIBinding.Name == "" || snapshot.OverdueReviewPayment != wantPaidRace || wantPaidRace && (!snapshot.OverdueSteps["pause_recurring"] || snapshot.OverdueSteps["disable_sui"] || snapshot.OverduePending) || wantOverdueRestore && (!snapshot.OverdueSteps["pause_recurring"] || !snapshot.OverdueSteps["disable_sui"] || snapshot.OverduePending) || snapshot.State != wantState || snapshot.DesiredAccess != wantDesired {
+		t.Fatalf("invalid initial managed renewal snapshot: client=%d action_invoice=%q current_invoice=%q first_invoice=%q managed=%v proof_invoice=%q recurring=%q sui_id=%d", snapshot.ClientID, snapshot.InvoiceID, snapshot.CurrentInvoiceID, snapshot.FirstInvoiceID, snapshot.ManagedProvenance, snapshot.Proof.InvoiceID, snapshot.RecurringID, snapshot.SUIBinding.ID)
+	}
+	if _, err = s.pool.Exec(ctx, `UPDATE subscriptions SET current_invoice_id=first_invoice_id WHERE client_id=$1`, clientID); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := s.LoadRenewalSnapshot(ctx, claim, botID)
+	if err != nil {
+		t.Fatalf("load renewal snapshot after current-invoice change: %v", err)
+	}
+	if changed.InvoiceID != "invoice-current" || changed.CurrentInvoiceID != "invoice-first" || changed.Proof.InvoiceID != "invoice-current" {
+		t.Fatalf("renewal action rebound after current-invoice change: action=%q current=%q proof=%q", changed.InvoiceID, changed.CurrentInvoiceID, changed.Proof.InvoiceID)
+	}
+	if _, err = s.pool.Exec(ctx, `UPDATE subscriptions SET current_invoice_id='invoice-current' WHERE client_id=$1`, clientID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RetryOperation(ctx, claim.Lease, 0, 0); err != nil {
+		t.Fatalf("release diagnostic renewal claim: %v", err)
 	}
 }
 
@@ -224,12 +496,27 @@ func (r *renewalLoopback) ninjaHandler() http.Handler {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if q.Method == http.MethodPut {
-			var body struct {
-				Next string `json:"next_send_date"`
+			if r.verifyBeforeWrite != nil {
+				if err := r.verifyBeforeWrite(string(lifecycle.RenewalSchedule)); err != nil {
+					http.Error(w, "missing committed renewal intent", http.StatusConflict)
+					return
+				}
 			}
-			_ = json.NewDecoder(q.Body).Decode(&body)
-			r.recurring.NextSendDate = body.Next
-			r.recurring.NextSendDatetime = body.Next + "T08:00:00Z"
+			expectedDate := r.invoiceNext
+			expectedExchange := json.Number(r.recurring.ExchangeRate)
+			var body map[string]json.RawMessage
+			var bodyDate string
+			var bodyExchange json.Number
+			if json.NewDecoder(q.Body).Decode(&body) != nil || len(body) != 2 || json.Unmarshal(body["next_send_date"], &bodyDate) != nil || json.Unmarshal(body["exchange_rate"], &bodyExchange) != nil || bodyDate == "" {
+				http.Error(w, "invalid recurring schedule payload", http.StatusBadRequest)
+				return
+			}
+			if bodyDate != expectedDate || bodyExchange != expectedExchange {
+				http.Error(w, "unexpected recurring schedule facts", http.StatusConflict)
+				return
+			}
+			r.recurring.NextSendDate = bodyDate
+			r.recurring.NextSendDatetime = bodyDate + "T08:00:00Z"
 			r.scheduleCalls++
 		}
 		write(w, 200, map[string]any{"data": r.recurring})
@@ -242,15 +529,31 @@ func (r *renewalLoopback) ninjaHandler() http.Handler {
 		_ = json.NewDecoder(q.Body).Decode(&body)
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		if len(body.IDs) != 1 || body.IDs[0] != "recurring-synthetic" || body.Action != "stop" && body.Action != "start" {
+			http.Error(w, "unexpected recurring bulk payload", http.StatusConflict)
+			return
+		}
 		switch body.Action {
 		case "stop":
+			if r.verifyBeforeWrite != nil {
+				if err := r.verifyBeforeWrite(string(lifecycle.RenewalPause)); err != nil {
+					http.Error(w, "missing committed renewal intent", http.StatusConflict)
+					return
+				}
+			}
 			r.pauseCalls++
 			r.recurring.StatusID = "3"
 			if r.unknownPause {
-				write(w, 500, map[string]any{"error": "synthetic unknown"})
+				write(w, 503, map[string]any{"error": "synthetic unknown"})
 				return
 			}
 		case "start":
+			if r.verifyBeforeWrite != nil {
+				if err := r.verifyBeforeWrite(string(lifecycle.RenewalResume)); err != nil {
+					http.Error(w, "missing committed renewal intent", http.StatusConflict)
+					return
+				}
+			}
 			r.resumeCalls++
 			r.recurring.StatusID = "2"
 		}
@@ -282,11 +585,32 @@ func (r *renewalLoopback) panelHandler() http.Handler {
 		envelope(w, map[string]any{"sys": map[string]any{"appVersion": "1.6.4"}})
 	})
 	mux.HandleFunc("/apiv2/save", func(w http.ResponseWriter, q *http.Request) {
+		if r.verifyBeforeWrite != nil {
+			if err := r.verifyBeforeWrite(string(lifecycle.RenewalEnable)); err != nil {
+				http.Error(w, "missing committed renewal intent", http.StatusConflict)
+				return
+			}
+		}
 		_ = q.ParseForm()
 		var record map[string]any
-		_ = json.Unmarshal([]byte(q.Form.Get("data")), &record)
-		raw, _ := json.Marshal(record)
+		if json.Unmarshal([]byte(q.Form.Get("data")), &record) != nil || record["id"] != float64(71) || record["enable"] != true {
+			http.Error(w, "invalid S-UI enable payload", http.StatusBadRequest)
+			return
+		}
 		r.mu.Lock()
+		var before map[string]any
+		if json.Unmarshal(r.panel, &before) != nil {
+			r.mu.Unlock()
+			http.Error(w, "invalid S-UI baseline", http.StatusInternalServerError)
+			return
+		}
+		before["enable"] = record["enable"]
+		if !reflect.DeepEqual(before, record) {
+			r.mu.Unlock()
+			http.Error(w, "S-UI fields changed beyond enable", http.StatusConflict)
+			return
+		}
+		raw, _ := json.Marshal(record)
 		r.panel = raw
 		r.panelWrites++
 		r.mu.Unlock()

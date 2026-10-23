@@ -71,3 +71,7 @@ func hasRenewalOverduePrefix(s lifecycle.RenewalSnapshot) bool {
 	}
 	return s.OverdueSteps["pause_recurring"] && s.OverdueSteps["disable_sui"]
 }
+
+func hasRenewalOverduePausePrefix(s lifecycle.RenewalSnapshot) bool {
+	return s.OverdueReviewPayment && !s.OverduePending && !s.OverdueOtherSteps && s.OverdueSteps["pause_recurring"] && len(s.OverdueSteps) == 1
+}

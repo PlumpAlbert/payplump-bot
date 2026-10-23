@@ -346,7 +346,9 @@ func validRenewalExternalState(s RenewalSnapshot, r invoiceninja.RecurringRecord
 		}
 		pause, paused := s.Steps[RenewalPause]
 		_, resumed := s.Steps[RenewalResume]
-		if r.StatusID == "3" && s.Plan != nil && s.Plan.Pause && paused && pause.Confirmed && !resumed {
+		ownRenewalPause := s.Plan != nil && s.Plan.Pause && paused && pause.Confirmed
+		ownedOverduePause := hasConfirmedOverduePausePrefix(s) && !paused
+		if r.StatusID == "3" && !resumed && (ownRenewalPause || ownedOverduePause) {
 			return 0
 		}
 		return ReviewRenewalExternalState
@@ -371,22 +373,15 @@ func validRenewalExternalState(s RenewalSnapshot, r invoiceninja.RecurringRecord
 	return ReviewRenewalAssociation
 }
 
+func hasConfirmedOverduePausePrefix(s RenewalSnapshot) bool {
+	return s.OverdueReviewPayment && !s.OverduePending && !s.OverdueOtherSteps && s.OverdueSteps["pause_recurring"] && len(s.OverdueSteps) == 1
+}
+
 func hasConfirmedOverduePrefix(s RenewalSnapshot) bool {
 	if s.OverduePending {
 		return false
 	}
-	pause, disable := false, false
-	for name, step := range s.OverdueSteps {
-		if step {
-			if name == "pause_recurring" {
-				pause = true
-			}
-			if name == "disable_sui" {
-				disable = true
-			}
-		}
-	}
-	return pause && disable
+	return s.OverdueSteps["pause_recurring"] && s.OverdueSteps["disable_sui"]
 }
 
 func makeRenewalPlan(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.ClientRecord, now time.Time) (RenewalPlan, json.RawMessage, int) {
@@ -400,7 +395,7 @@ func makeRenewalPlan(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.Cl
 		plan.Pause = r.StatusID == "2"
 		plan.Resume = true
 	}
-	if s.State == "active" && r.StatusID != "2" {
+	if s.State == "active" && r.StatusID != "2" && !(r.StatusID == "3" && hasConfirmedOverduePausePrefix(s)) {
 		return RenewalPlan{}, nil, ReviewRenewalExternalState
 	}
 	if s.State == "overdue" && (r.StatusID != "3" || p.Enabled()) {
@@ -413,11 +408,14 @@ func makeRenewalPlan(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.Cl
 	if s.State == "active" && !p.Enabled() {
 		return RenewalPlan{}, nil, ReviewRenewalExternalState
 	}
-	if r.StatusID == "3" && !plan.Resume {
-		return RenewalPlan{}, nil, ReviewRenewalExternalState
+	if r.StatusID == "3" {
+		if s.State == "active" && !hasConfirmedOverduePausePrefix(s) || s.State != "active" && s.State != "overdue" {
+			return RenewalPlan{}, nil, ReviewRenewalExternalState
+		}
+		plan.Resume = true
 	}
 	when, e := invoiceninja.ParseRecurringUTC(r.NextSendDatetime)
-	if e != nil || !when.After(now) {
+	if e != nil || !plan.Schedule && !when.After(now) {
 		return RenewalPlan{}, nil, ReviewRenewalTarget
 	}
 	baseline, err := json.Marshal(struct {

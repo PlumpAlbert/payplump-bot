@@ -58,17 +58,21 @@ func (s *Store) FreezeRenewalPlan(ctx context.Context, claim queue.Operation, bo
 		return lifecycle.ErrRenewalTargetExpired
 	}
 	shouldSchedule := facts.NextSendDate != next
+	baselineWhen, baselineErr := invoiceninja.ParseRecurringUTC(facts.NextSendDatetime)
+	if baselineErr != nil || !shouldSchedule && !baselineWhen.After(time.Now()) {
+		return lifecycle.ErrRenewalTargetExpired
+	}
 	shouldEnable := actual.State == "overdue"
 	shouldPause := shouldSchedule && facts.StatusID == "2"
-	shouldResume := shouldSchedule || shouldEnable
+	shouldResume := shouldSchedule || shouldEnable || facts.StatusID == "3" && actual.State == "active" && hasRenewalOverduePausePrefix(actual)
 	if plan.Schedule != shouldSchedule || plan.Enable != shouldEnable || plan.Pause != shouldPause || plan.Resume != shouldResume || facts.SUIEnabled == shouldEnable || facts.StatusID != "2" && facts.StatusID != "3" {
 		return queue.ErrConflict
 	}
-	if actual.State == "active" && (facts.StatusID != "2" || !facts.SUIEnabled) || actual.State == "overdue" && (facts.StatusID != "3" || facts.SUIEnabled || !hasRenewalOverduePrefix(actual)) {
+	if actual.State == "active" && (!facts.SUIEnabled || facts.StatusID != "2" && !(facts.StatusID == "3" && hasRenewalOverduePausePrefix(actual))) || actual.State == "overdue" && (facts.StatusID != "3" || facts.SUIEnabled || !hasRenewalOverduePrefix(actual)) {
 		return queue.ErrConflict
 	}
 	when, parseErr := invoiceninja.ParseRecurringUTC(facts.NextSendDatetime)
-	if parseErr != nil || !when.After(time.Now()) {
+	if parseErr != nil || !shouldSchedule && !when.After(time.Now()) {
 		return lifecycle.ErrRenewalTargetExpired
 	}
 	var epoch, owner int64

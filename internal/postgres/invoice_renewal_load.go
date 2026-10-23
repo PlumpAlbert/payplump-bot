@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/lifecycle"
@@ -147,7 +148,7 @@ func readRenewalSnapshot(ctx context.Context, reader renewalSnapshotReader, clai
 	var planFrozen, planPause, planSchedule, planEnable, planResume bool
 	var suiID int64
 	var paymentCheckReview, paymentConfirmationReview bool
-	err := reader.QueryRow(ctx, `SELECT c.id, c.telegram_id, c.chat_id, a.bot_id,
+	err := reader.QueryRow(ctx, `SELECT c.id, c.telegram_id, c.chat_id, a.bot_id, COALESCE(a.invoice_id, ''),
         COALESCE(c.invoice_ninja_id, ''), COALESCE(s.first_invoice_id, ''), COALESCE(s.current_invoice_id, ''),
         COALESCE(s.recurring_id, ''), COALESCE(c.sui_id, ''), COALESCE(reg.token, ''), COALESCE(act.token, ''),
         s.state, s.desired_access, v.customer_id, v.recurring_id, v.invoice_number, v.status, v.amount::text, v.balance::text, v.paid_to_date::text, v.sent_date::text,
@@ -172,7 +173,7 @@ func readRenewalSnapshot(ctx context.Context, reader renewalSnapshotReader, clai
         WHERE g.id = 1 AND a.operation_id = $2 AND a.bot_id = $1 AND a.client_id = $3 AND a.outcome = 'pending' AND a.review_code = 0
           AND o.kind = $4 AND o.status = 'running' AND o.attempts = $5 AND o.locked_until > clock_timestamp()`,
 		botID, claim.ID, claim.ClientID, lifecycle.RenewalOperationKind, claim.Attempt).Scan(
-		&s.ClientID, &s.TelegramID, &s.ChatID, &s.BotID, &s.CustomerID, &s.FirstInvoiceID, &s.CurrentInvoiceID,
+		&s.ClientID, &s.TelegramID, &s.ChatID, &s.BotID, &s.InvoiceID, &s.CustomerID, &s.FirstInvoiceID, &s.CurrentInvoiceID,
 		&s.RecurringID, &s.SUIID, &s.RegistrationToken, &s.ActivationToken, &s.State, &s.DesiredAccess,
 		&s.LedgerCustomerID, &s.LedgerRecurringID, &s.LedgerInvoiceNumber, &s.LedgerStatus, &s.LedgerAmount, &s.LedgerBalance, &s.LedgerPaidToDate, &s.LedgerSentDate,
 		&s.Payment.CustomerID, &s.Payment.InvoiceID, &s.Proof.InvoiceNumber, &amount, &currencyID, &paymentDate, &nextDate, &proofHash, &evidence,
@@ -226,6 +227,10 @@ func readRenewalSnapshot(ctx context.Context, reader renewalSnapshotReader, clai
 		if planDate == "" || json.Unmarshal(baseline, &facts) != nil || facts.Amount == "" || facts.NextSendDatetime == "" {
 			return lifecycle.RenewalSnapshot{}, queue.ErrConflict
 		}
+		when, parseErr := invoiceninja.ParseRecurringUTC(facts.NextSendDatetime)
+		if parseErr != nil || !planSchedule && !when.After(time.Now()) {
+			return lifecycle.RenewalSnapshot{}, queue.ErrConflict
+		}
 		s.Plan = &lifecycle.RenewalPlan{TargetDate: planDate, Pause: planPause, Schedule: planSchedule, Enable: planEnable, Resume: planResume, BaselineReceipt: invoiceninja.RecurringReceipt{Amount: facts.Amount, NextSendDatetime: facts.NextSendDatetime}}
 		s.PlanBaseline = append([]byte(nil), baseline...)
 	}
@@ -269,6 +274,8 @@ func readRenewalSnapshot(ctx context.Context, reader renewalSnapshotReader, clai
 		}
 		if name == "pause_recurring" && external == s.RecurringID || name == "disable_sui" && external == s.SUIID {
 			s.OverdueSteps[name] = true
+		} else {
+			s.OverdueOtherSteps = true
 		}
 	}
 	if err = rows.Err(); err != nil {
@@ -277,6 +284,9 @@ func readRenewalSnapshot(ctx context.Context, reader renewalSnapshotReader, clai
 	}
 	rows.Close()
 	if err = reader.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM invoice_overdue_actions a JOIN invoice_overdue_steps st ON st.operation_id=a.operation_id WHERE a.client_id=$1 AND a.invoice_id=$2 AND st.confirmed_at IS NULL)`, s.ClientID, s.InvoiceID).Scan(&s.OverduePending); err != nil {
+		return lifecycle.RenewalSnapshot{}, err
+	}
+	if err = reader.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM invoice_overdue_actions a WHERE a.client_id=$1 AND a.invoice_id=$2 AND a.outcome='review' AND a.review_code=$3)`, s.ClientID, s.InvoiceID, lifecycle.ReviewOverduePayment).Scan(&s.OverdueReviewPayment); err != nil {
 		return lifecycle.RenewalSnapshot{}, err
 	}
 	return s, nil

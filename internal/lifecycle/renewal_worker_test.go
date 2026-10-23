@@ -293,14 +293,48 @@ func TestRenewalWorkerOrdersChangedScheduleAndOverdueRestoration(t *testing.T) {
 	}
 }
 
-func TestRenewalWorkerRejectsExpiredInitialTimestampEvenWhenRescheduling(t *testing.T) {
-	worker, store, recurring, _ := renewalWorkerFixture(t, false, true)
-	recurring.record.NextSendDatetime = "2040-01-30T08:00:00Z"
-	worker.handle(context.Background(), store.claim)
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if store.outcome != "review" || store.reviewCode != ReviewRenewalTarget || len(store.steps) != 0 || len(recurring.calls) != 0 {
-		t.Fatalf("expired source timestamp was not held before writes: outcome=%q code=%d intents=%v calls=%v", store.outcome, store.reviewCode, store.steps, recurring.calls)
+func TestRenewalWorkerReschedulesExpiredBaselineAndRejectsExpiredUnchangedReceipt(t *testing.T) {
+	t.Run("owned paused overdue prefix reschedules and resumes", func(t *testing.T) {
+		worker, store, recurring, panel := renewalWorkerFixture(t, false, true)
+		recurring.record.StatusID = "3"
+		recurring.record.NextSendDatetime = "2040-01-30T08:00:00Z"
+		store.snapshot.OverdueSteps = map[string]bool{"pause_recurring": true}
+		store.snapshot.OverdueReviewPayment = true
+		worker.handle(context.Background(), store.claim)
+		if store.outcome != "completed" || !reflect.DeepEqual(store.steps, []RenewalStep{RenewalSchedule, RenewalResume}) || !reflect.DeepEqual(recurring.calls, []RenewalStep{RenewalSchedule, RenewalResume}) || panel.calls != 0 {
+			t.Fatalf("outcome=%q review=%d steps=%v calls=%v panel=%d", store.outcome, store.reviewCode, store.steps, recurring.calls, panel.calls)
+		}
+	})
+	t.Run("expired receipt without schedule is reviewed", func(t *testing.T) {
+		worker, store, recurring, _ := renewalWorkerFixture(t, false, false)
+		recurring.record.NextSendDatetime = "2040-01-30T08:00:00Z"
+		worker.handle(context.Background(), store.claim)
+		if store.outcome != "review" || store.reviewCode != ReviewRenewalTarget || len(store.steps) != 0 || len(recurring.calls) != 0 {
+			t.Fatalf("expired unchanged receipt was not held: outcome=%q code=%d intents=%v calls=%v", store.outcome, store.reviewCode, store.steps, recurring.calls)
+		}
+	})
+	for _, tc := range []struct {
+		name       string
+		steps      map[string]bool
+		review     bool
+		otherSteps bool
+	}{
+		{name: "unowned paused recurring"},
+		{name: "unknown overdue prefix", steps: map[string]bool{"pause_recurring": true}, review: false},
+		{name: "extra overdue step", steps: map[string]bool{"pause_recurring": true}, review: true, otherSteps: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			worker, store, recurring, _ := renewalWorkerFixture(t, false, true)
+			recurring.record.StatusID = "3"
+			recurring.record.NextSendDatetime = "2040-01-30T08:00:00Z"
+			store.snapshot.OverdueSteps = tc.steps
+			store.snapshot.OverdueReviewPayment = tc.review
+			store.snapshot.OverdueOtherSteps = tc.otherSteps
+			worker.handle(context.Background(), store.claim)
+			if store.outcome != "review" || len(store.steps) != 0 || len(recurring.calls) != 0 {
+				t.Fatalf("unproven pause authorized writes: outcome=%q steps=%v calls=%v", store.outcome, store.steps, recurring.calls)
+			}
+		})
 	}
 }
 

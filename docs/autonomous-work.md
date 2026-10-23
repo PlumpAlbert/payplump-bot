@@ -37,10 +37,10 @@ scope; не снимать и не обходить их и не расширя�
   GET-only discovery управляемых recurring-счетов, синтетические контракты.
 - [x] 8b: Stage 1/2 — ledger, notices, overdue workflow и подтверждения внешних
   шагов; runtime integration проверен полным CI PR #18 на disposable PG17.
-- [ ] 9a: durable renewal/reactivation workflow для обычной и поздней оплаты;
-  переиспользовать существующее доказательство платежа, не добавлять verifier-worker.
-  Сохранить ту же S-UI binding/URL, изменить только будущую `next_send_date` от
-  `Payment.date`, зафиксировать intent/known receipts и проверить гонки без replay.
+- [x] 9a: код durable renewal/reactivation и синтетические тестовые сценарии добавлены
+  в draft PR [#20](https://github.com/PlumpAlbert/payplump-bot/pull/20); ожидается
+  required CI на окончательном HEAD до merge. Локальный SQL integration runtime
+  не запускался и успешный SQL runtime результат не заявляется.
 - [ ] 9b: расширить protected config delivery на следующие оплаченные периоды;
   текущая выдача ограничена первым циклом.
 - [x] 10: приватная административная рассылка с неизменяемым подтверждением,
@@ -89,8 +89,10 @@ scope; не снимать и не обходить их и не расширя�
 Stage 8a/8b реализованы. Финансовая проверка уже принимает non-first текущий
 invoice только с точным recurring ID; подтверждения хранятся per invoice, а
 `FinishPaymentCheck` сохраняет доказательство и наблюдаемые даты без выдачи доступа.
-Stage 9a durable renewal/reactivation и 9b выдача конфигурации следующего периода
-ещё не реализованы. Использовать существующий payment-check pipeline, не создавать
+Stage 9a реализован в коде draft PR [#20](https://github.com/PlumpAlbert/payplump-bot/pull/20)
+и ждёт обязательный CI; stage 9b, выдача конфигурации следующего периода, остаётся
+в очереди. Локальный runtime SQL не запускался, результаты CI на изменённом HEAD
+не подтверждены. Использовать существующий payment-check pipeline, не создавать
 новый verifier-worker. Автоматизация не получает разрешение на production API даже
 GET. Recurring может создавать draft, поэтому workflow проверяет фактическое
 состояние и не предполагает issued invoice. Не менять чужие company/client-wide

@@ -92,6 +92,8 @@ type RenewalSnapshot struct {
 	Steps                                                                  map[RenewalStep]RenewalStepRecord
 	OverdueSteps                                                           map[string]bool
 	OverduePending                                                         bool
+	OverdueReviewPayment                                                   bool
+	OverdueOtherSteps                                                      bool
 }
 
 func (RenewalSnapshot) String() string   { return "[sensitive paid renewal snapshot]" }
