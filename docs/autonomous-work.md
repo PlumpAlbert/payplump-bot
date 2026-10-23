@@ -131,8 +131,14 @@ scope; не снимать и не обходить их и не расширя�
   and post-merge CI `40025798271` is green. The 11b.6.2 production/domain/unit
   slice adds the explicit initial-paused current-debt mode, generated conditional
   FK boundaries, and no-fake-ledger restoration through the existing renewal
-  worker. Its PostgreSQL GET/worker workflow is prepared for PR #32; PR #32 is not
-  open and review/CI are pending. Local PostgreSQL checks are compile-only. Protected
+  worker. PR #32 is open at `2078c682df1d5538040b71fc429f7e9392cb0e48`. Review P1 on
+  initial-mode claim locking was fixed and rechecked against current actions
+  570–660; final review has zero findings. Normal-import IFF rejection and the
+  SQL double-batch bound were also verified. Local normal/race/vet/build/module/
+  gofmt/diff and PostgreSQL compile checks passed; code and three PG workflows
+  are ready. First CI `40029673909` passed fast and old SQL cases but new workflows
+  hit a missing fake GET `/ninja/api/v1/ping` version-preflight route. A test-only
+  fixture fix is underway; new CI is pending and runtime is unverified. Protected
   imported configuration/menu/current proof, apply CLI, and default-off startup
   wiring remain future work. Stage 11 remains incomplete. No live API access or
   deployment was done.
@@ -162,14 +168,7 @@ and post-merge CI `40015300957`, including the full PostgreSQL runtime workflow.
 11b.5 overdue-only code and tests merged in PR #30 as
 `19d45cf7f85c784b74cdc0cb2b71f5d15cddb758`; exact code HEAD
 `b8efc247fe09b78e078b0c115c52317d47311939` passed required CI `40019995948`
-and post-merge CI `40020785993`, all green. PR #31 (11b.6.1) merged as
-`a92198b`; exact code HEAD `012e1249a0720b79993ce55206413ecae06b178b` passed
-required CI `40024818619` and post-merge CI `40025798271`. The 11b.6.2
-production/domain/unit slice implements initial paused/current-debt restoration;
-its PostgreSQL runtime workflow is prepared for PR #32; PR #32 is not open
-and review/CI are pending. Local PostgreSQL validation is compile-only. Protected imported configuration/menu/current proof,
-apply CLI, and default-off startup wiring remain future work. Stage 11 is
-incomplete. No live verification/admission or deployment was done.
+and post-merge CI `40020785993`, all green. The 11b.6.1 merge and CI evidence is recorded above. Remaining 11b work includes protected imported configuration/menu/current proof, apply CLI, and default-off startup wiring. Stage 11 is incomplete. No live verification/admission or deployment was done.
 
 ## Проверенные срезы
 

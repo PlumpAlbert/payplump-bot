@@ -649,6 +649,8 @@ func (src *initialRestorationSource) serveHTTP(w http.ResponseWriter, r *http.Re
 		defer src.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
+		case "/ninja/api/v1/ping":
+			admissionJSON(w, map[string]any{"data": map[string]any{}})
 		case "/ninja/api/v1/clients":
 			admissionPage(w, []any{src.customer})
 		case "/ninja/api/v1/clients/customer-42":
