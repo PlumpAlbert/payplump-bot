@@ -2,6 +2,7 @@ package configdelivery
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
+	"github.com/PlumpAlbert/payplump-bot/internal/importverify"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
@@ -208,6 +211,9 @@ func (s *Service) evaluate(ctx context.Context, m queue.Message, v View) Decisio
 		return deny(reason)
 	}
 	e := v.Entitlement
+	if e.Imported != nil {
+		return s.evaluateImportedBaseline(ctx, v)
+	}
 	deadline, err := e.Deadline()
 	if err != nil {
 		return deny(DeniedEntitlement)
@@ -241,6 +247,67 @@ func (s *Service) evaluate(ctx context.Context, m queue.Message, v View) Decisio
 	}
 	if !deliveryFuture(e, r, deadline, s.now()) {
 		return deny(DeniedExpired)
+	}
+	return Decision{Kind: Secret}
+}
+
+func (s *Service) evaluateImportedBaseline(ctx context.Context, v View) Decision {
+	e, r, b := v.Entitlement, v.Request, v.Entitlement.Imported
+	scope, scopeErr := importverify.SourceScope(s.cfg.BaseURL, s.cfg.Token, invoiceninja.SupportedSettlementVersion, s.cfg.SUIBaseURL, s.cfg.SUIToken, s.cfg.SUIVersion)
+	scopeHash, scopeOK := importorigin.ParseHashHex(scope)
+	if scopeErr != nil || !scopeOK || scopeHash != b.Origin.SourceScopeHash || sha256.Sum256([]byte(s.cfg.SubscriptionBaseURL)) != b.PublicBaseHash || s.cfg.CurrencyID != e.CurrentProof.CurrencyID {
+		return deny(DeniedPolicy)
+	}
+	deadline, err := e.Deadline()
+	if err != nil {
+		return deny(DeniedEntitlement)
+	}
+	if !deliveryFutureImported(e, r, deadline, s.now()) {
+		return deny(DeniedExpired)
+	}
+	if result := s.readImportedBound(ctx, e); result.Kind != Secret {
+		return result
+	}
+	observed, err := payments.Observe(ctx, s.providers.Payments, e.Current, s.cfg.CurrencyID, s.now().In(time.Local).Format(time.DateOnly))
+	if err != nil || observed.Validate() != nil {
+		return deny(DeniedUnavailable)
+	}
+	if observed.Kind != payments.Verified || observed.Proof.Hash != b.ProofHash || observed.Proof.InvoiceNumber != e.CurrentProof.InvoiceNumber {
+		return Decision{Kind: Denial, Reason: DeniedPayment, PaymentChanged: true}
+	}
+	if result := s.readImportedBound(ctx, e); result.Kind != Secret {
+		return result
+	}
+	if !deliveryFutureImported(e, r, deadline, s.now()) {
+		return deny(DeniedExpired)
+	}
+	return Decision{Kind: Secret}
+}
+
+func deliveryFutureImported(e Entitlement, r Request, deadline, now time.Time) bool {
+	return !now.Before(r.CreatedAt) && now.Before(r.ExpiresAt) && now.Before(deadline) && e.Current.NextInvoiceDate > now.In(time.Local).Format(time.DateOnly) && e.Imported.NextSendUTC.After(now)
+}
+
+func (s *Service) readImportedBound(ctx context.Context, e Entitlement) Decision {
+	b := e.Imported
+	record, err := s.providers.SUI.GetRecord(ctx, e.Binding.ID)
+	if err != nil {
+		return deny(DeniedUnavailable)
+	}
+	if record.ID() != e.Binding.ID || record.Name() != e.Binding.Name || record.CredentialsHash() != e.Binding.CredentialsHash || !slices.Equal(record.InboundIDs(), b.InboundIDs) || !record.Enabled() || sui.ValidateImportedRecordBinding(record, e.Binding, b.InboundIDs) != nil {
+		return deny(DeniedSUI)
+	}
+	recurring, err := s.providers.Recurring.Get(ctx, e.Current.RecurringID)
+	if err != nil {
+		return deny(DeniedUnavailable)
+	}
+	if recurring.ID != e.Current.RecurringID || recurring.ClientID != e.Current.CustomerID || recurring.StatusID != "2" || recurring.IsDeleted || recurring.ArchivedAt != 0 || recurring.NextSendDate != e.CurrentProof.NextInvoiceDate || invoiceninja.ValidateImportedRecurringForProfile(recurring, b.Profile) != nil {
+		return deny(DeniedRecurring)
+	}
+	amount, instant, normalizeErr := activation.NormalizeRecurringFacts(recurring.Amount, recurring.NextSendDatetime)
+	frozenAmount, frozenInstant, frozenErr := activation.NormalizeRecurringFacts(json.Number(e.CurrentProof.Amount), b.NextSendUTC.Format(time.RFC3339Nano))
+	if normalizeErr != nil || frozenErr != nil || amount != frozenAmount || instant != frozenInstant || instant != b.NextSendUTC.Format(time.RFC3339Nano) {
+		return deny(DeniedRecurring)
 	}
 	return Decision{Kind: Secret}
 }
