@@ -143,7 +143,7 @@ scope; не снимать и не обходить их и не расширя�
   zero. Parent-mode IFF/batch-bound checks were verified. CI `40029673909` and
   `40030663139` exposed test-only fixture issues; fixes preserved production
   checks. No live API, Telegram, payment, working DB, publish or deploy occurred.
-  11b.7.1 code/tests are ready in 15 files; PR #33 is not open. It covers only
+  11b.7.1 code/tests are ready in 15 files; PR #33 is open and exact-HEAD required CI is pending. It covers only
   the ORIGINAL ACTIVE imported baseline: current invoice equals immutable origin
   current invoice and paid anchor; current normal proof, strictly future UTC date,
   static binding/inbounds, legacy price/notes, source-scope/public-base GET
@@ -159,7 +159,7 @@ scope; не снимать и не обходить их и не расширя�
   is zero. Full local unit/race/vet/CGO0 build/module/gofmt/diff passed; PG
   integration compile-only passed. Three DB workflows are implemented, not run:
   actual GET/verify/admit/observe/menu/outbox/protected-service/TG success and
-  guard release, config/proof pre-GET denial, runtime permission ABA, and unknown
+  guard release, pre-GET policy/source-scope/public-base/currency denial, GET-verified changed-payment sticky review (2007), runtime permission ABA, and unknown
   send 503 with durable chat barrier after revocation/new request/restart. SQL
   runtime and exact-HEAD PR CI remain pending; no consumer-readiness claim. Apply
   CLI/default-off startup wiring and 11b.7.2 remain future work; Stage 11 is incomplete.
@@ -191,7 +191,7 @@ and post-merge CI `40015300957`, including the full PostgreSQL runtime workflow.
 `b8efc247fe09b78e078b0c115c52317d47311939` passed required CI `40019995948`
 and post-merge CI `40020785993`, all green. 11b.6.1/11b.6.2 merge, runtime
 and CI evidence is recorded above. 11b.7.1 code/tests are ready, independently reviewed with final findings zero,
-and PR #33 is not open. Local checks passed and the PG workflow compiles; SQL
+and PR #33 is open; exact-HEAD required CI is pending. Local checks passed and the PG workflow compiles; SQL
 runtime/exact-HEAD CI remain pending. Remaining 11b includes 11b.7.2, apply CLI
 and default-off startup wiring. Stage 11 is incomplete.
 No live verification/admission or deployment was done.

@@ -109,7 +109,7 @@ publish, or deployment was used.
 
 ## Next agreed slice: 11b.7.1
 
-11b.7.1 implementation and tests are ready in 15 files; PR #33 is not open.
+11b.7.1 implementation and tests are ready in 15 files; PR #33 is open and exact-HEAD required CI is pending.
 The slice protects only the ORIGINAL ACTIVE imported baseline: current invoice
 must equal immutable origin current invoice and paid anchor, with current normal
 proof, strictly future UTC date, static binding/inbounds, legacy price/notes,
@@ -127,7 +127,7 @@ zero. Full local unit/race/vet/CGO0 build/module/gofmt/diff checks passed;
 PostgreSQL integration compiled only. The three database workflows are code,
 not runtime results: actual GET/verify/admit/observe/menu/outbox/protected-service/
 Telegram success with outbox status `sent` and guard `outbox_id IS NULL`; config/
-proof denial before GET; runtime permission ABA denial; and unknown-send 503
+pre-GET policy/source-scope/public-base/currency denial; GET-verified changed-payment sticky review (2007); runtime permission ABA denial; and unknown-send 503
 with durable chat barrier across permission/config revocation, a new request and
 worker restart. The unknown case must not trigger another URL/provider/chat GET. SQL runtime and
 exact-HEAD CI are pending, so there is no consumer-readiness claim.
