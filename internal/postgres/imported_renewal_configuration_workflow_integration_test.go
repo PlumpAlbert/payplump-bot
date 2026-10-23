@@ -130,7 +130,7 @@ func assertUnknownInitialRestorationConfigurationDenied(t *testing.T, store *Sto
 	key := preparedMenu.Request.Key()
 	paymentSQL(t, store, ctx, `SELECT body=$2 AND client_menu AND NOT protected_configuration FROM outbox WHERE bot_id=$1 AND message_key=$3`, botID, clientmenu.ConfigurationUnavailableText, key)
 	paymentSQL(t, store, ctx, `SELECT count(*)=0 FROM configuration_requests WHERE bot_id=$1`, botID)
-	paymentSQL(t, store, ctx, `SELECT count(*)=0 FROM configuration_dispatches WHERE bot_id=$1`, botID)
+	paymentSQL(t, store, ctx, `SELECT count(*)=0 FROM configuration_dispatches d JOIN configuration_requests r ON r.outbox_id=d.outbox_id WHERE r.bot_id=$1`, botID)
 	paymentSQL(t, store, ctx, `SELECT g.operation_id=a.operation_id AND g.step='resume_recurring' AND a.outcome='review' AND a.origin_mode='imported_initial_paused' AND a.ledger_invoice_id IS NULL FROM activation_write_guard g JOIN invoice_renewal_actions a ON a.operation_id=g.operation_id WHERE g.id=1`)
 }
 
@@ -166,6 +166,29 @@ func assertImportedRenewalProtectedConfiguration(t *testing.T, args importedConf
 	var evidencePinned bool
 	if err := store.pool.QueryRow(ctx, `SELECT encode(decode(evidence->>'public_base_hash','hex'),'hex')=$2 FROM verified_import_origins WHERE bot_id=$1 AND current_invoice_id=$3`, botID, fmt.Sprintf("%x", publicHash), originInvoiceID).Scan(&evidencePinned); err != nil || !evidencePinned {
 		t.Fatalf("verified origin does not pin the configured public URL base: pinned=%v err=%v", evidencePinned, err)
+	}
+	for batch := 0; batch < 20; batch++ {
+		messages, err := store.ClaimOutbox(ctx, botID, 50, time.Minute)
+		if err != nil {
+			t.Fatalf("claim preexisting setup outbox messages: %v", err)
+		}
+		for _, message := range messages {
+			if message.ProtectedConfiguration {
+				t.Fatalf("unexpected protected preexisting outbox message %d", message.ID)
+			}
+			if message.Text == queue.ConfigurationIntentBody || strings.Contains(message.Text, cfg.SubscriptionBaseURL) {
+				t.Fatalf("unsafe preexisting setup outbox message %d", message.ID)
+			}
+			if err := store.CompleteOutbox(ctx, message.Lease, 9); err != nil {
+				t.Fatalf("complete preexisting ordinary setup outbox message %d: %v", message.ID, err)
+			}
+		}
+		if len(messages) == 0 {
+			break
+		}
+		if batch == 19 {
+			t.Fatal("preexisting setup outbox drain exceeded 20 batches")
+		}
 	}
 	if err := store.InstallConfigurationPolicy(ctx, botID, cfg.Policy()); err != nil {
 		t.Fatal("install protected imported-renewal configuration policy", err)
