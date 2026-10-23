@@ -1,8 +1,10 @@
 # План реализации payplump-bot
 
 Основа — [spec.md](spec.md). Бизнес-правила определяет ТЗ, этот файл задаёт
-порядок работы и отслеживает её выполнение. Текущее состояние сверено с `main`
-на коммите `ebf8dc0d854ce8b138a77061b8a5578f478d8f5f` (PR #18).
+порядок работы и отслеживает её выполнение. PR #22 с provider foundation 11a.1
+влит коммитом `e81034a88c05dae56cde0d1a45ddf5a0d5791e77`; проверенный HEAD
+`674f838e80c6bc6b89e240fee79b219311b5f1e8` прошёл required CI и post-merge CI.
+Работа 11a.2 продолжается отдельными небольшими срезами.
 
 ## Как вести план
 
@@ -321,10 +323,12 @@ Live-проверки не проводились.
 Live-проверки и реальные импорты не выполняются.
 
 - [x] Добавить строгую проверку синтетического import plan и идемпотентный inert DB staging без создания клиентов, привязок, подтверждений, outbox-сообщений или доступа.
-- [x] 11a.1 provider foundation: bounded read-only Invoice Ninja `FindCustomers` / `ListRecurring`, закреплённый source 5.13.47; bounded strict S-UI `ListIdentities`, версия 1.6.4 с redaction. Синтетические loopback HTTP unit/race тесты прошли; независимое review и required CI текущего PR pending. Это не завершённый этап 11, не reconciliation service/CLI и не доказательство состояния production.
-- [ ] 11a.2 (будущий отдельный PR): verified reconciliation service и operator CLI; private canonical-source evidence и repeatability. Без БД-записей и без admission.
-- [ ] 11b (будущий отдельный PR): explicit managed admission только после свежего GET; отдельные imported origin, binding, proof anchor и revision. Не подделывать registration/activation journals.
-- [ ] Сохранить actor/pilot ограничения; history suppression и накопившиеся неоплаченные долги исключить из автоматизации и оставить ручному разбору.
+- [x] 11a.1 provider foundation: bounded read-only Invoice Ninja `FindCustomers` / `ListRecurring`, закреплённый source 5.13.47; bounded strict S-UI `ListIdentities`, версия 1.6.4 с redaction. PR #22 merged коммитом `e81034a88c05dae56cde0d1a45ddf5a0d5791e77`; exact HEAD `674f838e80c6bc6b89e240fee79b219311b5f1e8` прошёл required CI run `39980684412` и post-merge CI run `39981437193`, оба all-green. Исправлены capability separation `sui.IdentityReader(ListIdentities)` / `RecordReader(GetRecord only)` и совместимость `metadata.pagination.links`. Это не завершённый этап 11 и не доказательство состояния production.
+- [ ] 11a.2 core (PR #23 ещё не открыт): active/paid-only профиль, private canonical-source evidence и repeatability; сервис и GET-adapter loopback bridge реализованы. Оба независимых read-only review завершены. Финансовый review нашёл и основной worker исправил три дефекта legacy profile: требование `TypeID=1`, `DueDateDays=on_receipt` и проверку фактического будущего `NextSendDateTime`; добавлены четыре реальные GET negative workflow cases, включая `datetime == now`. Privacy/source/evidence review дефектов не нашёл. Package unit/race, полный unit, vet и build прошли после исправлений. PR, required CI на точном HEAD и merge pending. Без БД-записей, admission и CLI.
+- [ ] 11a.2 history: paused/historical paid-anchor proof явно не поддержан текущим core и остаётся manual; отдельный будущий срез.
+- [ ] 11a.2 operator CLI: private `0600` operator command — отдельная будущая задача после merge core; не входит в PR #23.
+- [ ] 11b: explicit managed admission только после свежего GET; отдельные imported origin, binding, proof anchor и revision. Не подделывать registration/activation journals.
+- [ ] Сохранить actor/pilot ограничения. При будущем import admission исторические счета не должны порождать устаревшие уведомления или операции: такую history suppression требуется реализовать. Накопившиеся неоплаченные долги оставить ручному разбору, без прощения или автоматизации.
 - [ ] Перед любым будущим admission выделять дубли, отсутствующие пары и противоречия для ручного разбора; реальные данные и live API требуют отдельного owner gate.
 
 ## 12. Резервное копирование и восстановление
