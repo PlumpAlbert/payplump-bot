@@ -446,3 +446,30 @@ func TestAPIErrorsAreSanitized(t *testing.T) {
 		t.Fatalf("unsafe decoding error: %v", err)
 	}
 }
+
+func TestValidateClientConfigurationMatchesConstructor(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, token string
+		timeout           time.Duration
+		valid             bool
+	}{
+		{"valid root", "https://synthetic.invalid", syntheticToken, time.Second, true},
+		{"valid installed path", "https://synthetic.invalid/installed%20panel", syntheticToken, time.Second, true},
+		{"valid embedded token space", "https://synthetic.invalid", "synthetic token", time.Second, true},
+		{"invalid token", "https://synthetic.invalid", "bad\ntoken", time.Second, false},
+		{"invalid service path", "https://synthetic.invalid/api/v1", syntheticToken, time.Second, false},
+		{"invalid query", "https://synthetic.invalid/panel?secret=x", syntheticToken, time.Second, false},
+		{"invalid timeout", "https://synthetic.invalid", syntheticToken, 31 * time.Second, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			validationErr := invoiceninja.ValidateClientConfiguration(tc.base, tc.token, tc.timeout)
+			client, constructorErr := invoiceninja.New(tc.base, tc.token, tc.timeout)
+			if valid := validationErr == nil; valid != tc.valid {
+				t.Fatalf("validator valid=%v want=%v err=%v", valid, tc.valid, validationErr)
+			}
+			if valid := constructorErr == nil && client != nil; valid != tc.valid {
+				t.Fatalf("constructor valid=%v want=%v err=%v", valid, tc.valid, constructorErr)
+			}
+		})
+	}
+}

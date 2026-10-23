@@ -2,6 +2,7 @@ package sui
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -22,11 +23,28 @@ func (b *Binding) UnmarshalJSON(raw []byte) error {
 	if !ok || len(fields) != 3 || fields["ID"] == nil || fields["Name"] == nil || fields["CredentialsHash"] == nil {
 		return ErrManagedInvalid
 	}
-	type plain Binding
-	var decoded plain
-	if json.Unmarshal(raw, &decoded) != nil || decoded.ID <= 0 || !validBindingName(decoded.Name) || decoded.CredentialsHash == ([32]byte{}) {
+	hashValues, ok := fields["CredentialsHash"].([]any)
+	if !ok || len(hashValues) != 32 {
 		return ErrManagedInvalid
 	}
+	var hash [32]byte
+	for i, value := range hashValues {
+		number, ok := value.(json.Number)
+		if !ok {
+			return ErrManagedInvalid
+		}
+		byteValue, err := strconv.ParseUint(number.String(), 10, 8)
+		if err != nil {
+			return ErrManagedInvalid
+		}
+		hash[i] = byte(byteValue)
+	}
+	type plain Binding
+	var decoded plain
+	if json.Unmarshal(raw, &decoded) != nil || decoded.ID <= 0 || !validBindingName(decoded.Name) || hash == ([32]byte{}) {
+		return ErrManagedInvalid
+	}
+	decoded.CredentialsHash = hash
 	*b = Binding(decoded)
 	return nil
 }

@@ -193,7 +193,7 @@ func (s *Store) ApplyBroadcastUpdate(ctx context.Context, botID int64, username 
 			admins[id] = struct{}{}
 		}
 		if actualIdentity, actualCmd, recognized := broadcast.ParseCommand(u, username, admins); recognized && actualIdentity.TelegramID == identity.TelegramID {
-			text, e = s.applyBroadcastAction(ctx, tx, botID, actualIdentity, actualCmd, p)
+			text, e = s.applyBroadcastAction(ctx, tx, botID, actualIdentity, actualCmd, current, p)
 			if e != nil {
 				return true, errors.New("broadcast update unavailable")
 			}
@@ -248,14 +248,46 @@ func (s *Store) ProcessBroadcastBatch(ctx context.Context, botID int64, supplied
 		return broadcast.Progress{}, ErrStalePolicy
 	}
 	var progress broadcast.Progress
-	tag, e := tx.Exec(ctx, `UPDATE broadcast_deliveries d SET status='skipped' FROM broadcasts b WHERE d.job_id=b.id AND b.bot_id=$1 AND b.state='pending' AND d.status='pending' AND (b.policy_revision<>$2 OR b.policy_hash<>$3 OR NOT (b.creator_id=ANY($4::bigint[])))`, botID, current.Revision, current.Hash[:], current.AdminIDs)
+	// Revoke stale deliveries a batch at a time. Commit each bounded slice so a
+	// large backlog makes monotonic progress without holding the bot lock for
+	// an unbounded UPDATE. Current-policy fanout is deferred until stale work is
+	// drained, so no old job can slip through between cleanup polls.
+	tag, e := tx.Exec(ctx, `WITH stale AS (
+		SELECT d.job_id,d.client_id FROM broadcast_deliveries d JOIN broadcasts b ON b.id=d.job_id
+		WHERE b.bot_id=$1 AND b.state='pending' AND d.status='pending'
+			AND (b.policy_revision<>$2 OR b.policy_hash<>$3 OR NOT (b.creator_id=ANY($4::bigint[])))
+		ORDER BY b.id,d.client_id LIMIT $5 FOR UPDATE OF d SKIP LOCKED
+	) UPDATE broadcast_deliveries d SET status='skipped' FROM stale
+	  WHERE d.job_id=stale.job_id AND d.client_id=stale.client_id AND d.status='pending'`,
+		botID, current.Revision, current.Hash[:], current.AdminIDs, batch)
 	if e != nil {
 		return progress, errors.New("broadcast processing unavailable")
 	}
-	progress.Skipped += int(tag.RowsAffected())
-	_, e = tx.Exec(ctx, `UPDATE broadcasts b SET state='cancelled' WHERE b.bot_id=$1 AND b.state='pending' AND (b.policy_revision<>$2 OR b.policy_hash<>$3 OR NOT (b.creator_id=ANY($4::bigint[])))`, botID, current.Revision, current.Hash[:], current.AdminIDs)
+	progress.Skipped = int(tag.RowsAffected())
+	if progress.Skipped > 0 {
+		if e = tx.Commit(ctx); e != nil {
+			return broadcast.Progress{}, errors.New("broadcast processing unavailable")
+		}
+		return progress, nil
+	}
+	// A stale job is cancelled only after every pending delivery has been
+	// processed. Bound even the number of jobs changed by a single poll.
+	tag, e = tx.Exec(ctx, `WITH stale_jobs AS (
+		SELECT b.id FROM broadcasts b WHERE b.bot_id=$1 AND b.state='pending'
+			AND (b.policy_revision<>$2 OR b.policy_hash<>$3 OR NOT (b.creator_id=ANY($4::bigint[])))
+			AND NOT EXISTS (SELECT 1 FROM broadcast_deliveries d WHERE d.job_id=b.id AND d.status='pending')
+		ORDER BY b.id LIMIT $5 FOR UPDATE OF b SKIP LOCKED
+	) UPDATE broadcasts b SET state='cancelled' FROM stale_jobs
+	  WHERE b.id=stale_jobs.id AND b.state='pending'`,
+		botID, current.Revision, current.Hash[:], current.AdminIDs, batch)
 	if e != nil {
 		return progress, errors.New("broadcast processing unavailable")
+	}
+	if tag.RowsAffected() > 0 {
+		if e = tx.Commit(ctx); e != nil {
+			return broadcast.Progress{}, errors.New("broadcast processing unavailable")
+		}
+		return progress, nil
 	}
 	rows, e := tx.Query(ctx, `SELECT b.id,d.client_id,d.actor_id,d.chat_id FROM broadcasts b JOIN broadcast_deliveries d ON d.job_id=b.id WHERE b.bot_id=$1 AND b.state='pending' AND b.policy_revision=$2 AND b.policy_hash=$3 AND b.creator_id=ANY($4::bigint[]) AND d.status='pending' ORDER BY b.id,d.client_id FOR UPDATE OF d SKIP LOCKED LIMIT $5`, botID, current.Revision, current.Hash[:], current.AdminIDs, batch)
 	if e != nil {

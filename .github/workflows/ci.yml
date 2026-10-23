@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       full_neon:
-        description: Also run the latency-sensitive configuration workflow on Neon
+        description: Also run the full PostgreSQL integration suite on Neon (manual only)
         type: boolean
         default: false
 
@@ -16,7 +16,158 @@ permissions:
   contents: read
 
 jobs:
+  fast-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: test -z "$(gofmt -l cmd internal)"
+      - run: go mod verify
+      - run: go vet ./...
+      - name: Unit tests with race detector
+        run: go test -race ./...
+      - name: Operator helper tests without external services
+        run: |
+          sh -n scripts/restore-check.sh scripts/validate-release-config.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-operator-helpers.py
+      - name: Validate release Compose without pulling an image
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset PGPASSWORD
+          private_file="$RUNNER_TEMP/payplump-release-synthetic.pgpass"
+          trap 'rm -f "$private_file"' EXIT
+          (umask 077; printf 'synthetic.invalid:5432:synthetic:synthetic:SYNTHETIC_ONLY\n' > "$private_file")
+          digest=$(printf 'a%.0s' {1..64})
+          PGHOST=synthetic.invalid PGPORT=5432 PGUSER=synthetic PGDATABASE=synthetic PGSSLMODE=verify-full PGPASSFILE="$private_file" \
+            scripts/validate-release-config.sh "ghcr.io/example/payplump@sha256:$digest"
+      - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/payplump ./cmd/payplump
+      - run: git diff --exit-code -- go.mod go.sum
+
+  postgres-integration:
+    needs: fast-checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    services:
+      configuration-postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_USER: workflow_test
+          POSTGRES_DB: workflow_test
+          POSTGRES_PASSWORD: synthetic-local-password
+          POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+        ports:
+          - "127.0.0.1:15433:5432"
+        options: >-
+          --health-cmd "pg_isready -U workflow_test -d workflow_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "15433"
+      PGDATABASE: workflow_test
+      PGUSER: workflow_test
+      PGPASSWORD: synthetic-local-password
+      PGSSLMODE: disable
+      PGOPTIONS: ""
+      # Keep runner-provided URLs from overriding the disposable local database.
+      DATABASE_URL: ""
+      TEST_DATABASE_URL: postgres://workflow_test:synthetic-local-password@127.0.0.1:15433/workflow_test?sslmode=disable
+      TELEGRAM_ENABLED: "false"
+      REGISTRATION_ENABLED: "false"
+      PAYMENTS_ENABLED: "false"
+      ACTIVATION_ENABLED: "false"
+      CONFIGURATION_DELIVERY_ENABLED: "false"
+      BROADCAST_ENABLED: "false"
+      INVOICE_LIFECYCLE_ENABLED: "false"
+      INVOICE_OVERDUE_ENFORCEMENT_ENABLED: "false"
+      SMOKE_SCHEMA: ci_smoke_${{ github.run_id }}_${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Full PostgreSQL integration/race suite, including both synthetic workflow E2Es
+        run: go test -v -race -tags=integration -count=1 -timeout=60m ./internal/postgres
+      - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/payplump ./cmd/payplump
+      - name: Create isolated smoke schema in local PostgreSQL
+        id: smoke-schema
+        env:
+          PGOPTIONS: ""
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -v schema="$SMOKE_SCHEMA" <<'SQL'
+          CREATE SCHEMA :"schema";
+          SQL
+      - name: Smoke test against disposable local PostgreSQL
+        env:
+          PGOPTIONS: -c search_path=${{ env.SMOKE_SCHEMA }}
+          PAYPLUMP_BINARY: ./bin/payplump
+        run: |
+          actual=$(psql -X -v ON_ERROR_STOP=1 -Atc 'SELECT current_schema()')
+          if [ "$actual" != "$SMOKE_SCHEMA" ]; then
+            echo "::error::Smoke schema isolation failed; refusing to run migrations in the shared schema"
+            exit 1
+          fi
+          python3 scripts/smoke.py
+      - name: Build and start development containers
+        env:
+          # Compose uses its own local PostgreSQL without TLS, not Neon.
+          PGSSLMODE: disable
+        run: VCS_REF="$GITHUB_SHA" docker compose -p payplump-ci -f compose.dev.yaml up --build --wait --wait-timeout 120
+      - name: Check container and restart
+        env:
+          PGSSLMODE: disable
+        run: |
+          docker compose -p payplump-ci -f compose.dev.yaml exec -T app /payplump healthcheck
+          curl --fail --silent --show-error http://127.0.0.1:8080/readyz
+          docker compose -p payplump-ci -f compose.dev.yaml stop app
+          docker compose -p payplump-ci -f compose.dev.yaml up -d --wait --wait-timeout 60
+          docker compose -p payplump-ci -f compose.dev.yaml exec -T app /payplump healthcheck
+      - name: Container logs
+        if: failure()
+        env:
+          PGSSLMODE: disable
+        run: docker compose -p payplump-ci -f compose.dev.yaml logs
+      - name: Clean up test containers
+        if: always()
+        env:
+          PGSSLMODE: disable
+        run: docker compose -p payplump-ci -f compose.dev.yaml down --volumes
+      - name: Drop isolated smoke schema
+        if: ${{ always() && steps.smoke-schema.outcome == 'success' }}
+        env:
+          PGOPTIONS: ""
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -v schema="$SMOKE_SCHEMA" <<'SQL'
+          DROP SCHEMA :"schema" CASCADE;
+          SQL
+
+  test:
+    needs: [fast-checks, postgres-integration]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all required checks to succeed
+        env:
+          FAST_CHECKS_RESULT: ${{ needs.fast-checks.result }}
+          POSTGRES_INTEGRATION_RESULT: ${{ needs.postgres-integration.result }}
+        run: |
+          if [ "$FAST_CHECKS_RESULT" != "success" ]; then
+            echo "::error::fast-checks did not succeed"
+            exit 1
+          fi
+          if [ "$POSTGRES_INTEGRATION_RESULT" != "success" ]; then
+            echo "::error::postgres-integration did not succeed"
+            exit 1
+          fi
+
   validate-postgres-settings:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_neon }}
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 2
@@ -45,34 +196,21 @@ jobs:
             echo "::error::Use the Neon direct endpoint (without -pooler); integration tests require session-level search_path isolation"
             exit 1
           fi
-  test:
-    needs: validate-postgres-settings
+
+  neon-integration:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_neon }}
+    needs: [fast-checks, validate-postgres-settings]
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 75
-    services:
-      configuration-postgres:
-        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
-        env:
-          POSTGRES_USER: workflow_test
-          POSTGRES_DB: workflow_test
-          POSTGRES_PASSWORD: synthetic-local-password
-          POSTGRES_HOST_AUTH_METHOD: scram-sha-256
-        ports:
-          - "127.0.0.1:15433:5432"
-        options: >-
-          --health-cmd "pg_isready -U workflow_test -d workflow_test"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 30
     env:
       PGHOST: ${{ vars.PGHOST }}
       PGPORT: ${{ vars.PGPORT }}
       PGDATABASE: ${{ vars.PGDATABASE }}
       PGUSER: ${{ vars.PGUSER }}
       PGSSLMODE: ${{ vars.PGSSLMODE }}
+      PGOPTIONS: ""
       PGPASSWORD: ${{ secrets.PGPASSWORD }}
-      # Keep runner-provided URLs from overriding the CI PG* settings.
       DATABASE_URL: ""
       TEST_DATABASE_URL: ""
       TELEGRAM_ENABLED: "false"
@@ -80,100 +218,14 @@ jobs:
       PAYMENTS_ENABLED: "false"
       ACTIVATION_ENABLED: "false"
       CONFIGURATION_DELIVERY_ENABLED: "false"
-      SMOKE_SCHEMA: ci_smoke_${{ github.run_id }}_${{ github.run_attempt }}
+      BROADCAST_ENABLED: "false"
+      INVOICE_LIFECYCLE_ENABLED: "false"
+      INVOICE_OVERDUE_ENFORCEMENT_ENABLED: "false"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
-      - run: test -z "$(gofmt -l cmd internal)"
-      - run: go mod verify
-      - run: go vet ./...
-      - name: Operator helper tests without external services
-        run: |
-          sh -n scripts/restore-check.sh scripts/validate-release-config.sh
-          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-operator-helpers.py
-      - name: Validate release Compose without pulling an image
-        shell: bash
-        run: |
-          set -euo pipefail
-          unset PGPASSWORD
-          private_file="$RUNNER_TEMP/payplump-release-synthetic.pgpass"
-          trap 'rm -f "$private_file"' EXIT
-          (umask 077; printf 'synthetic.invalid:5432:synthetic:synthetic:SYNTHETIC_ONLY\n' > "$private_file")
-          digest=$(printf 'a%.0s' {1..64})
-          PGHOST=synthetic.invalid PGPORT=5432 PGUSER=synthetic PGDATABASE=synthetic PGSSLMODE=verify-full PGPASSFILE="$private_file" \
-            scripts/validate-release-config.sh "ghcr.io/example/payplump@sha256:$digest"
-      - name: Deadline-sensitive workflow E2E against loopback PostgreSQL
-        env:
-          # Only this step uses the disposable service, never the Neon settings.
-          PGHOST: 127.0.0.1
-          PGPORT: "15433"
-          PGUSER: workflow_test
-          PGDATABASE: workflow_test
-          PGPASSWORD: synthetic-local-password
-          PGSSLMODE: disable
-          PGOPTIONS: ""
-          DATABASE_URL: ""
-          TEST_DATABASE_URL: postgres://workflow_test:synthetic-local-password@127.0.0.1:15433/workflow_test?sslmode=disable
-        run: go test -v -race -tags=integration -count=1 -timeout=5m -run '^(TestConfigurationWorkflowWithSyntheticHTTP|TestBroadcastWorkflowWithSyntheticHTTP)$' ./internal/postgres
-      - name: Neon integration and race suite
-        env:
-          FULL_NEON: ${{ github.event_name == 'workflow_dispatch' && inputs.full_neon || false }}
-        run: |
-          if [ "$FULL_NEON" = true ]; then
-            echo 'Running the unfiltered suite on Neon; mandatory loopback E2E already ran above.'
-            go test -v -race -tags=integration -count=1 -timeout=60m ./...
-          else
-            echo 'Configuration and broadcast synthetic HTTP workflows run in the mandatory loopback step above; all other tests run on Neon.'
-            go test -v -race -tags=integration -count=1 -timeout=60m -skip '^(TestConfigurationWorkflowWithSyntheticHTTP|TestBroadcastWorkflowWithSyntheticHTTP)$' ./...
-          fi
-      - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/payplump ./cmd/payplump
-      - name: Create isolated smoke schema
-        id: smoke-schema
-        run: |
-          psql -X -v ON_ERROR_STOP=1 -v schema="$SMOKE_SCHEMA" <<'SQL'
-          CREATE SCHEMA :"schema";
-          SQL
-      - name: Smoke test against Neon
-        env:
-          PGOPTIONS: -c search_path=${{ env.SMOKE_SCHEMA }}
-        run: |
-          actual=$(psql -X -v ON_ERROR_STOP=1 -Atc 'SELECT current_schema()')
-          if [ "$actual" != "$SMOKE_SCHEMA" ]; then
-            echo "::error::Smoke schema isolation failed; refusing to run migrations in the shared schema"
-            exit 1
-          fi
-          python3 scripts/smoke.py
-      - run: git diff --exit-code -- go.mod go.sum
-      - name: Build and start development containers
-        env:
-          # Compose uses its own local PostgreSQL without TLS, not Neon.
-          PGSSLMODE: disable
-        run: VCS_REF="$GITHUB_SHA" docker compose -p payplump-ci -f compose.dev.yaml up --build --wait --wait-timeout 120
-      - name: Check container and restart
-        env:
-          PGSSLMODE: disable
-        run: |
-          docker compose -p payplump-ci -f compose.dev.yaml exec -T app /payplump healthcheck
-          curl --fail --silent --show-error http://127.0.0.1:8080/readyz
-          docker compose -p payplump-ci -f compose.dev.yaml stop app
-          docker compose -p payplump-ci -f compose.dev.yaml up -d --wait --wait-timeout 60
-          docker compose -p payplump-ci -f compose.dev.yaml exec -T app /payplump healthcheck
-      - name: Container logs
-        if: failure()
-        env:
-          PGSSLMODE: disable
-        run: docker compose -p payplump-ci -f compose.dev.yaml logs
-      - name: Clean up test containers
-        if: always()
-        env:
-          PGSSLMODE: disable
-        run: docker compose -p payplump-ci -f compose.dev.yaml down --volumes
-      - name: Drop isolated smoke schema
-        if: ${{ always() && steps.smoke-schema.outcome == 'success' }}
-        run: |
-          psql -X -v ON_ERROR_STOP=1 -v schema="$SMOKE_SCHEMA" <<'SQL'
-          DROP SCHEMA :"schema" CASCADE;
-          SQL
+      - name: Optional PostgreSQL integration/race suite on Neon
+        run: go test -v -race -tags=integration -count=1 -timeout=60m ./internal/postgres

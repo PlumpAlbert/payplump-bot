@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 )
 
@@ -207,6 +208,126 @@ func TestBillingLookupFailsClosed(t *testing.T) {
 		if err != nil || got == nil || len(got) != 0 {
 			t.Fatalf("empty inventory rejected: %+v, %v", got, err)
 		}
+	}
+}
+
+func TestBillingLookupRejectsAmbiguousRawAuthorities(t *testing.T) {
+	base := listBody(`[{"id":"existing","id_number":"42"}]`, 1, 1, 1, 1, 1)
+	for name, body := range map[string]string{
+		"data case-fold existing customer": `{"data":[{"id":"existing","id_number":"42"}],"DATA":[],"meta":{"pagination":{"total":0,"count":0,"per_page":1,"current_page":1,"total_pages":1}}}`,
+		"duplicate DTO id":                 strings.Replace(base, `"id":"existing"`, `"id":"other","ID":"existing"`, 1),
+		"pagination case-fold":             strings.Replace(base, `"total":1`, `"total":0,"TOTAL":1`, 1),
+		"unknown metadata duplicate":       strings.Replace(base, `"pagination":{`, `"unknown":{"x":1,"X":2},"pagination":{`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := billingServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, body) })
+			got, err := billingClientAt(t, s.URL, 1, 1).FindCustomers(context.Background(), 42)
+			if got != nil || !errors.Is(err, invoiceninja.ErrLookupIncomplete) {
+				t.Fatalf("ambiguous billing inventory escaped: %+v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestBillingExactGetRejectsAmbiguousRawAuthorities(t *testing.T) {
+	customer := `{"id":"billing-client","id_number":"9007199254740993","private_notes":"payplump:abcdefghijklmnopqrstuvwx:customer_create","is_deleted":false,"archived_at":0}`
+	for name, body := range map[string]string{
+		"envelope case-fold": `{"data":null,"DATA":` + customer + `}`,
+		"DTO case-fold":      strings.Replace(customer, `"id":"billing-client"`, `"id":"other","ID":"billing-client"`, 1),
+		"unknown metadata":   `{"data":` + customer + `,"meta":{"unknown":{"s":1,"S":2}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := billingServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, body) })
+			got, err := billingClientAt(t, s.URL, 1, 1).GetCustomer(context.Background(), "billing-client")
+			if got.ID != "" || !errors.Is(err, invoiceninja.ErrLookupIncomplete) {
+				t.Fatalf("ambiguous exact billing read escaped: %+v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestBillingWritesRejectAmbiguousReceiptsAndDoNotReplay(t *testing.T) {
+	customer := `{"id":"billing-client","name":"Synthetic customer","id_number":"9007199254740993","private_notes":"payplump:abcdefghijklmnopqrstuvwx:customer_create","is_deleted":false,"archived_at":0}`
+	var invoiceEnvelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(fixture(t, "billing_invoice_draft")), &invoiceEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	var issuedEnvelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(fixture(t, "billing_invoice_issued")), &issuedEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		body string
+		call func(*testing.T, *invoiceninja.BillingClient) error
+	}{
+		{"customer", `{"data":null,"DATA":` + customer + `}`, func(_ *testing.T, c *invoiceninja.BillingClient) error {
+			_, err := c.CreateCustomer(context.Background(), billingDraft())
+			return err
+		}},
+		{"invoice", `{"data":null,"DATA":` + string(invoiceEnvelope.Data) + `}`, func(t *testing.T, c *invoiceninja.BillingClient) error {
+			_, err := c.CreateInvoice(context.Background(), billingInvoiceDraft(t))
+			return err
+		}},
+		{"issue", `{"data":null,"DATA":` + string(issuedEnvelope.Data) + `}`, func(_ *testing.T, c *invoiceninja.BillingClient) error {
+			_, err := c.IssueInvoice(context.Background(), invoiceninja.IssueDraft{Action: "mark_sent", IDs: []string{"billing-invoice"}})
+			return err
+		}},
+		{"unknown metadata", `{"data":` + customer + `,"meta":{"unknown":{"x":1,"X":2}}}`, func(_ *testing.T, c *invoiceninja.BillingClient) error {
+			_, err := c.CreateCustomer(context.Background(), billingDraft())
+			return err
+		}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			var posts atomic.Int32
+			s := billingServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					_, _ = io.WriteString(w, `{"data":[]}`)
+					return
+				}
+				posts.Add(1)
+				_, _ = io.WriteString(w, tt.body)
+			})
+			if err := tt.call(t, billingClientAt(t, s.URL, 1, 1)); err == nil || posts.Load() != 1 {
+				t.Fatalf("ambiguous write receipt accepted or replayed: err=%v posts=%d", err, posts.Load())
+			}
+		})
+	}
+}
+
+func TestBillingWriteVersionPreflightRequiresUniqueRawJSON(t *testing.T) {
+	for _, body := range []string{
+		`{"data":[],"DATA":[]}`,
+		`{"data":[],"meta":{"pagination":{"total":0,"TOTAL":1}}}`,
+		`{"data":[],"unknown":{"k":1,"K":2}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			var posts atomic.Int32
+			s := billingServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					posts.Add(1)
+				}
+				_, _ = io.WriteString(w, body)
+			})
+			if _, err := billingClientAt(t, s.URL, 1, 1).CreateCustomer(context.Background(), billingDraft()); err == nil || posts.Load() != 0 {
+				t.Fatalf("ambiguous version preflight authorized a write: %v posts=%d", err, posts.Load())
+			}
+		})
+	}
+}
+
+func TestBillingLookupConnectionFailureIsRetryable(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	base := s.URL
+	s.Close()
+	got, err := billingClientAt(t, base, 1, 1).FindCustomers(context.Background(), 42)
+	if got != nil || err == nil || errors.Is(err, invoiceninja.ErrLookupIncomplete) {
+		t.Fatalf("connection failure was classified as incomplete inventory: %+v, %v", got, err)
 	}
 }
 
@@ -759,13 +880,14 @@ func TestBillingExportedValidationHelpers(t *testing.T) {
 	}
 }
 
-func TestBillingLookupHTTPFailureRetainsSentinelAndRedaction(t *testing.T) {
+func TestBillingLookupHTTPFailureRemainsRetryableAndRedacted(t *testing.T) {
 	s := billingServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		_, _ = io.WriteString(w, `{"message":"synthetic-private-value `+syntheticToken+`"}`)
 	})
 	got, err := billingClientAt(t, s.URL+"/synthetic-private-path", 1, 1).FindCustomers(context.Background(), 42)
-	if got != nil || !errors.Is(err, invoiceninja.ErrLookupIncomplete) || bytes.Contains([]byte(err.Error()), []byte("synthetic")) {
-		t.Fatalf("unsafe incomplete lookup: %+v, %v", got, err)
+	var remote *integrationhttp.HTTPError
+	if got != nil || errors.Is(err, invoiceninja.ErrLookupIncomplete) || !errors.As(err, &remote) || remote.StatusCode != http.StatusInternalServerError || bytes.Contains([]byte(err.Error()), []byte("synthetic")) {
+		t.Fatalf("HTTP failure was not a redacted retryable lookup error: %+v, %v", got, err)
 	}
 }

@@ -23,7 +23,6 @@ type ProductReader interface {
 
 type PanelAPI interface {
 	GetRecord(context.Context, int64) (sui.ClientRecord, error)
-	FindCreated(context.Context, sui.CreateDraft) (sui.ClientRecord, bool, error)
 	CreateDisabledAuthorized(context.Context, sui.CreateDraft, func(context.Context) error) (sui.ClientRecord, error)
 	EnableAuthorized(context.Context, sui.EnableDraft, func(context.Context) error) (sui.ClientRecord, error)
 }

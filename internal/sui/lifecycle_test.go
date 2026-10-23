@@ -1,6 +1,7 @@
 package sui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -165,4 +166,169 @@ func TestLifecycleNoCallbackNoWrite(t *testing.T) {
 	if _, e := c.DisableAuthorized(ctx, d, func(context.Context) error { return nil }); e == nil || p.countPosts() != 0 {
 		t.Fatal("canceled authorization wrote")
 	}
+}
+
+func lifecycleRecordWithName(t *testing.T, id int64, name string, enabled bool) ClientRecord {
+	t.Helper()
+	r := managedTestRecord(t, id)
+	var config map[string]map[string]any
+	if err := json.Unmarshal(r.wire.Config, &config); err != nil {
+		t.Fatal("invalid synthetic config")
+	}
+	for _, values := range config {
+		if _, ok := values["name"]; ok {
+			values["name"] = name
+		}
+		if _, ok := values["username"]; ok {
+			values["username"] = name
+		}
+	}
+	r.wire.Name = name
+	r.wire.Enable = enabled
+	var err error
+	r.wire.Config, err = json.Marshal(config)
+	if err != nil {
+		t.Fatal("could not encode synthetic config")
+	}
+	parsed, err := ParseClientRecord(r.Raw())
+	if err != nil {
+		t.Fatal("could not build named synthetic record", err)
+	}
+	return parsed
+}
+
+func TestLifecycleDraftsRoundTripBindingNameBoundaries(t *testing.T) {
+	names := []struct {
+		label string
+		value string
+	}{
+		{"minimum", "a"},
+		{"maximum-ascii", strings.Repeat("x", 256)},
+		{"maximum-utf8-bytes", strings.Repeat("é", 128)},
+	}
+	for i, boundary := range names {
+		name := boundary.value
+		t.Run(boundary.label, func(t *testing.T) {
+			id := int64(900 + 3*i)
+			disabled := lifecycleRecordWithName(t, id, name, false)
+			enableBinding := Binding{ID: id, Name: name, CredentialsHash: disabled.CredentialsHash()}
+			enable, err := PrepareEnable(disabled, enableBinding)
+			if err != nil {
+				t.Fatal("valid boundary name refused by enable preparation", err)
+			}
+			raw, err := json.Marshal(enable)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var restoredEnable EnableDraft
+			if err = json.Unmarshal(raw, &restoredEnable); err != nil || restoredEnable.Binding() != enableBinding || !sameStatic(restoredEnable.before, disabled, false) {
+				t.Fatal("enable boundary name failed JSON roundtrip", err)
+			}
+
+			enabled := lifecycleRecordWithName(t, id+1, name, true)
+			disableBinding := Binding{ID: enabled.ID(), Name: name, CredentialsHash: enabled.CredentialsHash()}
+			disable, err := PrepareDisable(enabled, disableBinding)
+			if err != nil {
+				t.Fatal("valid boundary name refused by disable preparation", err)
+			}
+			raw, err = json.Marshal(disable)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var restoredDisable DisableDraft
+			if err = json.Unmarshal(raw, &restoredDisable); err != nil || restoredDisable.Binding() != disableBinding || !sameStatic(restoredDisable.before, enabled, false) {
+				t.Fatal("disable boundary name failed JSON roundtrip", err)
+			}
+
+			closeRecord := lifecycleRecordWithName(t, id+2, name, false)
+			closeBinding := Binding{ID: closeRecord.ID(), Name: name, CredentialsHash: closeRecord.CredentialsHash()}
+			closeDraft, err := PrepareCloseSessions(closeRecord, closeBinding)
+			if err != nil {
+				t.Fatal("valid boundary name refused by close-sessions preparation", err)
+			}
+			raw, err = json.Marshal(closeDraft)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var restoredClose CloseSessionsDraft
+			if err = json.Unmarshal(raw, &restoredClose); err != nil || restoredClose.Binding() != closeBinding || !sameStatic(restoredClose.before, closeRecord, false) {
+				t.Fatal("close-sessions boundary name failed JSON roundtrip", err)
+			}
+		})
+	}
+}
+
+func TestLifecycleDraftPreparationRejectsUnsupportedBindingName(t *testing.T) {
+	name := "legacy client"
+	disabled := lifecycleRecordWithName(t, 950, name, false)
+	enabled := lifecycleRecordWithName(t, 951, name, true)
+	for _, test := range []struct {
+		name string
+		r    ClientRecord
+		prep func(ClientRecord, Binding) error
+	}{
+		{"enable", disabled, func(r ClientRecord, b Binding) error { _, err := PrepareEnable(r, b); return err }},
+		{"disable", enabled, func(r ClientRecord, b Binding) error { _, err := PrepareDisable(r, b); return err }},
+		{"close-sessions", disabled, func(r ClientRecord, b Binding) error { _, err := PrepareCloseSessions(r, b); return err }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			binding := Binding{ID: test.r.ID(), Name: test.r.Name(), CredentialsHash: test.r.CredentialsHash()}
+			if err := test.prep(test.r, binding); !errors.Is(err, ErrManagedConflict) {
+				t.Fatal("unsupported binding name was not rejected before preparing intent", err)
+			}
+		})
+	}
+}
+
+func TestLifecycleDraftDecodersShareStrictEnvelopeChecks(t *testing.T) {
+	r := managedTestRecord(t, 960)
+	enable, err := PrepareEnable(r, Binding{ID: r.ID(), Name: r.Name(), CredentialsHash: r.CredentialsHash()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.wire.Enable = true
+	disable, err := PrepareDisable(r, Binding{ID: r.ID(), Name: r.Name(), CredentialsHash: r.CredentialsHash()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.wire.Enable = false
+	closeDraft, err := PrepareCloseSessions(r, Binding{ID: r.ID(), Name: r.Name(), CredentialsHash: r.CredentialsHash()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		raw  []byte
+		read func([]byte) error
+	}{
+		{"enable", mustMarshalDraft(t, enable), func(raw []byte) error { var d EnableDraft; return json.Unmarshal(raw, &d) }},
+		{"disable", mustMarshalDraft(t, disable), func(raw []byte) error { var d DisableDraft; return json.Unmarshal(raw, &d) }},
+		{"close-sessions", mustMarshalDraft(t, closeDraft), func(raw []byte) error { var d CloseSessionsDraft; return json.Unmarshal(raw, &d) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			badInputs := [][]byte{
+				changeRaw(t, test.raw, func(fields map[string]json.RawMessage) { delete(fields, "binding") }),
+				changeRaw(t, test.raw, func(fields map[string]json.RawMessage) { fields["future"] = json.RawMessage(`0`) }),
+				[]byte(strings.Replace(string(test.raw), `,"binding":`, `,"before":null,"binding":`, 1)),
+			}
+			tooLarge := append([]byte{'{'}, bytes.Repeat([]byte{' '}, maxBindingDraftSize-len(test.raw)+1)...)
+			tooLarge = append(tooLarge, test.raw[1:]...)
+			badInputs = append(badInputs, tooLarge)
+			for i, raw := range badInputs {
+				if err := test.read(raw); err == nil {
+					t.Fatalf("accepted malformed shared envelope case %d", i)
+				}
+			}
+		})
+	}
+}
+
+func mustMarshalDraft(t *testing.T, value any) []byte {
+	t.Helper()
+	b, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

@@ -522,6 +522,33 @@ func TestManagedFindCreatedExactOnly(t *testing.T) {
 	}
 }
 
+func TestValidateManagedClientConfigurationMatchesConstructor(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, token, version string
+		timeout                    time.Duration
+		maxAccounts                int
+		valid                      bool
+	}{
+		{"valid", "https://synthetic.invalid/panel", "synthetic-token", "1.6.4", time.Second, 10, true},
+		{"valid prefixed version", "http://synthetic.netbird.invalid", "synthetic-token", "v1.6.4", time.Second, 1, true},
+		{"invalid version", "https://synthetic.invalid/panel", "synthetic-token", "1.6.5", time.Second, 10, false},
+		{"invalid capacity", "https://synthetic.invalid/panel", "synthetic-token", "1.6.4", time.Second, 1001, false},
+		{"invalid base", "https://synthetic.invalid/panel/apiv2", "synthetic-token", "1.6.4", time.Second, 10, false},
+		{"invalid timeout", "https://synthetic.invalid/panel", "synthetic-token", "1.6.4", 31 * time.Second, 10, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			validationErr := ValidateManagedClientConfiguration(tc.base, tc.token, tc.version, tc.timeout, tc.maxAccounts)
+			client, constructorErr := NewManagedClient(tc.base, tc.token, tc.version, tc.timeout, tc.maxAccounts)
+			if valid := validationErr == nil; valid != tc.valid {
+				t.Fatalf("validator valid=%v want=%v err=%v", valid, tc.valid, validationErr)
+			}
+			if valid := constructorErr == nil && client != nil; valid != tc.valid {
+				t.Fatalf("constructor valid=%v want=%v err=%v", valid, tc.valid, constructorErr)
+			}
+		})
+	}
+}
+
 func TestManagedRefusesVersionAndInvalidConstruction(t *testing.T) {
 	p, c := newManagedPanel(t)
 	d, _ := NewDisabledDraft([]int64{7})

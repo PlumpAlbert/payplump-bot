@@ -138,6 +138,34 @@ type Invitation struct {
 // FindCustomers uses only id_number equality, including archived and deleted
 // records. private_notes is returned but is NOT a supported server-side filter.
 // An ignored filter is an inconsistent inventory, not evidence of absence.
+func billingLookupTemporaryFailure(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var remote *integrationhttp.HTTPError
+	if errors.As(err, &remote) {
+		return remote.StatusCode == http.StatusRequestTimeout || remote.StatusCode == http.StatusTooManyRequests || remote.StatusCode >= 500
+	}
+	// The shared transport deliberately exposes only bounded, redacted errors.
+	// These two exact transport outcomes are retryable; malformed/oversized JSON
+	// and all other response-contract errors remain fail-closed.
+	return err != nil && (err.Error() == "integration API connection failed" || err.Error() == "could not read integration API response")
+}
+
+func billingLookupFailure(err error) error {
+	if billingLookupTemporaryFailure(err) {
+		return err
+	}
+	return errors.Join(ErrLookupIncomplete, err)
+}
+
+func decodeUniqueNinjaJSON(raw []byte, result any) error {
+	if !uniqueNinjaJSON(raw) || json.Unmarshal(raw, result) != nil {
+		return errInvalidResponse
+	}
+	return nil
+}
+
 func (c *BillingClient) FindCustomers(ctx context.Context, telegramID int64) ([]Customer, error) {
 	if telegramID <= 0 {
 		return nil, errBillingDraft
@@ -175,12 +203,9 @@ func billingLookup[T any](ctx context.Context, c *BillingClient, resource string
 				Pagination *wirePagination `json:"pagination"`
 			} `json:"meta"`
 		}
-		headers, err := c.transport.Get(ctx, []string{"api", "v1", resource}, query, &envelope)
+		err := getUniqueNinjaJSON(ctx, c.transport, []string{"api", "v1", resource}, query, SupportedWriteVersion, ErrWriteVersion, &envelope)
 		if err != nil {
-			return nil, errors.Join(ErrLookupIncomplete, err)
-		}
-		if err := verifyAppVersion(headers); err != nil {
-			return nil, errors.Join(ErrLookupIncomplete, err)
+			return nil, billingLookupFailure(err)
 		}
 		if envelope.Data == nil || envelope.Meta == nil || envelope.Meta.Pagination == nil {
 			return nil, ErrLookupIncomplete
@@ -233,15 +258,15 @@ func billingGet[T any](ctx context.Context, c *BillingClient, resource, id strin
 	var envelope struct {
 		Data *T `json:"data"`
 	}
-	headers, err := c.transport.Get(ctx, []string{"api", "v1", resource, id}, nil, &envelope)
+	err := getUniqueNinjaJSON(ctx, c.transport, []string{"api", "v1", resource, id}, nil, SupportedWriteVersion, ErrWriteVersion, &envelope)
 	if err != nil {
-		return zero, err
-	}
-	if err := verifyAppVersion(headers); err != nil {
+		if errors.Is(err, errInvalidResponse) || errors.Is(err, integrationhttp.ErrInvalidResponse) {
+			return zero, errors.Join(ErrLookupIncomplete, err)
+		}
 		return zero, err
 	}
 	if envelope.Data == nil || !validate(*envelope.Data) {
-		return zero, errInvalidResponse
+		return zero, errors.Join(ErrLookupIncomplete, errInvalidResponse)
 	}
 	return *envelope.Data, nil
 }
@@ -259,13 +284,10 @@ func verifyAppVersion(headers http.Header) error {
 // size, timeout and one requested record; it does not enumerate an inventory.
 func (c *BillingClient) verifyVersion(ctx context.Context) error {
 	var body json.RawMessage
-	headers, err := c.transport.Get(ctx, []string{"api", "v1", "clients"}, url.Values{
+	err := getUniqueNinjaJSON(ctx, c.transport, []string{"api", "v1", "clients"}, url.Values{
 		"page": {"1"}, "per_page": {"1"}, "status": {billingStatuses},
-	}, &body)
-	if err != nil {
-		return err
-	}
-	return verifyAppVersion(headers)
+	}, SupportedWriteVersion, ErrWriteVersion, &body)
+	return err
 }
 
 func (c *BillingClient) CreateCustomer(ctx context.Context, draft CustomerDraft) (Customer, error) {
@@ -275,20 +297,25 @@ func (c *BillingClient) CreateCustomer(ctx context.Context, draft CustomerDraft)
 	if err := c.verifyVersion(ctx); err != nil {
 		return Customer{}, err
 	}
-	var envelope struct {
-		Data *Customer `json:"data"`
-	}
-	headers, err := c.writer.Post(ctx, []string{"api", "v1", "clients"}, nil, draft, &envelope)
+	var raw json.RawMessage
+	headers, err := c.writer.Post(ctx, []string{"api", "v1", "clients"}, nil, draft, &raw)
 	if err != nil {
 		return Customer{}, err
 	}
 	if err := verifyAppVersion(headers); err != nil {
 		return Customer{}, err
 	}
-	if envelope.Data == nil || !envelope.Data.Active() || ValidateCustomerForDraft(*envelope.Data, draft) != nil {
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := decodeUniqueNinjaJSON(raw, &envelope); err != nil {
+		return Customer{}, err
+	}
+	var customer Customer
+	if json.Unmarshal(envelope.Data, &customer) != nil || !customer.Active() || ValidateCustomerForDraft(customer, draft) != nil {
 		return Customer{}, errInvalidResponse
 	}
-	return *envelope.Data, nil
+	return customer, nil
 }
 
 // CreateInvoice only creates a draft. The caller must explicitly obtain the
@@ -304,14 +331,18 @@ func (c *BillingClient) CreateInvoice(ctx context.Context, draft InvoiceDraft) (
 	if err := c.verifyVersion(ctx); err != nil {
 		return Invoice{}, err
 	}
-	var envelope struct {
-		Data json.RawMessage `json:"data"`
-	}
-	headers, err := c.writer.Post(ctx, []string{"api", "v1", "invoices"}, nil, draft, &envelope)
+	var raw json.RawMessage
+	headers, err := c.writer.Post(ctx, []string{"api", "v1", "invoices"}, nil, draft, &raw)
 	if err != nil {
 		return Invoice{}, err
 	}
 	if err := verifyAppVersion(headers); err != nil {
+		return Invoice{}, err
+	}
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := decodeUniqueNinjaJSON(raw, &envelope); err != nil {
 		return Invoice{}, err
 	}
 	var invoice Invoice
@@ -335,20 +366,27 @@ func (c *BillingClient) IssueInvoice(ctx context.Context, draft IssueDraft) (Inv
 	if err := c.verifyVersion(ctx); err != nil {
 		return Invoice{}, err
 	}
-	var envelope struct {
-		Data []Invoice `json:"data"`
-	}
-	headers, err := c.writer.Post(ctx, []string{"api", "v1", "invoices", "bulk"}, nil, draft, &envelope)
+	var raw json.RawMessage
+	headers, err := c.writer.Post(ctx, []string{"api", "v1", "invoices", "bulk"}, nil, draft, &raw)
 	if err != nil {
 		return Invoice{}, err
 	}
 	if err := verifyAppVersion(headers); err != nil {
 		return Invoice{}, err
 	}
+	var envelope struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := decodeUniqueNinjaJSON(raw, &envelope); err != nil {
+		return Invoice{}, err
+	}
 	if len(envelope.Data) != 1 {
 		return Invoice{}, errInvalidResponse
 	}
-	invoice := envelope.Data[0]
+	var invoice Invoice
+	if json.Unmarshal(envelope.Data[0], &invoice) != nil {
+		return Invoice{}, errInvalidResponse
+	}
 	if !invoice.completeBillingFields || !unadjustedBillingInvoice(invoice) || invoice.RecurringID != "" || len(invoice.LineItems) != 1 || !validBillingLine(invoice.LineItems[0]) || !validBillingInvoice(invoice) || invoice.ID != draft.IDs[0] || invoice.StatusID != "2" || invoice.IsDeleted || invoice.ArchivedAt != 0 || !unpaidBillingInvoice(invoice) {
 		return Invoice{}, errInvalidResponse
 	}

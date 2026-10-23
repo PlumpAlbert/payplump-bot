@@ -195,19 +195,7 @@ func (c *SettlementClient) ListSettlementPayments(ctx context.Context, customerI
 // Decode the envelope only after checking the authenticated response version.
 // The shared transport is bounded, GET-only and does not follow redirects.
 func (c *SettlementClient) get(ctx context.Context, path []string, query url.Values, result any) error {
-	var raw json.RawMessage
-	headers, err := c.transport.Get(ctx, path, query, &raw)
-	if err != nil {
-		return err
-	}
-	versions := headers.Values("X-APP-VERSION")
-	if len(versions) != 1 || versions[0] != SupportedSettlementVersion {
-		return ErrSettlementVersion
-	}
-	if !uniqueNinjaJSON(raw) || json.Unmarshal(raw, result) != nil {
-		return errInvalidResponse
-	}
-	return nil
+	return getUniqueNinjaJSON(ctx, c.transport, path, query, SupportedSettlementVersion, ErrSettlementVersion, result)
 }
 
 // Strict settlement decoding is independent of the permissive legacy DTOs.

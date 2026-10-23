@@ -61,27 +61,40 @@ func (d EnableDraft) MarshalJSON() ([]byte, error) {
 	}{d.before, d.binding})
 }
 func (d *EnableDraft) UnmarshalJSON(raw []byte) error {
-	v, err := uniqueJSON(raw)
+	before, binding, err := decodeBindingDraft(raw)
 	if err != nil {
 		return err
 	}
-	m, ok := v.(map[string]any)
-	if !ok || len(m) != 2 || m["before"] == nil || m["binding"] == nil {
-		return ErrManagedInvalid
+	prepared, err := PrepareEnable(before, binding)
+	if err != nil {
+		return err
+	}
+	*d = prepared
+	return nil
+}
+
+const maxBindingDraftSize = 4 << 20
+
+func decodeBindingDraft(raw []byte) (ClientRecord, Binding, error) {
+	if len(raw) > maxBindingDraftSize {
+		return ClientRecord{}, Binding{}, ErrManagedInvalid
+	}
+	value, err := uniqueJSON(raw)
+	if err != nil {
+		return ClientRecord{}, Binding{}, ErrManagedInvalid
+	}
+	fields, ok := value.(map[string]any)
+	if !ok || len(fields) != 2 || fields["before"] == nil || fields["binding"] == nil {
+		return ClientRecord{}, Binding{}, ErrManagedInvalid
 	}
 	var data struct {
 		Before  ClientRecord `json:"before"`
 		Binding Binding      `json:"binding"`
 	}
 	if json.Unmarshal(raw, &data) != nil {
-		return ErrManagedInvalid
+		return ClientRecord{}, Binding{}, ErrManagedInvalid
 	}
-	prepared, err := PrepareEnable(data.Before, data.Binding)
-	if err != nil {
-		return err
-	}
-	*d = prepared
-	return nil
+	return data.Before, data.Binding, nil
 }
 
 // NewDisabledDraft mirrors frontend randomConfigs at e4525297b002c1c3be234cc1c9695ef84be741a0,
@@ -166,7 +179,7 @@ func PrepareEnable(record ClientRecord, binding Binding) (EnableDraft, error) {
 	return EnableDraft{before: r, binding: binding}, nil
 }
 func matchesBinding(r ClientRecord, b Binding) bool {
-	return b.ID > 0 && r.ID() == b.ID && r.Name() == b.Name && r.CredentialsHash() == b.CredentialsHash
+	return b.ID > 0 && validBindingName(b.Name) && r.ID() == b.ID && r.Name() == b.Name && r.CredentialsHash() == b.CredentialsHash
 }
 func validateCreate(r ClientRecord) error {
 	w := r.wire

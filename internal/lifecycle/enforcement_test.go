@@ -60,23 +60,27 @@ func TestOverduePolicyRejectsPartialAndUnboundInvoices(t *testing.T) {
 
 func TestOverdueSequenceRequiresConfirmedPrefix(t *testing.T) {
 	steps := map[EnforcementStep]OverdueStep{}
-	if got, ok := nextEnforcementStep(steps); !ok || got != OverduePauseRecurring {
-		t.Fatalf("first step=%q ok=%v", got, ok)
+	if got, pending, complete, valid := NextOverdueStep(steps); !valid || pending || complete || got != OverduePauseRecurring {
+		t.Fatalf("first step=%q pending=%v complete=%v valid=%v", got, pending, complete, valid)
 	}
 	steps[OverduePauseRecurring] = OverdueStep{Confirmed: true}
-	if got, ok := nextEnforcementStep(steps); !ok || got != OverdueDisableSUI {
-		t.Fatalf("second step=%q ok=%v", got, ok)
+	if got, pending, complete, valid := NextOverdueStep(steps); !valid || pending || complete || got != OverdueDisableSUI {
+		t.Fatalf("second step=%q pending=%v complete=%v valid=%v", got, pending, complete, valid)
 	}
 	steps[OverdueDisableSUI] = OverdueStep{Confirmed: true}
-	if got, ok := nextEnforcementStep(steps); !ok || got != OverdueCloseSessions {
-		t.Fatalf("third step=%q ok=%v", got, ok)
+	if got, pending, complete, valid := NextOverdueStep(steps); !valid || pending || complete || got != OverdueCloseSessions {
+		t.Fatalf("third step=%q pending=%v complete=%v valid=%v", got, pending, complete, valid)
 	}
 	steps[OverdueCloseSessions] = OverdueStep{Confirmed: true}
-	if _, ok := nextEnforcementStep(steps); ok {
-		t.Fatal("completed action still had a pending step")
+	if _, pending, complete, valid := NextOverdueStep(steps); !valid || pending || !complete {
+		t.Fatalf("completed sequence pending=%v complete=%v valid=%v", pending, complete, valid)
 	}
 	steps[OverdueCloseSessions] = OverdueStep{Confirmed: false}
-	if step, ok := unconfirmedEnforcementStep(steps); !ok || step != OverdueCloseSessions {
-		t.Fatalf("unconfirmed intent was not detected: %q %v", step, ok)
+	if step, pending, complete, valid := NextOverdueStep(steps); !valid || !pending || complete || step != OverdueCloseSessions {
+		t.Fatalf("unconfirmed intent=%q pending=%v complete=%v valid=%v", step, pending, complete, valid)
+	}
+	gap := map[EnforcementStep]OverdueStep{OverdueDisableSUI: {Confirmed: true}}
+	if _, _, _, valid := NextOverdueStep(gap); valid {
+		t.Fatal("step after missing pause was accepted")
 	}
 }

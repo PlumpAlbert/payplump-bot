@@ -7,7 +7,6 @@ import (
 	"os"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -113,14 +112,3 @@ func cloneAdmins(ids map[int64]struct{}) map[int64]struct{} {
 	return out
 }
 func (c Config) Allows(id int64) bool { _, ok := c.AdminIDs[id]; return c.Enabled && id > 0 && ok }
-func canonicalToken(s string) bool {
-	if s == "" || len(s) > 64 || strings.TrimSpace(s) != s {
-		return false
-	}
-	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_') {
-			return false
-		}
-	}
-	return true
-}

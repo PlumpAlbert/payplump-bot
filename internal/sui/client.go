@@ -56,21 +56,30 @@ type Client struct {
 	http *integrationhttp.Client
 }
 
+// ValidateClientConfiguration checks the same read-client settings as New
+// without constructing an HTTP transport.
+func ValidateClientConfiguration(baseURL, token string, timeout time.Duration) error {
+	base, err := parseBaseURL(baseURL)
+	if err != nil {
+		return err
+	}
+	for _, segment := range strings.Split(base.Path, "/") {
+		if strings.EqualFold(segment, "apiv2") {
+			return errInvalidConfiguration
+		}
+	}
+	if token == "" || strings.TrimSpace(token) != token || strings.IndexFunc(token, unicode.IsControl) >= 0 || timeout <= 0 || timeout > 30*time.Second {
+		return errInvalidConfiguration
+	}
+	return nil
+}
+
 // New takes the installed panel URL, including its custom path but excluding
 // /apiv2 or an endpoint suffix. HTTP is supported for private NetBird networks;
 // HTTPS retains normal certificate verification. Requests never redirect.
 func New(baseURL, token string, timeout time.Duration) (*Client, error) {
-	base, err := parseBaseURL(baseURL)
-	if err != nil {
+	if err := ValidateClientConfiguration(baseURL, token, timeout); err != nil {
 		return nil, err
-	}
-	for _, segment := range strings.Split(base.Path, "/") {
-		if strings.EqualFold(segment, "apiv2") {
-			return nil, errInvalidConfiguration
-		}
-	}
-	if token == "" || strings.TrimSpace(token) != token || strings.IndexFunc(token, unicode.IsControl) >= 0 {
-		return nil, errInvalidConfiguration
 	}
 	httpClient, err := integrationhttp.New(baseURL, http.Header{"Token": {token}}, timeout)
 	if err != nil {

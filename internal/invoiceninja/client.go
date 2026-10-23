@@ -18,14 +18,26 @@ type Client struct {
 	transport *integrationhttp.Client
 }
 
+// ValidateClientConfiguration checks the same read-client settings as New
+// without creating a transport or other provider capability.
+func ValidateClientConfiguration(baseURL, token string, timeout time.Duration) error {
+	if token == "" || strings.TrimSpace(token) != token || strings.IndexFunc(token, unicode.IsControl) >= 0 || !utf8.ValidString(token) {
+		return errors.New("invalid Invoice Ninja token")
+	}
+	if !validServiceBase(baseURL) {
+		return errors.New("invalid Invoice Ninja base URL")
+	}
+	if integrationhttp.ValidateBaseURL(baseURL) != nil || timeout <= 0 || timeout > 30*time.Second {
+		return errors.New("invalid Invoice Ninja client configuration")
+	}
+	return nil
+}
+
 // New expects the service base URL, including any installation subpath but
 // without /api/v1. All requests use the shared bounded GET-only transport.
 func New(baseURL, token string, timeout time.Duration) (*Client, error) {
-	if token == "" || strings.TrimSpace(token) != token || strings.IndexFunc(token, unicode.IsControl) >= 0 || !utf8.ValidString(token) {
-		return nil, errors.New("invalid Invoice Ninja token")
-	}
-	if !validServiceBase(baseURL) {
-		return nil, errors.New("invalid Invoice Ninja base URL")
+	if err := ValidateClientConfiguration(baseURL, token, timeout); err != nil {
+		return nil, err
 	}
 	headers := make(http.Header)
 	headers.Set("X-API-TOKEN", token)
@@ -46,23 +58,31 @@ func (c *Client) ListProducts(ctx context.Context, page, perPage int) (Page[Prod
 }
 
 func (c *Client) GetProduct(ctx context.Context, id string) (Product, error) {
+	product, _, err := c.GetProductWithVersion(ctx, id)
+	return product, err
+}
+
+// GetProductWithVersion is the same permissive read as GetProduct, with the
+// response's validated version metadata available to scoped preflight callers.
+func (c *Client) GetProductWithVersion(ctx context.Context, id string) (Product, string, error) {
 	if !validID(id) {
-		return Product{}, errors.New("invalid Invoice Ninja product identifier")
+		return Product{}, "", errors.New("invalid Invoice Ninja product identifier")
 	}
 	var envelope struct {
 		Data *Product `json:"data"`
 	}
 	headers, err := c.transport.Get(ctx, []string{"api", "v1", "products", id}, nil, &envelope)
 	if err != nil {
-		return Product{}, err
+		return Product{}, "", err
 	}
-	if _, err := appVersion(headers); err != nil {
-		return Product{}, err
+	version, err := appVersion(headers)
+	if err != nil {
+		return Product{}, "", err
 	}
 	if envelope.Data == nil || !validProduct(*envelope.Data) || envelope.Data.ID != id {
-		return Product{}, errInvalidResponse
+		return Product{}, "", errInvalidResponse
 	}
-	return *envelope.Data, nil
+	return *envelope.Data, version, nil
 }
 
 // GetCustomer is read-only. The caller must bind id_number to its own

@@ -142,6 +142,79 @@ func TestMenuAtomicRegistrationDedupAndScope(t *testing.T) {
 	}
 }
 
+func TestMenuSnapshotProjectsAndRevalidatesOwnedManagedSentDate(t *testing.T) {
+	s, ctx := testStore(t)
+	registered, err := s.RegisterPrivateClient(ctx, TelegramIdentity{TelegramID: 7151, ChatID: 7151, DisplayName: "Синтетический клиент"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO telegram_bots (bot_id) VALUES ($1) ON CONFLICT DO NOTHING`, menuTestBot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE clients SET invoice_ninja_id = 'menu-customer' WHERE id = $1`, registered.Client.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE subscriptions SET current_invoice_id = 'menu-managed-invoice', first_invoice_id = 'menu-first-invoice',
+        recurring_id = 'menu-recurring', state = 'active', desired_access = true WHERE client_id = $1`, registered.Client.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO invoice_lifecycle_invoices
+        (invoice_id, client_id, bot_id, customer_id, recurring_id, invoice_number, status, sent_date, amount, balance, paid_to_date, notice_state)
+        VALUES ('menu-managed-invoice', $1, $2, 'menu-customer', 'menu-recurring', 'SYNTHETIC-MANAGED', 'sent', '2040-01-03', 100, 100, 0, 'issued')`, registered.Client.ID, menuTestBot); err != nil {
+		t.Fatal(err)
+	}
+
+	update := menuTestUpdate(30, 7151, "/invoice")
+	prepared := prepareMenuTest(t, s, ctx, update, "Синтетический счёт")
+	if prepared.Snapshot.CanonicalSentDate != "2040-01-03" {
+		t.Fatalf("managed recurring snapshot sent date = %q", prepared.Snapshot.CanonicalSentDate)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE invoice_lifecycle_invoices SET sent_date = '2040-01-04' WHERE invoice_id = 'menu-managed-invoice'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyMenuUpdate(ctx, menuTestBot, menuTestUsername, update, prepared); !errors.Is(err, clientmenu.ErrStaleSnapshot) {
+		t.Fatalf("sent-date change did not invalidate prepared menu reply: %v", err)
+	}
+	fresh := prepareMenuTest(t, s, ctx, update, "Синтетический счёт")
+	if fresh.Snapshot.CanonicalSentDate != "2040-01-04" {
+		t.Fatal("retry did not read current persisted canonical sent date")
+	}
+	applyMenuTest(t, s, ctx, update, fresh)
+
+	// The date is absent unless the persisted observation belongs to this bot,
+	// current invoice, customer, recurring account, and a non-first invoice.
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"different bot", ""},
+		{"different current invoice", `UPDATE subscriptions SET current_invoice_id = 'menu-other-invoice' WHERE client_id = $1`},
+		{"different customer", `UPDATE clients SET invoice_ninja_id = 'menu-other-customer' WHERE id = $1`},
+		{"different recurring", `UPDATE subscriptions SET recurring_id = 'menu-other-recurring' WHERE client_id = $1`},
+		{"first invoice", `UPDATE subscriptions SET first_invoice_id = current_invoice_id WHERE client_id = $1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name != "different bot" {
+				if _, err := s.pool.Exec(ctx, tc.query, registered.Client.ID); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					_, _ = s.pool.Exec(ctx, `UPDATE clients SET invoice_ninja_id = 'menu-customer' WHERE id = $1`, registered.Client.ID)
+					_, _ = s.pool.Exec(ctx, `UPDATE subscriptions SET current_invoice_id = 'menu-managed-invoice', first_invoice_id = 'menu-first-invoice', recurring_id = 'menu-recurring' WHERE client_id = $1`, registered.Client.ID)
+				})
+			}
+			botID := menuTestBot
+			if tc.name == "different bot" {
+				botID++
+			}
+			snapshot, _, err := s.LoadMenuSnapshot(ctx, botID, 31, 7151)
+			if err != nil || snapshot.CanonicalSentDate != "" {
+				t.Fatalf("unmatched invoice lifecycle row supplied sent date %q: %v", snapshot.CanonicalSentDate, err)
+			}
+		})
+	}
+}
+
 func TestMenuSnapshotRevalidationRollbackAndHeldFIFO(t *testing.T) {
 	s, ctx := testStore(t)
 	registered, err := s.RegisterPrivateClient(ctx, TelegramIdentity{TelegramID: 7101, ChatID: 7101, DisplayName: "Исходное имя"})

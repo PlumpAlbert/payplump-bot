@@ -50,12 +50,21 @@ type ManagedClient struct {
 	mu              sync.Mutex
 }
 
+// ValidateManagedClientConfiguration checks managed-writer settings without
+// creating the read-only or write capability.
+func ValidateManagedClientConfiguration(base, token, declaredVersion string, timeout time.Duration, maxAccounts int) error {
+	if (declaredVersion != "1.6.4" && declaredVersion != "v1.6.4") || maxAccounts < 1 || maxAccounts > 1000 {
+		return errInvalidConfiguration
+	}
+	return ValidateClientConfiguration(base, token, timeout)
+}
+
 // NewManagedClient requires an explicit manual declaration of 1.6.4 (or
 // v1.6.4). The GET status claim must exactly match that spelling before EVERY
 // POST. HTTP supports private NetBird networks; HTTPS uses normal verification.
 func NewManagedClient(base, token, declaredVersion string, timeout time.Duration, maxAccounts int) (*ManagedClient, error) {
-	if (declaredVersion != "1.6.4" && declaredVersion != "v1.6.4") || maxAccounts < 1 || maxAccounts > 1000 {
-		return nil, errInvalidConfiguration
+	if err := ValidateManagedClientConfiguration(base, token, declaredVersion, timeout, maxAccounts); err != nil {
+		return nil, err
 	}
 	// Reuse the read-only constructor's URL/token validation, NOT its partial
 	// account DTOs. No mutation methods are added to Client.

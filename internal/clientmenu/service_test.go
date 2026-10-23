@@ -533,6 +533,27 @@ func TestMenuInvoiceStatusPaymentAndOverdueSemantics(t *testing.T) {
 	}
 }
 
+func TestManagedRecurringInvoiceUsesCanonicalSentDateForAccessBoundary(t *testing.T) {
+	f := menuReader()
+	f.invoice.Date, f.invoice.DueDate = "2040-01-03", "2040-02-01"
+	snapshot := menuSnapshot()
+	snapshot.RecurringID = "recurring-synthetic"
+	snapshot.CanonicalSentDate = "2040-01-03"
+	p := prepareMenu(t, newMenuService(t, menuConfig(), f), clientmenu.Invoice, snapshot)
+	assertMenuContains(t, p.Text,
+		"Срок оплаты в Invoice Ninja (не срок доступа): 2040-02-01",
+		"последний день сохранения доступа при отсутствии оплаты: 2040-01-03 включительно",
+		"Со следующего дня доступ могут отключить.")
+	assertNoMenuText(t, p.Text, "Срок оплаты: 2040-02-01 включительно", "последний день сохранения доступа: 2040-02-01")
+
+	// A first/ordinary invoice has no lifecycle-owned sent date and gets no
+	// invented access boundary from its remote due date or invoice date.
+	snapshot.RecurringID, snapshot.CanonicalSentDate = "", ""
+	p = prepareMenu(t, newMenuService(t, menuConfig(), f), clientmenu.Invoice, snapshot)
+	assertMenuContains(t, p.Text, "Срок оплаты в Invoice Ninja (не срок доступа): 2040-02-01")
+	assertNoMenuText(t, p.Text, "последний день сохранения доступа", "2040-01-03")
+}
+
 func TestMenuInvoiceAmountsAreExactDecimalsNotFloats(t *testing.T) {
 	for _, tt := range []struct{ amount, balance, wantAmount, wantBalance string }{
 		{"9007199254740993.010000000000000001", "9007199254740993.010000000000000001", "9007199254740993.010000000000000001", "9007199254740993.010000000000000001"},

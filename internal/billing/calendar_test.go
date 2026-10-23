@@ -29,8 +29,33 @@ func TestNextBillingDate(t *testing.T) {
 	}
 }
 
+func TestSantiagoCalendarDateIsIndependentOfMidnightTransitions(t *testing.T) {
+	santiago, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := time.Local
+	time.Local = santiago
+	defer func() { time.Local = previous }()
+
+	if got, err := NextBillingDate("2026-08-06"); err != nil || got != "2026-09-06" {
+		t.Fatalf("next billing date = %q, %v; want 2026-09-06", got, err)
+	}
+	if got, err := NextBillingDate("2026-09-06"); err != nil || got != "2026-10-06" {
+		t.Fatalf("valid Santiago payment date rejected: %q, %v", got, err)
+	}
+	deadline, err := PaymentDeadline("2026-09-05")
+	if err != nil || deadline.UTC().Format(time.RFC3339) != "2026-09-06T04:00:00Z" {
+		t.Fatalf("Santiago deadline = %s, %v; want first instant after Sep 5", deadline, err)
+	}
+}
+
 func TestLocalOverdueBoundary(t *testing.T) {
 	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	havana, err := time.LoadLocation("America/Havana")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +69,7 @@ func TestLocalOverdueBoundary(t *testing.T) {
 		{"west", time.FixedZone("server", -7*60*60), "2026-10-17", "2026-10-18T07:00:00Z"},
 		{"DST spring", newYork, "2026-03-08", "2026-03-09T04:00:00Z"},
 		{"DST autumn", newYork, "2026-11-01", "2026-11-02T05:00:00Z"},
+		{"midnight fold", havana, "2026-10-31", "2026-11-01T04:00:00Z"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// These tests are sequential because time.Local is process-wide.

@@ -104,19 +104,7 @@ func NewCycleReader(base, token string, timeout time.Duration, pageSize, maxPage
 }
 
 func (c *CycleReader) get(ctx context.Context, path []string, query url.Values, result any) error {
-	var raw json.RawMessage
-	headers, err := c.transport.Get(ctx, path, query, &raw)
-	if err != nil {
-		return err
-	}
-	versions := headers.Values("X-APP-VERSION")
-	if len(versions) != 1 || versions[0] != SupportedSettlementVersion {
-		return ErrSettlementVersion
-	}
-	if !uniqueNinjaJSON(raw) || json.Unmarshal(raw, result) != nil {
-		return errInvalidResponse
-	}
-	return nil
+	return getUniqueNinjaJSON(ctx, c.transport, path, query, SupportedSettlementVersion, ErrSettlementVersion, result)
 }
 
 func (c *CycleReader) GetInvoice(ctx context.Context, id string) (CycleInvoice, error) {

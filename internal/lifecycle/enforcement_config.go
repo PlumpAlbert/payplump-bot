@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 )
@@ -18,6 +17,7 @@ import (
 type EnforcementConfig struct {
 	Enabled, ExclusiveWriter  bool
 	BaseURL, Token            string
+	InvoiceNinjaVersion       string
 	SUIBaseURL, SUIToken      string
 	SUIVersion                string
 	AllowedTelegramIDs        []int64
@@ -49,10 +49,8 @@ func EnforcementConfigFromEnv(stageOneEnabled, telegramEnabled, paymentsEnabled 
 		return EnforcementConfig{}, errors.New("invoice overdue enforcement requires Stage 1, Telegram and payment verification")
 	}
 	cfg.BaseURL, cfg.Token = os.Getenv("INVOICE_NINJA_BASE_URL"), os.Getenv("INVOICE_NINJA_API_TOKEN")
+	cfg.InvoiceNinjaVersion = os.Getenv("INVOICE_NINJA_VERSION")
 	cfg.SUIBaseURL, cfg.SUIToken, cfg.SUIVersion = os.Getenv("SUI_BASE_URL"), os.Getenv("SUI_API_TOKEN"), os.Getenv("SUI_VERSION")
-	if version := strings.TrimPrefix(os.Getenv("INVOICE_NINJA_VERSION"), "v"); version != "" && version != invoiceninja.SupportedRecurringVersion {
-		return EnforcementConfig{}, errors.New("invoice overdue enforcement supports Invoice Ninja 5.13.47 only")
-	}
 	if raw := os.Getenv("INVOICE_OVERDUE_EXCLUSIVE_WRITER"); raw != "" {
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
@@ -108,11 +106,24 @@ func (c EnforcementConfig) Validate(stageOneEnabled, telegramEnabled, paymentsEn
 	if !c.Enabled {
 		return nil
 	}
-	if !stageOneEnabled || !telegramEnabled || !paymentsEnabled || !c.ExclusiveWriter {
-		return errors.New("invoice overdue enforcement requires Stage 1, Telegram, payment verification and exclusive writer acknowledgement")
+	if !stageOneEnabled || !telegramEnabled || !paymentsEnabled {
+		return errors.New("invoice overdue enforcement requires Stage 1, Telegram and payment verification")
 	}
-	if integrationhttp.ValidateBaseURL(c.BaseURL) != nil || c.Token == "" || strings.ContainsAny(c.Token, " \r\n\t") {
+	return c.validateSettings()
+}
+
+func (c EnforcementConfig) validateSettings() error {
+	if !c.Enabled {
+		return nil
+	}
+	if !c.ExclusiveWriter {
+		return errors.New("invoice overdue enforcement requires exclusive writer acknowledgement")
+	}
+	if invoiceninja.ValidateClientConfiguration(c.BaseURL, c.Token, c.HTTPTimeout) != nil || strings.ContainsAny(c.Token, " ") {
 		return errors.New("invalid invoice overdue Invoice Ninja configuration")
+	}
+	if c.InvoiceNinjaVersion != "" && strings.TrimPrefix(c.InvoiceNinjaVersion, "v") != invoiceninja.SupportedRecurringVersion {
+		return errors.New("invoice overdue enforcement supports Invoice Ninja 5.13.47 only")
 	}
 	if !validIDs(c.AllowedTelegramIDs, 1, 20) || !validIDs(c.ExcludedTelegramIDs, 0, 1000) || len(enforcementEffectiveIDs(c.AllowedTelegramIDs, c.ExcludedTelegramIDs)) == 0 {
 		return errors.New("invoice overdue enforcement requires an effective pilot allowlist")
@@ -120,10 +131,7 @@ func (c EnforcementConfig) Validate(stageOneEnabled, telegramEnabled, paymentsEn
 	if c.Workers < 1 || c.Workers > 4 || c.MaxAccounts < 1 || c.MaxAccounts > 1000 || c.PollInterval < 100*time.Millisecond || c.PollInterval > time.Minute || c.HTTPTimeout < time.Second || c.HTTPTimeout > 10*time.Second {
 		return errors.New("invalid invoice overdue worker limits")
 	}
-	if _, err := invoiceninja.NewRecurringClient(c.BaseURL, c.Token, c.HTTPTimeout, 50, 20); err != nil {
-		return errors.New("invalid Invoice Ninja recurring writer configuration")
-	}
-	if _, err := sui.NewManagedClient(c.SUIBaseURL, c.SUIToken, c.SUIVersion, c.HTTPTimeout, c.MaxAccounts); err != nil {
+	if sui.ValidateManagedClientConfiguration(c.SUIBaseURL, c.SUIToken, c.SUIVersion, c.HTTPTimeout, c.MaxAccounts) != nil {
 		return errors.New("invalid S-UI writer configuration")
 	}
 	return nil
