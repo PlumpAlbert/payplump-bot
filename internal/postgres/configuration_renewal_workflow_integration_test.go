@@ -526,21 +526,7 @@ func runRenewalProtectedConfigurationCase(t *testing.T, late bool) {
 	if err = s.ApplyMenuUpdate(ctx, renewalWorkflowBotID, menuTestUsername, u, prepared); err != nil {
 		t.Fatal(err)
 	}
-	messages, err := s.ClaimOutbox(ctx, renewalWorkflowBotID, 50, time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var message queue.Message
-	for _, m := range messages {
-		if m.ProtectedConfiguration {
-			message = m
-		} else {
-			_ = s.CompleteOutbox(ctx, m.Lease, 9)
-		}
-	}
-	if message.ID == 0 {
-		t.Fatal("protected configuration request not claimable")
-	}
+	message := renewalWorkflowClaimExactProtected(t, s, ctx, prepared.Request.Key(), renewalWorkflowBotID, renewalWorkflowActor)
 	if err = s.pool.QueryRow(ctx, `SELECT period_kind,renewal_operation_id,invoice_id,proof_hash FROM configuration_requests WHERE outbox_id=$1`, message.ID).Scan(&mode, &durableRenewal, &requestInvoice, &requestHash); err != nil {
 		t.Fatal(err)
 	}
@@ -576,18 +562,7 @@ func runRenewalProtectedConfigurationCase(t *testing.T, late bool) {
 	if err = s.ApplyMenuUpdate(ctx, renewalWorkflowBotID, menuTestUsername, u, prepared); err != nil {
 		t.Fatal(err)
 	}
-	messages, err = s.ClaimOutbox(ctx, renewalWorkflowBotID, 50, time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	message = queue.Message{}
-	for _, m := range messages {
-		if m.ProtectedConfiguration {
-			message = m
-		} else {
-			_ = s.CompleteOutbox(ctx, m.Lease, 9)
-		}
-	}
+	message = renewalWorkflowClaimExactProtected(t, s, ctx, prepared.Request.Key(), renewalWorkflowBotID, renewalWorkflowActor)
 	transport.unknown = true
 	if _, err = service.Deliver(ctx, message); err == nil {
 		t.Fatal("synthetic uncertain Telegram result was treated as success")
@@ -602,17 +577,7 @@ func runRenewalProtectedConfigurationCase(t *testing.T, late bool) {
 	if err = s.ApplyMenuUpdate(ctx, renewalWorkflowBotID, menuTestUsername, u, prepared); err != nil {
 		t.Fatal(err)
 	}
-	messages, err = s.ClaimOutbox(ctx, renewalWorkflowBotID, 50, time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, m := range messages {
-		if m.ProtectedConfiguration {
-			message = m
-		} else {
-			_ = s.CompleteOutbox(ctx, m.Lease, 9)
-		}
-	}
+	message = renewalWorkflowClaimExactProtected(t, s, ctx, prepared.Request.Key(), renewalWorkflowBotID, renewalWorkflowActor)
 	blocked, err := s.LoadConfiguration(ctx, message)
 	if err != nil {
 		t.Fatal(err)
@@ -628,6 +593,66 @@ func runRenewalProtectedConfigurationCase(t *testing.T, late bool) {
 	}
 	if err = s.CompleteOutbox(ctx, message.Lease, 4242); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func renewalWorkflowClaimExactProtected(t *testing.T, s *Store, parent context.Context, key string, botID, actor int64) queue.Message {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	var id, storedBot, chat int64
+	var protected bool
+	if err := s.pool.QueryRow(ctx, `SELECT id,bot_id,chat_id,protected_configuration FROM outbox WHERE bot_id=$1 AND message_key=$2`, botID, key).Scan(&id, &storedBot, &chat, &protected); err != nil {
+		t.Fatalf("find exact protected outbox target: %v", err)
+	}
+	var priorOrdinary, priorProtected int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FILTER(WHERE NOT protected_configuration),count(*) FILTER(WHERE protected_configuration) FROM outbox WHERE bot_id=$1 AND chat_id=$2 AND id<$3 AND status IN ('pending','running')`, botID, actor, id).Scan(&priorOrdinary, &priorProtected); err != nil {
+		t.Fatalf("count outbox predecessors: %v", err)
+	}
+	if storedBot != botID || chat != actor {
+		t.Fatalf("exact outbox target scope mismatch: bot_match=%v chat_match=%v", storedBot == botID, chat == actor)
+	}
+	if !protected {
+		t.Fatalf("configuration enqueue produced ordinary denial: protected=false prior_ordinary=%d prior_protected=%d", priorOrdinary, priorProtected)
+	}
+	if priorProtected > 0 {
+		t.Fatalf("protected predecessor must not be auto-completed: prior_protected=%d prior_ordinary=%d", priorProtected, priorOrdinary)
+	}
+	poll := time.NewTicker(25 * time.Millisecond)
+	defer poll.Stop()
+	ordinaryCompleted := 0
+	for {
+		messages, err := s.ClaimOutbox(ctx, botID, 50, 5*time.Second)
+		if err != nil {
+			t.Fatalf("claim outbox batch: %v", err)
+		}
+		var target queue.Message
+		for _, m := range messages {
+			if m.ID == id {
+				if m.BotID != botID || m.ChatID != actor || !m.ProtectedConfiguration {
+					t.Fatalf("claimed target scope/protection mismatch: bot_match=%v chat_match=%v protected=%v", m.BotID == botID, m.ChatID == actor, m.ProtectedConfiguration)
+				}
+				target = m
+				continue
+			}
+			if m.ProtectedConfiguration {
+				continue
+			}
+			if m.BotID == botID && m.ChatID == actor && m.ID < id {
+				if err := s.CompleteOutbox(ctx, m.Lease, 9); err != nil {
+					t.Fatalf("complete ordinary synthetic predecessor: %v", err)
+				}
+				ordinaryCompleted++
+			}
+		}
+		if target.ID != 0 {
+			return target
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("exact protected outbox claim timed out: ordinary_completed=%d prior_ordinary=%d prior_protected=%d", ordinaryCompleted, priorOrdinary, priorProtected)
+		case <-poll.C:
+		}
 	}
 }
 
