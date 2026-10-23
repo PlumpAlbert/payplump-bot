@@ -116,6 +116,23 @@ func run(logger *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	renewalConfig, err := lifecycle.RenewalConfigFromEnv(lifecycleConfig.Enabled, telegramConfig.Enabled, paymentConfig.Enabled)
+	if err != nil {
+		return err
+	}
+	var renewalRecurring lifecycle.RenewalRecurringWriter
+	var renewalSUI lifecycle.RenewalSUIWriter
+	if renewalConfig.Enabled {
+		recurring, err := invoiceninja.NewRecurringClient(renewalConfig.BaseURL, renewalConfig.Token, renewalConfig.HTTPTimeout, 50, 20)
+		if err != nil {
+			return errors.New("invalid paid renewal recurring writer configuration")
+		}
+		panel, err := sui.NewManagedClient(renewalConfig.SUIBaseURL, renewalConfig.SUIToken, renewalConfig.SUIVersion, renewalConfig.HTTPTimeout, renewalConfig.MaxAccounts)
+		if err != nil {
+			return errors.New("invalid paid renewal S-UI writer configuration")
+		}
+		renewalRecurring, renewalSUI = recurring, panel
+	}
 	var enforcementRecurring *invoiceninja.RecurringClient
 	var enforcementSUI *sui.ManagedClient
 	if enforcementConfig.Enabled {
@@ -288,6 +305,13 @@ func run(logger *slog.Logger, args []string) error {
 			}
 			if enforcementConfig.Enabled {
 				worker, err := lifecycle.NewEnforcementWorker(store, lifecycleAPI, enforcementRecurring, enforcementSUI, botID, admins, enforcementConfig, logger)
+				if err != nil {
+					return err
+				}
+				workers = append(workers, worker.Run)
+			}
+			if renewalConfig.Enabled {
+				worker, err := lifecycle.NewRenewalWorker(store, lifecycleAPI, paymentAPI, renewalRecurring, renewalSUI, botID, admins, paymentConfig.CurrencyID, renewalConfig, logger)
 				if err != nil {
 					return err
 				}

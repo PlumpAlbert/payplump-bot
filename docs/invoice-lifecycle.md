@@ -63,6 +63,29 @@ Client and admin notices are enqueued only after all three steps have confirmed 
 | `INVOICE_NINJA_BASE_URL` / `INVOICE_NINJA_API_TOKEN` | Existing pinned Invoice Ninja 5.13.47 configuration |
 | `SUI_BASE_URL` / `SUI_API_TOKEN` / `SUI_VERSION` | S-UI writer configuration; version must be `1.6.4` or `v1.6.4` |
 
+## Stage 9a: paid renewal and overdue restoration (default-off)
+
+`INVOICE_RENEWAL_ENABLED=true` is a separate writer gate. It requires Stage 1, Telegram, payment verification, the same 1–20 account pilot allowlist, exclusions, and `INVOICE_RENEWAL_EXCLUSIVE_WRITER=true`. It uses the explicitly configured native payment currency; currency is never inferred. Provider construction performs no request, and this worker is not a second payment verifier: it calls the existing GET-only `payments.Observe` path and requires a fresh, exact allocation proof whose hash matches the persisted per-invoice confirmation.
+
+Only an already-managed, non-first current invoice with completed registration and original first-activation provenance is considered. The fresh invoice read must match its customer, recurring ID, activation private marker, and persisted ledger identity. Full manual-cash native-currency evidence is required; partial, refunded, stale, changed, ambiguous, or unsupported proof is held for review. The next local billing date comes from `billing.NextBillingDate(Payment.date)`, not webhook or worker arrival. An elapsed target is held for manual review; the worker does not catch up or advance another month. A valid past UTC `next_send_datetime` baseline is allowed only when the frozen plan will reschedule the recurring record to the strictly future target. Without a schedule, the existing receipt must still be future. A newly confirmed schedule receipt and the receipt observed before resume must be valid and future. An active account paused by this bot's own confirmed overdue pause may be rescheduled and resumed after payment only when its overdue action is in payment review, its known pause is the complete recorded prefix, no overdue step is pending, and the shared writer guard is free; no second pause or S-UI disable/enable is inferred for that prefix.
+
+The worker freezes a small typed plan before any write. Its only possible actions are pause an active recurring record when its date must change, reschedule that same record, enable the already-bound disabled S-UI account for a proven overdue restoration, and resume the same recurring record after a future receipt is confirmed. Each adapter performs its own final GET preflight and then a fresh payment observation and exact invoice/marker check before the store may reserve the next immutable intent under the shared `activation_write_guard` and epoch. Confirmed results release the guard. Unknown outcomes are never replayed and remain pinned for manual review. Existing recurring identity, product price, and invoice history are preserved; this stage does not create or delete invoices, alter reminders, or mark invoices sent.
+
+A successful database finalization records the paid period and known recurring receipt, changes the local subscription back to active, and queues deduplicated notices. It does not claim that the client connected successfully or that protected configuration was delivered. Protected subsequent-period configuration delivery is a separate later stage and is not enabled by this feature.
+
+| Variable | Requirement |
+| --- | --- |
+| `INVOICE_RENEWAL_ENABLED` | `false` by default; separate Stage 9a opt-in |
+| `INVOICE_RENEWAL_EXCLUSIVE_WRITER` | Must be explicitly `true` as an operational acknowledgement |
+| `INVOICE_LIFECYCLE_ALLOWED_TELEGRAM_IDS` | Shared 1–20 ID pilot allowlist; exclusions win |
+| `INVOICE_RENEWAL_WORKERS` | 1–4; default 1 |
+| `INVOICE_RENEWAL_POLL_INTERVAL` | 100 ms–1 minute; default 1 second |
+| `INVOICE_RENEWAL_HTTP_TIMEOUT` | 1–10 seconds; default 5 seconds |
+| `INVOICE_RENEWAL_MAX_ACCOUNTS` | 1–1000; default 1000 (the explicit allowlist remains capped at 20) |
+| `PAYMENTS_CURRENCY_ID` | Existing explicit native-currency setting required by the payment verifier |
+| `INVOICE_NINJA_BASE_URL` / `INVOICE_NINJA_API_TOKEN` | Existing pinned Invoice Ninja 5.13.47 configuration |
+| `SUI_BASE_URL` / `SUI_API_TOKEN` / `SUI_VERSION` | Existing S-UI writer configuration; version must be `1.6.4` or `v1.6.4` |
+
 ## Verification
 
 Run `scripts/test-safe.sh` for package and race tests. PostgreSQL integration tests require a disposable test database and create a private schema; never point them at production. The worker, webhook, date selection, paid-before-first-sweep handoff, first-invoice suppression, and review paths are covered by synthetic tests. Stage 2 PostgreSQL tests cover seeding, shared-guard reservation/release, and no replay after an unresolved intent. In this review-fix iteration, new or changed PostgreSQL integration tests are compile-checked only and are not run against PostgreSQL. The base PR17 had a successful Neon CI run before these fixes, which does not validate the fixed branch or live compatibility. Run the tests only against a disposable isolated schema before release.

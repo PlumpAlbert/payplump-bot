@@ -65,6 +65,21 @@ func (s *Store) RecoverySnapshot(ctx context.Context, operationID int64) (Recove
 	if has015 {
 		knownKinds = "('register_client','activate_first_subscription','invoice_overdue_enforcement')"
 	}
+	var has016Migration bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version='016_invoice_paid_renewal.sql')`).Scan(&has016Migration); err != nil {
+		return r, errors.New("could not inspect recovery schema features")
+	}
+	var renewalTables int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=ANY($1::text[])`, []string{"invoice_renewal_actions", "invoice_renewal_steps"}).Scan(&renewalTables); err != nil {
+		return r, errors.New("could not inspect recovery schema features")
+	}
+	has016 := has016Migration || renewalTables > 0
+	if has016 && (!has016Migration || renewalTables != 2 || !has015) {
+		return r, errors.New("recovery report requires a complete schema feature 016")
+	}
+	if has016 {
+		knownKinds = "('register_client','activate_first_subscription','invoice_overdue_enforcement','invoice_paid_renewal')"
+	}
 	rows, err := tx.Query(ctx, `SELECT CASE WHEN kind IN `+knownKinds+` THEN kind ELSE 'other' END,
                        CASE WHEN status IN ('pending','running','completed','failed') THEN status ELSE 'other' END,
                        count(*) FROM operations GROUP BY 1,2 ORDER BY 1,2`)
@@ -98,6 +113,15 @@ func (s *Store) RecoverySnapshot(ctx context.Context, operationID int64) (Recove
 				LEFT JOIN activation_flows a ON a.operation_id=o.id
 				LEFT JOIN invoice_overdue_actions v ON v.operation_id=o.id WHERE o.id=$1`
 		}
+		if has016 {
+			operationQuery = `SELECT o.id,CASE WHEN o.kind IN ` + knownKinds + ` THEN o.kind ELSE 'other' END,
+				CASE WHEN o.status IN ('pending','running','completed','failed') THEN o.status ELSE 'other' END,
+				o.attempts,COALESCE(r.review_code,a.review_code,v.review_code,n.review_code,0) FROM operations o
+				LEFT JOIN registration_flows r ON r.operation_id=o.id
+				LEFT JOIN activation_flows a ON a.operation_id=o.id
+				LEFT JOIN invoice_overdue_actions v ON v.operation_id=o.id
+				LEFT JOIN invoice_renewal_actions n ON n.operation_id=o.id WHERE o.id=$1`
+		}
 		err = tx.QueryRow(ctx, operationQuery, operationID).Scan(&op.LocalID, &op.Kind, &op.Status, &op.Attempt, &op.ReviewCode)
 		if err != nil {
 			return r, errors.New("requested local operation was not found")
@@ -108,6 +132,9 @@ func (s *Store) RecoverySnapshot(ctx context.Context, operationID int64) (Recove
 	guardSteps := "'sui_create','recurring_create','sui_enable','recurring_start','customer_create','invoice_create','invoice_issue','renewal_create','renewal_start','cancel','pause','resume','notify'"
 	if has015 {
 		guardSteps += ",'pause_recurring','disable_sui','close_sessions'"
+	}
+	if has016 {
+		guardSteps += ",'schedule_recurring','enable_sui','resume_recurring'"
 	}
 	err = tx.QueryRow(ctx, `SELECT epoch,operation_id,
 		CASE WHEN step IS NULL THEN NULL WHEN step IN (`+guardSteps+`) THEN step ELSE 'other' END
@@ -158,6 +185,17 @@ func (s *Store) RecoverySnapshot(ctx context.Context, operationID int64) (Recove
 			SELECT s.operation_id FROM activation_steps s JOIN operations o ON o.id=s.operation_id WHERE s.external_id IS NOT NULL AND o.status <> 'completed'
 			UNION ALL
 			SELECT s.operation_id FROM invoice_overdue_steps s JOIN operations o ON o.id=s.operation_id WHERE s.external_id IS NOT NULL AND o.status <> 'completed'
+		) known_receipts`
+	}
+	if has016 {
+		receiptsQuery = `SELECT count(*) FROM (
+			SELECT s.operation_id FROM operation_steps s JOIN operations o ON o.id=s.operation_id WHERE s.external_id IS NOT NULL AND o.status <> 'completed'
+			UNION ALL
+			SELECT s.operation_id FROM activation_steps s JOIN operations o ON o.id=s.operation_id WHERE s.external_id IS NOT NULL AND o.status <> 'completed'
+			UNION ALL
+			SELECT s.operation_id FROM invoice_overdue_steps s JOIN operations o ON o.id=s.operation_id WHERE s.external_id IS NOT NULL AND o.status <> 'completed'
+			UNION ALL
+			SELECT s.operation_id FROM invoice_renewal_steps s JOIN operations o ON o.id=s.operation_id WHERE s.external_id IS NOT NULL AND o.status <> 'completed'
 		) known_receipts`
 	}
 	if err = tx.QueryRow(ctx, receiptsQuery).Scan(&r.UnresolvedKnownReceipts); err != nil {

@@ -300,6 +300,9 @@ func ValidateRecurringForDraft(record RecurringRecord, draft RecurringDraft) err
 
 // Carbon serializes timestamps as ISO8601 with a zone; older stored timestamps
 // can be UTC SQL datetimes. A date alone or a zone-less ISO timestamp is unsafe.
+// ParseRecurringUTC parses the timestamp forms returned by the supported recurring API.
+func ParseRecurringUTC(value string) (time.Time, error) { return recurringUTC(value) }
+
 func recurringUTC(value string) (time.Time, error) {
 	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil && parsed.Year() > 0 {
 		return parsed.UTC(), nil
