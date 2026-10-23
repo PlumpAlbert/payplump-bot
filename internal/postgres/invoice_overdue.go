@@ -168,6 +168,7 @@ func readOverdueSnapshot(ctx context.Context, reader overdueSnapshotReader, clai
 	if actionOutcome != "pending" || actionReview != 0 || len(credentialHash) != 32 {
 		return lifecycle.EnforcementSnapshot{}, queue.ErrConflict
 	}
+	snapshot.InvoiceID = snapshot.Invoice.ID
 	snapshot.PaymentReview = paymentCheckReview || paymentConfirmationReview
 	snapshot.SUIBinding.ID = suiID
 	copy(snapshot.SUIBinding.CredentialsHash[:], credentialHash)

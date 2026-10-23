@@ -68,7 +68,7 @@ func TestInvoiceOverdueSeedsOnlyCurrentAllowlistedSentInvoice(t *testing.T) {
 func TestInvoiceOverdueWriteIntentUsesSharedGuardAndKnownReceiptReleasesIt(t *testing.T) {
 	s, ctx := invoiceLifecycleTestStore(t)
 	claim, snapshot, _, botID := seedOverdueOperation(t, s, ctx, []int64{101})
-	if !snapshot.ManagedProvenance || snapshot.Invoice.Status != "sent" || snapshot.Invoice.PaidToDate != "0" || snapshot.WriterBusy {
+	if !snapshot.ManagedProvenance || snapshot.InvoiceID != "invoice-current" || snapshot.CurrentInvoiceID != snapshot.InvoiceID || snapshot.Invoice.Status != "sent" || snapshot.Invoice.PaidToDate != "0" || snapshot.WriterBusy {
 		t.Fatalf("unexpected overdue snapshot: %#v", snapshot)
 	}
 	request := json.RawMessage(`{"before":{"id":"recurring-synthetic"},"template":{"client_id":"customer-synthetic"}}`)
