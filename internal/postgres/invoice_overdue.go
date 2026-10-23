@@ -245,7 +245,11 @@ func (s *Store) AuthorizeOverdueWrite(ctx context.Context, claim queue.Operation
 	if actual.RegistrationToken == "" || actual.ActivationToken == "" || actual.RecurringDraft.ClientID != actual.CustomerID || actual.RecurringDraft.PrivateNotes != activation.Marker(actual.ActivationToken) || invoiceninja.ValidateRecurringDraft(actual.RecurringDraft) != nil || actual.SUIBinding.ID <= 0 || strconv.FormatInt(actual.SUIBinding.ID, 10) != actual.SUIID || actual.SUIBinding.Name == "" {
 		return false, queue.ErrConflict
 	}
-	if next, ok := nextLifecycleOverdueStep(actual.Steps); !ok || next != step {
+	next, pending, complete, valid := lifecycle.NextOverdueStep(actual.Steps)
+	if !valid {
+		return false, queue.ErrConflict
+	}
+	if pending || complete || next != step {
 		return false, lifecycle.ErrOverdueIntentExists
 	}
 	if step == lifecycle.OverduePauseRecurring || step == lifecycle.OverdueDisableSUI {
@@ -316,16 +320,14 @@ func (s *Store) ConfirmOverdueStep(ctx context.Context, claim queue.Operation, s
 		return err
 	}
 	if step == lifecycle.OverduePauseRecurring {
-		if externalID != actual.RecurringID || len(actual.Steps) != 1 {
+		if externalID != actual.RecurringID {
 			return queue.ErrConflict
 		}
 	} else if externalID != actual.SUIID {
 		return queue.ErrConflict
 	}
-	if step == lifecycle.OverdueDisableSUI && !confirmedLifecycleStep(actual.Steps, lifecycle.OverduePauseRecurring) {
-		return queue.ErrConflict
-	}
-	if step == lifecycle.OverdueCloseSessions && !confirmedLifecycleStep(actual.Steps, lifecycle.OverdueDisableSUI) {
+	next, pending, _, valid := lifecycle.NextOverdueStep(actual.Steps)
+	if !valid || !pending || next != step {
 		return queue.ErrConflict
 	}
 	var ownerID int64
@@ -420,13 +422,12 @@ func (s *Store) FinishOverdue(ctx context.Context, claim queue.Operation, botID 
 	if actual.PaymentLocked {
 		return lifecycle.ErrOverduePaymentLease
 	}
-	if !reflect.DeepEqual(actual, expected) || actual.PaymentConfirmed || actual.PaymentReview || actual.LifecycleReview {
+	if !sameOverdueCompletionFacts(actual, expected) || actual.PaymentConfirmed || actual.PaymentReview || actual.LifecycleReview {
 		return queue.ErrConflict
 	}
-	for _, step := range []lifecycle.EnforcementStep{lifecycle.OverduePauseRecurring, lifecycle.OverdueDisableSUI, lifecycle.OverdueCloseSessions} {
-		if !confirmedLifecycleStep(actual.Steps, step) {
-			return queue.ErrConflict
-		}
+	_, pending, complete, valid := lifecycle.NextOverdueStep(actual.Steps)
+	if !valid || pending || !complete {
+		return queue.ErrConflict
 	}
 	if actual.State != "overdue" || actual.DesiredAccess || actual.CurrentInvoiceID != actual.InvoiceID || !actual.ManagedProvenance {
 		return queue.ErrConflict
@@ -586,18 +587,10 @@ func overdueDatePassed(sentDate, today string) bool {
 	return err == nil && sent.Before(current)
 }
 
-func nextLifecycleOverdueStep(steps map[lifecycle.EnforcementStep]lifecycle.OverdueStep) (lifecycle.EnforcementStep, bool) {
-	for _, step := range []lifecycle.EnforcementStep{lifecycle.OverduePauseRecurring, lifecycle.OverdueDisableSUI, lifecycle.OverdueCloseSessions} {
-		if value, exists := steps[step]; !exists || !value.Confirmed {
-			return step, true
-		}
-	}
-	return "", false
-}
-
-func confirmedLifecycleStep(steps map[lifecycle.EnforcementStep]lifecycle.OverdueStep, step lifecycle.EnforcementStep) bool {
-	value, ok := steps[step]
-	return ok && value.Confirmed
+func sameOverdueCompletionFacts(actual, expected lifecycle.EnforcementSnapshot) bool {
+	actual.WriteEpoch, actual.WriterBusy, actual.WriterOperationID, actual.WriterStep = 0, false, 0, ""
+	expected.WriteEpoch, expected.WriterBusy, expected.WriterOperationID, expected.WriterStep = 0, false, 0, ""
+	return reflect.DeepEqual(actual, expected)
 }
 
 func containsID(ids []int64, value int64) bool {

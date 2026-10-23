@@ -53,6 +53,7 @@ type Snapshot struct {
 	DesiredAccess                bool
 	PaymentReview                bool
 	PaymentDate, NextInvoiceDate string
+	CanonicalSentDate            string
 }
 
 // ConfigurationUnavailableText is deliberately fixed: an ordinary outbox

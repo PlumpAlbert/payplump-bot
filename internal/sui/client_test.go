@@ -382,6 +382,33 @@ func TestNewRejectsBadConfiguration(t *testing.T) {
 	}
 }
 
+func TestValidateClientConfigurationMatchesConstructor(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, token string
+		timeout           time.Duration
+		valid             bool
+	}{
+		{"valid installed path", "https://synthetic.invalid/panel", fixtureToken, time.Second, true},
+		{"valid private network", "http://synthetic.netbird.invalid", fixtureToken, time.Second, true},
+		{"valid embedded token space", "https://synthetic.invalid/panel", "synthetic token", time.Second, true},
+		{"invalid encoded control", "https://synthetic.invalid/%0a/panel", fixtureToken, time.Second, false},
+		{"invalid API suffix", "https://synthetic.invalid/panel/apiv2", fixtureToken, time.Second, false},
+		{"invalid token", "https://synthetic.invalid/panel", "bad\ntoken", time.Second, false},
+		{"invalid timeout", "https://synthetic.invalid/panel", fixtureToken, 31 * time.Second, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			validationErr := sui.ValidateClientConfiguration(tc.base, tc.token, tc.timeout)
+			client, constructorErr := sui.New(tc.base, tc.token, tc.timeout)
+			if valid := validationErr == nil; valid != tc.valid {
+				t.Fatalf("validator valid=%v want=%v err=%v", valid, tc.valid, validationErr)
+			}
+			if valid := constructorErr == nil && client != nil; valid != tc.valid {
+				t.Fatalf("constructor valid=%v want=%v err=%v", valid, tc.valid, constructorErr)
+			}
+		})
+	}
+}
+
 func assertInvalidConfiguration(t *testing.T, hasResult bool, err error) {
 	t.Helper()
 	if err == nil || hasResult {

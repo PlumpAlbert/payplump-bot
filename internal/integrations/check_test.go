@@ -16,21 +16,22 @@ import (
 )
 
 type fakeNinja struct {
-	pages  map[int]invoiceninja.Page[invoiceninja.Customer]
-	called []int
-	fail   string
-	ver    string
+	pages          map[int]invoiceninja.Page[invoiceninja.Customer]
+	called         []int
+	fail           string
+	ver            string
+	productVersion string
 }
 
 func (f *fakeNinja) ListCustomers(_ context.Context, page, _ int) (invoiceninja.Page[invoiceninja.Customer], error) {
 	f.called = append(f.called, page)
 	return f.pages[page], nil
 }
-func (f *fakeNinja) GetProduct(context.Context, string) (invoiceninja.Product, error) {
+func (f *fakeNinja) GetProductWithVersion(context.Context, string) (invoiceninja.Product, string, error) {
 	if f.fail == "product" {
-		return invoiceninja.Product{}, errors.New("synthetic product unavailable")
+		return invoiceninja.Product{}, "", errors.New("synthetic product unavailable")
 	}
-	return invoiceninja.Product{ID: "synthetic-product", Price: json.Number("100")}, nil
+	return invoiceninja.Product{ID: "synthetic-product", Price: json.Number("100")}, f.productVersion, nil
 }
 func (f *fakeNinja) ListInvoices(context.Context, int, int) (invoiceninja.Page[invoiceninja.Invoice], error) {
 	return invoiceninja.Page[invoiceninja.Invoice]{Data: []invoiceninja.Invoice{}, AppVersion: f.ver}, nil
@@ -57,7 +58,7 @@ func exampleCheck() (Config, *fakeNinja, *fakeSUI) {
 	cfg.PageSize = 2
 	cfg.InvoiceNinja.ExpectedVersion = "5.13.47"
 	cfg.SUI.DeclaredVersion = "v1.6.4"
-	n := &fakeNinja{ver: "5.13.47", pages: map[int]invoiceninja.Page[invoiceninja.Customer]{
+	n := &fakeNinja{ver: "5.13.47", productVersion: "5.13.47", pages: map[int]invoiceninja.Page[invoiceninja.Customer]{
 		1: {Data: []invoiceninja.Customer{{ID: "synthetic-a", IDNumber: "9007199254740993", Name: "never-print-name"}, {ID: "synthetic-b", IDNumber: "42"}}, Pagination: invoiceninja.Pagination{Total: 3, Count: 2, PerPage: 2, CurrentPage: 1, TotalPages: 2}, AppVersion: "5.13.47"},
 		2: {Data: []invoiceninja.Customer{{ID: "synthetic-archived", IDNumber: "43", ArchivedAt: 1}}, Pagination: invoiceninja.Pagination{Total: 3, Count: 1, PerPage: 2, CurrentPage: 2, TotalPages: 2}, AppVersion: "5.13.47"},
 	}}
@@ -174,7 +175,7 @@ func TestCheckRejectsAmbiguousIdentifiersWithoutLabelMatching(t *testing.T) {
 }
 
 func TestCheckVersionsInboundsProductAndPublicOverride(t *testing.T) {
-	for _, kind := range []string{"version", "missing-version", "inbound", "product", "public-base", "private-version-header"} {
+	for _, kind := range []string{"version", "missing-version", "product-version", "product-missing-version", "inbound", "product", "public-base", "private-version-header"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg, n, s := exampleCheck()
 			switch kind {
@@ -184,6 +185,10 @@ func TestCheckVersionsInboundsProductAndPublicOverride(t *testing.T) {
 				page := n.pages[1]
 				page.AppVersion = ""
 				n.pages[1] = page
+			case "product-version":
+				n.productVersion = "5.13.48"
+			case "product-missing-version":
+				n.productVersion = ""
 			case "inbound":
 				s.inbounds = nil
 			case "product":
@@ -223,6 +228,7 @@ func TestCheckUsingRealAdaptersAndSyntheticFixtures(t *testing.T) {
 	}
 	fixtures["/panel/apiv2/clients"] = []byte(strings.Replace(string(fixtures["/panel/apiv2/clients"]), "synthetic-account-a", "9007199254740993", 1))
 	var requests atomic.Int32
+	productVersion := "5.13.47"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if r.Method != http.MethodGet || r.ContentLength != 0 {
@@ -240,7 +246,13 @@ func TestCheckUsingRealAdaptersAndSyntheticFixtures(t *testing.T) {
 			if r.Header.Get("X-API-TOKEN") != "synthetic-invoice-token" || r.Header.Get("Token") != "" {
 				t.Error("wrong Invoice Ninja authentication")
 			}
-			w.Header().Set("X-APP-VERSION", "5.13.47")
+			version := "5.13.47"
+			if r.URL.Path == "/billing/api/v1/products/synthetic-product-1" {
+				version = productVersion
+			}
+			if version != "" {
+				w.Header().Set("X-APP-VERSION", version)
+			}
 		} else if r.Header.Get("Token") != "synthetic-panel-token" || r.Header.Get("X-API-TOKEN") != "" {
 			t.Error("wrong S-UI authentication")
 		}
@@ -250,6 +262,7 @@ func TestCheckUsingRealAdaptersAndSyntheticFixtures(t *testing.T) {
 	cfg := validConfig()
 	cfg.InvoiceNinja.BaseURL, cfg.SUI.BaseURL = server.URL+"/billing", server.URL+"/panel"
 	cfg.InvoiceNinja.ProductID = "synthetic-product-1"
+	cfg.InvoiceNinja.ExpectedVersion = "5.13.47"
 	cfg.SUI.SubscriptionBaseURL = "https://subscriptions.invalid/synthetic-prefix/"
 	cfg.SUI.InboundIDs = []int64{9007199254740993}
 	report, err := Check(context.Background(), cfg)
@@ -258,5 +271,12 @@ func TestCheckUsingRealAdaptersAndSyntheticFixtures(t *testing.T) {
 	}
 	if requests.Load() != 8 || report.Mapping.ExactMatches != 1 || report.Mapping.SUIOutsideExactMapping != 1 || report.InvoiceNinja.AppVersion != "5.13.47" || report.Status != "ok" {
 		t.Fatalf("unexpected integration preflight summary: requests=%d, report=%+v", requests.Load(), report)
+	}
+	for _, version := range []string{"5.13.48", ""} {
+		productVersion = version
+		report, err = Check(context.Background(), cfg)
+		if err == nil || report.Status != "failed" || report.FailedCheck != "invoice_ninja_version" {
+			t.Fatalf("product endpoint version %q was not checked: %+v, %v", version, report, err)
+		}
 	}
 }

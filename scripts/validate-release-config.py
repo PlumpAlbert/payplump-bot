@@ -6,7 +6,8 @@ import sys
 
 SAFE = "release compose configuration rejected"
 FLAGS = ("TELEGRAM_ENABLED", "REGISTRATION_ENABLED", "PAYMENTS_ENABLED", "ACTIVATION_ENABLED",
-         "CONFIGURATION_DELIVERY_ENABLED", "BROADCAST_ENABLED", "LIFECYCLE_ENABLED")
+         "CONFIGURATION_DELIVERY_ENABLED", "BROADCAST_ENABLED", "INVOICE_LIFECYCLE_ENABLED",
+         "INVOICE_OVERDUE_ENFORCEMENT_ENABLED")
 FORBIDDEN_ENV = re.compile(r"(TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL|PGPASSWORD)", re.I)
 
 
@@ -51,6 +52,11 @@ def validate(path, expected):
         if env.get("PGSSLMODE") != "verify-full" or env.get("PGPASSFILE") != "/run/secrets/pgpass":
             reject()
         if s.get("logging", {}).get("driver") != "json-file" or s["logging"].get("options", {}).get("max-size") != "10m" or s["logging"].get("options", {}).get("max-file") != "3":
+            reject()
+        healthcheck = s.get("healthcheck")
+        if (not isinstance(healthcheck, dict)
+                or healthcheck.get("test") != ["CMD", "/payplump", "healthcheck"]
+                or healthcheck.get("disable", False) is not False):
             reject()
         if s.get("volumes") or cfg.get("volumes"):
             reject()

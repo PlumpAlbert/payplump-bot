@@ -25,27 +25,13 @@ func (d DisableDraft) MarshalJSON() ([]byte, error) {
 	}{d.before, d.binding})
 }
 func (d *DisableDraft) UnmarshalJSON(raw []byte) error {
-	if len(raw) > 4<<20 {
-		return ErrManagedInvalid
+	before, binding, err := decodeBindingDraft(raw)
+	if err != nil {
+		return err
 	}
-	v, e := uniqueJSON(raw)
-	if e != nil {
-		return ErrManagedInvalid
-	}
-	m, ok := v.(map[string]any)
-	if !ok || len(m) != 2 || m["before"] == nil || m["binding"] == nil {
-		return ErrManagedInvalid
-	}
-	var x struct {
-		Before  ClientRecord `json:"before"`
-		Binding Binding      `json:"binding"`
-	}
-	if json.Unmarshal(raw, &x) != nil {
-		return ErrManagedInvalid
-	}
-	prepared, e := PrepareDisable(x.Before, x.Binding)
-	if e != nil {
-		return e
+	prepared, err := PrepareDisable(before, binding)
+	if err != nil {
+		return err
 	}
 	*d = prepared
 	return nil
@@ -82,27 +68,13 @@ func (d CloseSessionsDraft) MarshalJSON() ([]byte, error) {
 	}{d.before, d.binding})
 }
 func (d *CloseSessionsDraft) UnmarshalJSON(raw []byte) error {
-	if len(raw) > 4<<20 {
-		return ErrManagedInvalid
+	before, binding, err := decodeBindingDraft(raw)
+	if err != nil {
+		return err
 	}
-	v, e := uniqueJSON(raw)
-	if e != nil {
-		return ErrManagedInvalid
-	}
-	m, ok := v.(map[string]any)
-	if !ok || len(m) != 2 || m["before"] == nil || m["binding"] == nil {
-		return ErrManagedInvalid
-	}
-	var x struct {
-		Before  ClientRecord `json:"before"`
-		Binding Binding      `json:"binding"`
-	}
-	if json.Unmarshal(raw, &x) != nil {
-		return ErrManagedInvalid
-	}
-	prepared, e := PrepareCloseSessions(x.Before, x.Binding)
-	if e != nil {
-		return e
+	prepared, err := PrepareCloseSessions(before, binding)
+	if err != nil {
+		return err
 	}
 	*d = prepared
 	return nil

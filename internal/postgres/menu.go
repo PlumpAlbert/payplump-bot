@@ -27,7 +27,7 @@ func (s *Store) LoadMenuSnapshot(ctx context.Context, botID, updateID, actorTG i
 	if duplicate {
 		return clientmenu.Snapshot{}, true, nil
 	}
-	snapshot, err := readMenuSnapshot(ctx, s.pool, actorTG)
+	snapshot, err := readMenuSnapshot(ctx, s.pool, botID, actorTG)
 	return snapshot, false, err
 }
 
@@ -74,7 +74,7 @@ func (s *Store) ApplyMenuUpdate(ctx context.Context, botID int64, botUsername st
 	if err := lockMenuAccount(ctx, tx, identity.TelegramID); err != nil {
 		return err
 	}
-	actual, err := readMenuSnapshot(ctx, tx, identity.TelegramID)
+	actual, err := readMenuSnapshot(ctx, tx, botID, identity.TelegramID)
 	if err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ type menuSnapshotReader interface {
 
 // A single projection observes all account bindings coherently. LEFT JOIN is
 // deliberate: a client with a missing subscription is corrupt, not unknown.
-func readMenuSnapshot(ctx context.Context, reader menuSnapshotReader, actorTG int64) (clientmenu.Snapshot, error) {
+func readMenuSnapshot(ctx context.Context, reader menuSnapshotReader, botID, actorTG int64) (clientmenu.Snapshot, error) {
 	var snapshot clientmenu.Snapshot
 	var chatID int64
 	var subscriptionExists bool
@@ -153,13 +153,19 @@ func readMenuSnapshot(ctx context.Context, reader menuSnapshotReader, actorTG in
             COALESCE(s.recurring_id, ''), c.configuration_revision,
             s.client_id IS NOT NULL, COALESCE(s.state, ''), COALESCE(s.desired_access, false),
             COALESCE(s.payment_date::text, ''), COALESCE(s.next_invoice_date::text, ''),
+            COALESCE(li.sent_date::text, ''),
             EXISTS (SELECT 1 FROM payment_confirmations pc WHERE pc.client_id=c.id
                 AND pc.invoice_id=s.current_invoice_id AND pc.review_required)
         FROM clients c LEFT JOIN subscriptions s ON s.client_id = c.id
-        WHERE c.telegram_id = $1`, actorTG).Scan(
+        LEFT JOIN invoice_lifecycle_invoices li ON li.client_id = c.id
+            AND li.invoice_id = s.current_invoice_id AND li.bot_id = $1
+            AND li.customer_id = c.invoice_ninja_id AND li.recurring_id = s.recurring_id
+            AND li.invoice_id <> s.first_invoice_id
+        WHERE c.telegram_id = $2`, botID, actorTG).Scan(
 		&snapshot.ClientID, &chatID, &snapshot.CustomerID, &snapshot.InvoiceID, &snapshot.SUIID,
 		&snapshot.RecurringID, &snapshot.ConfigurationRevision,
-		&subscriptionExists, &snapshot.State, &snapshot.DesiredAccess, &snapshot.PaymentDate, &snapshot.NextInvoiceDate, &snapshot.PaymentReview,
+		&subscriptionExists, &snapshot.State, &snapshot.DesiredAccess, &snapshot.PaymentDate, &snapshot.NextInvoiceDate,
+		&snapshot.CanonicalSentDate, &snapshot.PaymentReview,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return clientmenu.Snapshot{}, nil

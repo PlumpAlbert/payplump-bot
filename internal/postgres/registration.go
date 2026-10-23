@@ -109,6 +109,11 @@ func (s *Store) PrepareRegistrationWrite(ctx context.Context, lease queue.Lease,
 		return false, registrationStageError("begin registration intent", err)
 	}
 	defer rollback(tx)
+	// Permission is acknowledged only after the intent reaches primary WAL
+	// durability, even when the pooled session/DSN requests async commits.
+	if _, err := tx.Exec(ctx, `SET LOCAL synchronous_commit = on`); err != nil {
+		return false, registrationStageError("require durable registration intent", err)
+	}
 	if _, err := lockRegistrationLease(ctx, tx, lease); err != nil {
 		return false, err
 	}

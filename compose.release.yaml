@@ -4,7 +4,7 @@ services:
     user: "65532:65532"
     read_only: true
     cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
+    security_opt: ["no-new-privileges:true"]
     tmpfs: ["/tmp:size=16m,noexec,nosuid,nodev"]
     restart: unless-stopped
     mem_limit: 512m # Example only; unmeasured, choose from target-host measurements.
@@ -20,7 +20,8 @@ services:
       ACTIVATION_ENABLED: "false"
       CONFIGURATION_DELIVERY_ENABLED: "false"
       BROADCAST_ENABLED: "false"
-      LIFECYCLE_ENABLED: "false"
+      INVOICE_LIFECYCLE_ENABLED: "false"
+      INVOICE_OVERDUE_ENFORCEMENT_ENABLED: "false"
       PGHOST: ${PGHOST:?set externally}
       PGPORT: ${PGPORT:-5432}
       PGUSER: ${PGUSER:?set externally}

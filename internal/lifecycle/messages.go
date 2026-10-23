@@ -40,7 +40,7 @@ func makeNotices(botID int64, admins []int64, snapshot Snapshot, invoice Invoice
 	if invoice.Status == "partial" {
 		verb = "Остаток по счёту обновлён"
 	}
-	body := fmt.Sprintf("%s №%s. Остаток к оплате: %s. Дата фактической отправки: %s. Если вы уже оплатили остаток, дождитесь автоматической проверки.", verb, invoice.Number, invoice.Balance, invoice.SentDate)
+	body := fmt.Sprintf("%s №%s. Остаток к оплате: %s. Дата фактической отправки: %s. Последний день сохранения доступа при неоплате: %s включительно; со следующего дня доступ могут отключить. Если вы уже оплатили остаток, дождитесь автоматической проверки.", verb, invoice.Number, invoice.Balance, invoice.SentDate, invoice.SentDate)
 	out := Notices{Client: &queue.Draft{BotID: botID, ChatID: snapshot.ChatID, Key: prefix + ":issued:client", Text: body}}
 	for _, id := range sortedIDs(admins) {
 		out.Admins = append(out.Admins, queue.Draft{BotID: botID, ChatID: id, Key: prefix + ":issued:admin:" + strconv.FormatInt(id, 10), Text: fmt.Sprintf("Recurring-счёт %s: Telegram ID %d, номер %s, остаток %s, sent_date %s.", invoice.Status, snapshot.TelegramID, invoice.Number, invoice.Balance, invoice.SentDate)})

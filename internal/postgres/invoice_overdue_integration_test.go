@@ -140,3 +140,82 @@ func TestInvoiceOverdueUnknownIntentIsNeverRearmed(t *testing.T) {
 		t.Fatalf("unknown writer guard was released: held=%v err=%v", held, err)
 	}
 }
+
+func TestInvoiceOverdueFullPrefixFinalizesDespiteForeignWriterEpoch(t *testing.T) {
+	s, ctx := invoiceLifecycleTestStore(t)
+	claim, snapshot, _, botID := seedOverdueOperation(t, s, ctx, []int64{101})
+	for _, step := range []lifecycle.EnforcementStep{lifecycle.OverduePauseRecurring, lifecycle.OverdueDisableSUI, lifecycle.OverdueCloseSessions} {
+		request := json.RawMessage(`{"step":"` + string(step) + `"}`)
+		ok, err := s.AuthorizeOverdueWrite(ctx, claim, botID, snapshot, step, request, time.Now().In(time.Local).Format(time.DateOnly), []int64{101})
+		if err != nil || !ok {
+			t.Fatalf("authorize %s: ok=%v err=%v", step, ok, err)
+		}
+		externalID := "71"
+		if step == lifecycle.OverduePauseRecurring {
+			externalID = snapshot.RecurringID
+		}
+		if err := s.ConfirmOverdueStep(ctx, claim, step, externalID); err != nil {
+			t.Fatalf("confirm %s: %v", step, err)
+		}
+		snapshot, err = s.LoadOverdueSnapshot(ctx, claim, botID)
+		if err != nil {
+			t.Fatalf("reload after %s: %v", step, err)
+		}
+	}
+	if snapshot.State != "overdue" || snapshot.DesiredAccess || len(snapshot.Steps) != 3 {
+		t.Fatalf("incomplete final state: state=%q access=%v steps=%d", snapshot.State, snapshot.DesiredAccess, len(snapshot.Steps))
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE activation_write_guard SET epoch = epoch + 1 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	drafts := []queue.Draft{
+		{BotID: botID, ChatID: 101, Key: "invoice-overdue:full:client", Text: "synthetic client completion"},
+		{BotID: botID, ChatID: 9001, Key: "invoice-overdue:full:admin", Text: "synthetic admin completion"},
+	}
+	if err := s.FinishOverdue(ctx, claim, botID, snapshot, drafts); err != nil {
+		t.Fatalf("foreign writer epoch blocked completed saga: %v", err)
+	}
+	var outcome string
+	var reviewCode, outboxCount int
+	if err := s.pool.QueryRow(ctx, `SELECT outcome, review_code FROM invoice_overdue_actions WHERE operation_id = $1`, claim.ID).Scan(&outcome, &reviewCode); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE bot_id = $1 AND message_key LIKE 'invoice-overdue:full:%'`, botID).Scan(&outboxCount); err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "completed" || reviewCode != 0 || outboxCount != len(drafts) {
+		t.Fatalf("outcome=%q review=%d outbox=%d", outcome, reviewCode, outboxCount)
+	}
+}
+
+func TestInvoiceOverdueUnknownIntentReviewUsesFreshSnapshotAndKeepsGuard(t *testing.T) {
+	s, ctx := invoiceLifecycleTestStore(t)
+	claim, snapshot, _, botID := seedOverdueOperation(t, s, ctx, []int64{101})
+	request := json.RawMessage(`{"before":{"id":"recurring-synthetic"},"template":{"client_id":"customer-synthetic"}}`)
+	if ok, err := s.AuthorizeOverdueWrite(ctx, claim, botID, snapshot, lifecycle.OverduePauseRecurring, request, time.Now().In(time.Local).Format(time.DateOnly), []int64{101}); err != nil || !ok {
+		t.Fatalf("authorize unknown intent: ok=%v err=%v", ok, err)
+	}
+	fresh, err := s.LoadOverdueSnapshot(ctx, claim, botID)
+	if err != nil || !fresh.WriterBusy || len(fresh.Steps) != 1 {
+		t.Fatalf("fresh intent snapshot: busy=%v steps=%d err=%v", fresh.WriterBusy, len(fresh.Steps), err)
+	}
+	notice := queue.Draft{BotID: botID, ChatID: 9001, Key: "invoice-overdue:fresh:review", Text: "synthetic fresh-snapshot review"}
+	if err := s.HoldOverdue(ctx, claim, botID, fresh, lifecycle.ReviewOverdueUnknownWrite, []queue.Draft{notice}); err != nil {
+		t.Fatalf("hold fresh intent: %v", err)
+	}
+	var outcome string
+	var reviewCode, outboxCount int
+	if err := s.pool.QueryRow(ctx, `SELECT outcome, review_code FROM invoice_overdue_actions WHERE operation_id = $1`, claim.ID).Scan(&outcome, &reviewCode); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE bot_id = $1 AND message_key = $2`, botID, notice.Key).Scan(&outboxCount); err != nil {
+		t.Fatal(err)
+	}
+	var held bool
+	if err := s.pool.QueryRow(ctx, `SELECT operation_id = $1 AND step = 'pause_recurring' FROM activation_write_guard WHERE id = 1`, claim.ID).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "review" || reviewCode != lifecycle.ReviewOverdueUnknownWrite || outboxCount != 1 || !held {
+		t.Fatalf("outcome=%q review=%d outbox=%d guard_held=%v", outcome, reviewCode, outboxCount, held)
+	}
+}

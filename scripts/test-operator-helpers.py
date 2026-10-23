@@ -4,15 +4,20 @@ import json
 import os
 import shlex
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("validator", ROOT / "scripts/validate-release-config.py")
 validator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(validator)
+smoke_spec = importlib.util.spec_from_file_location("smoke", ROOT / "scripts/smoke.py")
+smoke = importlib.util.module_from_spec(smoke_spec)
+smoke_spec.loader.exec_module(smoke)
 IMAGE = "registry.example/payplump@sha256:" + "a" * 64
 
 
@@ -29,7 +34,8 @@ def config():
         "environment": {**{x: "false" for x in validator.FLAGS}, "PGHOST": "db.internal", "PGUSER": "bot",
           "PGDATABASE": "botdb", "PGSSLMODE": "verify-full", "PGPASSFILE": "/run/secrets/pgpass"},
         "logging": {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}},
-        "secrets": ["pgpass"]}}, "secrets": {"pgpass": {"file": "/private/pgpass"}}}
+        "secrets": ["pgpass"], "healthcheck": {"test": ["CMD", "/payplump", "healthcheck"]}}},
+        "secrets": {"pgpass": {"file": "/private/pgpass"}}}
 
 
 class Helpers(unittest.TestCase):
@@ -71,11 +77,126 @@ class Helpers(unittest.TestCase):
             lambda c: c["services"]["payplump"]["logging"]["options"].update(**{"max-file": "0"}),
             lambda c: c["services"]["payplump"].update(volumes=[{"type": "bind", "source": "/tmp", "target": "/x"}]),
             lambda c: c["services"]["payplump"]["environment"].update(PGPASSFILE="/tmp/pgpass"),
+            lambda c: c["services"]["payplump"]["healthcheck"].update(test=["CMD", "/payplump", "migrate"]),
+            lambda c: c["services"]["payplump"]["healthcheck"].update(test=["CMD-SHELL", "echo unsafe"]),
+            lambda c: c["services"]["payplump"]["healthcheck"].update(test=["CMD", "/bin/sh", "-c", "unsafe"]),
+            lambda c: c["services"]["payplump"]["healthcheck"].update(disable=True),
+            lambda c: c["services"]["payplump"]["healthcheck"].update(test=["NONE"]),
+            lambda c: c["services"]["payplump"].pop("healthcheck"),
         ]
         for mutate in mutations:
             c = config(); mutate(c); self.check(c, False)
-        c = config(); c["services"]["payplump"]["environment"].pop("LIFECYCLE_ENABLED"); self.check(c, False)
+        c = config(); c["services"]["payplump"]["environment"]["LIFECYCLE_ENABLED"] = "false"; self.check(c, False)
+        for gate in ("INVOICE_LIFECYCLE_ENABLED", "INVOICE_OVERDUE_ENFORCEMENT_ENABLED"):
+            c = config(); c["services"]["payplump"]["environment"].pop(gate); self.check(c, False)
         c = config(); c["services"]["payplump"]["environment"].pop("TELEGRAM_ENABLED"); c["services"]["payplump"]["environment"]["COMMENT"] = "TELEGRAM_ENABLED: false"; self.check(c, False)
+
+    def test_dev_compose_resolves_lifecycle_settings_without_starting_containers(self):
+        docker = shutil.which("docker")
+        if not docker:
+            self.skipTest("Docker Compose unavailable; no local config renderer")
+        with tempfile.TemporaryDirectory() as d:
+            env = fake_env(
+                PATH=str(Path(docker).parent) + os.pathsep + os.defpath,
+                HOME=d,
+                DOCKER_CONFIG=str(Path(d) / ".docker"),
+                PGHOST="synthetic.invalid",
+                PGPORT="15432",
+                PGUSER="synthetic_user",
+                PGDATABASE="synthetic_db",
+                PGPASSWORD="SYNTHETIC_ONLY",
+                PGSSLMODE="disable",
+                INVOICE_LIFECYCLE_WORKERS="2",
+                INVOICE_OVERDUE_WORKERS="3",
+            )
+            result = subprocess.run(
+                [docker, "compose", "--env-file", "/dev/null", "-f", "compose.dev.yaml", "config", "--format", "json"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, "synthetic Compose config render failed")
+            resolved = json.loads(result.stdout)["services"]["app"]["environment"]
+            expected = {
+                "INVOICE_LIFECYCLE_ENABLED": "false",
+                "INVOICE_LIFECYCLE_WEBHOOK_SECRET": "",
+                "INVOICE_LIFECYCLE_ALLOWED_TELEGRAM_IDS": "",
+                "INVOICE_LIFECYCLE_WORKERS": "2",
+                "INVOICE_LIFECYCLE_POLL_INTERVAL": "1s",
+                "INVOICE_LIFECYCLE_RECHECK_INTERVAL": "5m",
+                "INVOICE_LIFECYCLE_HTTP_TIMEOUT": "5s",
+                "INVOICE_LIFECYCLE_MAX_ACCOUNTS": "1000",
+                "INVOICE_OVERDUE_ENFORCEMENT_ENABLED": "false",
+                "INVOICE_OVERDUE_EXCLUSIVE_WRITER": "false",
+                "INVOICE_OVERDUE_WORKERS": "3",
+                "INVOICE_OVERDUE_MAX_ACCOUNTS": "1000",
+                "INVOICE_OVERDUE_POLL_INTERVAL": "1s",
+                "INVOICE_OVERDUE_HTTP_TIMEOUT": "5s",
+            }
+            for name, value in expected.items():
+                self.assertEqual(resolved.get(name), value, "unexpected resolved setting: " + name)
+
+    def test_smoke_captures_disabled_feature_gates_and_silences_probes(self):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b"ok\n"
+
+        class Process:
+            returncode = 0
+
+            def poll(self):
+                return None
+
+            def send_signal(self, signum):
+                self.signal = signum
+
+            def communicate(self, timeout=None):
+                return "synthetic probe output", None
+
+            def kill(self):
+                pass
+
+        process = Process()
+        inherited = {name: "true" for name in smoke.FEATURE_GATES}
+        inherited["PGPASSWORD"] = "SYNTHETIC_CREDENTIAL"
+        with mock.patch.dict(os.environ, inherited, clear=True):
+            with mock.patch.object(smoke.subprocess, "Popen", return_value=process) as popen:
+                with mock.patch.object(smoke.subprocess, "run", side_effect=[
+                    subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 1),
+                ]) as run:
+                    with mock.patch.object(smoke.urllib.request, "urlopen", return_value=Response()):
+                        smoke.check_cycle()
+        captured = popen.call_args.kwargs["env"]
+        self.assertIs(popen.call_args.kwargs["stdout"], subprocess.DEVNULL)
+        self.assertIs(popen.call_args.kwargs["stderr"], subprocess.DEVNULL)
+        for gate in smoke.FEATURE_GATES:
+            self.assertEqual(captured[gate], "false", gate)
+        self.assertEqual(captured["PGPASSWORD"], "SYNTHETIC_CREDENTIAL")
+        self.assertEqual(len(run.call_args_list), 2)
+        for call in run.call_args_list:
+            self.assertIs(call.kwargs["stdout"], subprocess.DEVNULL)
+            self.assertIs(call.kwargs["stderr"], subprocess.DEVNULL)
+
+    def test_smoke_does_not_report_inherited_credentials_or_probe_output(self):
+        class Process:
+            def poll(self):
+                return 1
+
+            def communicate(self, timeout=None):
+                return "SYNTHETIC_CREDENTIAL synthetic probe output", None
+
+        with mock.patch.dict(os.environ, {"PGPASSWORD": "SYNTHETIC_CREDENTIAL"}, clear=True):
+            with mock.patch.object(smoke.subprocess, "Popen", return_value=Process()):
+                with self.assertRaises(RuntimeError) as raised:
+                    smoke.check_cycle()
+        self.assertNotIn("SYNTHETIC_CREDENTIAL", str(raised.exception))
+        self.assertNotIn("synthetic probe output", str(raised.exception))
 
     def test_release_shell_with_fake_docker(self):
         with tempfile.TemporaryDirectory() as d:

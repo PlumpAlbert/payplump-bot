@@ -29,15 +29,11 @@ func policyContains(p broadcast.Policy, id int64) bool {
 	}
 	return false
 }
-func (s *Store) applyBroadcastAction(ctx context.Context, tx pgx.Tx, bot int64, identity telegram.Identity, cmd broadcast.Command, supplied broadcast.Policy) (string, error) {
-	current, found, err := loadBroadcastPolicy(ctx, tx, bot)
-	if err != nil {
-		return "", err
-	}
-	if !found || !current.Enabled || !current.Equal(supplied) || !policyContains(current, identity.TelegramID) {
+func (s *Store) applyBroadcastAction(ctx context.Context, tx pgx.Tx, bot int64, identity telegram.Identity, cmd broadcast.Command, current, supplied broadcast.Policy) (string, error) {
+	if !current.Enabled || !current.Equal(supplied) || !policyContains(current, identity.TelegramID) {
 		return "Настройки рассылки изменились или доступ отключён. Обратитесь к владельцу бота.", nil
 	}
-	if err = recordBroadcastMembership(ctx, tx, bot, identity.TelegramID); err != nil {
+	if err := recordBroadcastMembership(ctx, tx, bot, identity.TelegramID); err != nil {
 		return "", err
 	}
 	switch cmd.Name {

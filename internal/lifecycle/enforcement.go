@@ -28,10 +28,6 @@ var (
 	ErrOverdueGuardBusy    = errors.New("shared external writer guard is busy")
 	ErrOverdueIntentExists = errors.New("overdue write intent already exists; do not replay")
 	ErrOverduePaymentLease = errors.New("payment verifier lease is active")
-	errOverduePaid         = ErrOverduePaid
-	errOverdueNotUnpaid    = ErrOverdueNotUnpaid
-	errOverdueGuardBusy    = ErrOverdueGuardBusy
-	errOverdueIntentExists = ErrOverdueIntentExists
 )
 
 const (
@@ -56,7 +52,7 @@ func NewEnforcementWorker(store EnforcementStore, invoices EnforcementInvoiceRea
 	if !cfg.Enabled {
 		return nil, errors.New("invoice overdue enforcement is disabled")
 	}
-	if err := cfg.Validate(true, true, true); err != nil {
+	if err := cfg.validateSettings(); err != nil {
 		return nil, err
 	}
 	if store == nil || invoices == nil || recurring == nil || panel == nil || botID <= 0 {
@@ -140,12 +136,14 @@ func (w *EnforcementWorker) handle(service context.Context, claim queue.Operatio
 			if s.WriterOperationID == claim.ID && s.WriterStep != "" {
 				w.hold(claim, s, ReviewOverdueUnknownWrite)
 			} else {
-				w.retry(claim, errOverdueGuardBusy)
+				w.retry(claim, ErrOverdueGuardBusy)
 			}
 			return
 		}
-		if step, ok := unconfirmedEnforcementStep(s.Steps); ok {
-			_ = step
+		if _, pending, _, valid := NextOverdueStep(s.Steps); !valid {
+			w.hold(claim, s, ReviewOverdueSequence)
+			return
+		} else if pending {
 			w.hold(claim, s, ReviewOverdueUnknownWrite)
 			return
 		}
@@ -172,7 +170,7 @@ func (w *EnforcementWorker) handle(service context.Context, claim queue.Operatio
 
 		_, err = w.readUnpaid(ctx, s)
 		if err != nil {
-			if errors.Is(err, errOverduePaid) {
+			if errors.Is(err, ErrOverduePaid) {
 				if hasAnyEnforcementStep(s.Steps) {
 					w.hold(claim, s, ReviewOverduePayment)
 				} else {
@@ -180,7 +178,7 @@ func (w *EnforcementWorker) handle(service context.Context, claim queue.Operatio
 				}
 				return
 			}
-			if errors.Is(err, errOverdueNotUnpaid) {
+			if errors.Is(err, ErrOverdueNotUnpaid) {
 				w.hold(claim, s, ReviewOverduePayment)
 				return
 			}
@@ -193,8 +191,12 @@ func (w *EnforcementWorker) handle(service context.Context, claim queue.Operatio
 			}
 			return
 		}
-		next, ok := nextEnforcementStep(s.Steps)
-		if !ok {
+		next, _, complete, valid := NextOverdueStep(s.Steps)
+		if !valid {
+			w.hold(claim, s, ReviewOverdueSequence)
+			return
+		}
+		if complete {
 			drafts := overdueSuccessDrafts(w.botID, w.admins, s)
 			db, stop := context.WithTimeout(ctx, enforcementDBTimeout)
 			err := w.store.FinishOverdue(db, claim, w.botID, s, drafts)
@@ -246,14 +248,14 @@ func (w *EnforcementWorker) readUnpaid(ctx context.Context, s EnforcementSnapsho
 		return Invoice{}, queue.ErrConflict
 	}
 	if fresh.StatusID == "4" {
-		return Invoice{ID: fresh.ID, Number: fresh.Number, Status: "paid"}, errOverduePaid
+		return Invoice{ID: fresh.ID, Number: fresh.Number, Status: "paid"}, ErrOverduePaid
 	}
 	if fresh.StatusID != "2" {
-		return Invoice{}, errOverdueNotUnpaid
+		return Invoice{}, ErrOverdueNotUnpaid
 	}
 	candidate, code := makeCandidate(fresh, time.Local)
 	if code != 0 || candidate.Status != "sent" || candidate.PaidToDate != "0" || candidate.Balance != candidate.Amount || candidate.ID != s.Invoice.ID || candidate.Number != s.Invoice.Number || candidate.SentDate != s.Invoice.SentDate || candidate.Amount != s.Invoice.Amount || candidate.Balance != s.Invoice.Balance || candidate.PaidToDate != s.Invoice.PaidToDate {
-		return Invoice{}, errOverdueNotUnpaid
+		return Invoice{}, ErrOverdueNotUnpaid
 	}
 	if fresh.IsDeleted || fresh.ArchivedAt != 0 {
 		return Invoice{}, queue.ErrConflict
@@ -286,15 +288,6 @@ func validateEnforcementSnapshot(s EnforcementSnapshot, botID int64, allowed, ex
 	return ReviewOverdueAssociation
 }
 
-func nextEnforcementStep(steps map[EnforcementStep]OverdueStep) (EnforcementStep, bool) {
-	for _, step := range []EnforcementStep{OverduePauseRecurring, OverdueDisableSUI, OverdueCloseSessions} {
-		if !confirmed(steps, step) {
-			return step, true
-		}
-	}
-	return "", false
-}
-
 func confirmed(steps map[EnforcementStep]OverdueStep, step EnforcementStep) bool {
 	v, ok := steps[step]
 	return ok && v.Confirmed
@@ -321,22 +314,13 @@ func validOverdueInvoice(invoice Invoice) bool {
 	return err == nil && paid == invoice.PaidToDate && paidValue.Sign() == 0 && balanceValue.Cmp(amountValue) == 0
 }
 
-func unconfirmedEnforcementStep(steps map[EnforcementStep]OverdueStep) (EnforcementStep, bool) {
-	for step, value := range steps {
-		if !value.Confirmed {
-			return step, true
-		}
-	}
-	return "", false
-}
-
 func (w *EnforcementWorker) pauseRecurring(ctx context.Context, claim queue.Operation, s EnforcementSnapshot) bool {
 	record, err := w.recurring.Get(ctx, s.RecurringID)
 	if err != nil {
 		if isProviderContractError(err) {
 			w.hold(claim, s, ReviewOverdueContract)
 		} else {
-			w.retryIfNoGrant(claim, err)
+			w.retry(claim, err)
 		}
 		return false
 	}
@@ -345,7 +329,7 @@ func (w *EnforcementWorker) pauseRecurring(ctx context.Context, claim queue.Oper
 		w.hold(claim, s, ReviewOverdueContract)
 		return false
 	}
-	raw, err := jsonMarshal(draft)
+	raw, err := json.Marshal(draft)
 	if err != nil {
 		w.hold(claim, s, ReviewOverdueContract)
 		return false
@@ -356,10 +340,13 @@ func (w *EnforcementWorker) pauseRecurring(ctx context.Context, claim queue.Oper
 	}
 	result, err := w.recurring.PauseAuthorized(ctx, draft, authorize)
 	if err != nil {
-		w.finishWriteAttempt(claim, s, OverduePauseRecurring, granted, err)
+		w.finishWriteAttempt(claim, s, granted, err)
 		return false
 	}
 	if err := w.confirm(claim, OverduePauseRecurring, result.ID); err != nil {
+		if !errors.Is(err, queue.ErrLeaseLost) {
+			w.holdCurrent(claim, ReviewOverdueUnknownWrite)
+		}
 		return false
 	}
 	return true
@@ -380,7 +367,7 @@ func (w *EnforcementWorker) disableSUI(ctx context.Context, claim queue.Operatio
 		w.hold(claim, s, ReviewOverdueContract)
 		return false
 	}
-	raw, err := jsonMarshal(draft)
+	raw, err := json.Marshal(draft)
 	if err != nil {
 		w.hold(claim, s, ReviewOverdueContract)
 		return false
@@ -389,10 +376,13 @@ func (w *EnforcementWorker) disableSUI(ctx context.Context, claim queue.Operatio
 	authorize := func(ctx context.Context) error { return w.authorize(ctx, claim, s, OverdueDisableSUI, raw, &granted) }
 	result, err := w.sui.DisableAuthorized(ctx, draft, authorize)
 	if err != nil {
-		w.finishWriteAttempt(claim, s, OverdueDisableSUI, granted, err)
+		w.finishWriteAttempt(claim, s, granted, err)
 		return false
 	}
 	if err := w.confirm(claim, OverdueDisableSUI, strconv.FormatInt(result.ID(), 10)); err != nil {
+		if !errors.Is(err, queue.ErrLeaseLost) {
+			w.holdCurrent(claim, ReviewOverdueUnknownWrite)
+		}
 		return false
 	}
 	return true
@@ -413,7 +403,7 @@ func (w *EnforcementWorker) closeSessions(ctx context.Context, claim queue.Opera
 		w.hold(claim, s, ReviewOverdueContract)
 		return false
 	}
-	raw, err := jsonMarshal(draft)
+	raw, err := json.Marshal(draft)
 	if err != nil {
 		w.hold(claim, s, ReviewOverdueContract)
 		return false
@@ -424,10 +414,13 @@ func (w *EnforcementWorker) closeSessions(ctx context.Context, claim queue.Opera
 	}
 	err = w.sui.CloseSessionsAuthorized(ctx, draft, authorize)
 	if err != nil {
-		w.finishWriteAttempt(claim, s, OverdueCloseSessions, granted, err)
+		w.finishWriteAttempt(claim, s, granted, err)
 		return false
 	}
 	if err := w.confirm(claim, OverdueCloseSessions, strconv.FormatInt(s.SUIBinding.ID, 10)); err != nil {
+		if !errors.Is(err, queue.ErrLeaseLost) {
+			w.holdCurrent(claim, ReviewOverdueUnknownWrite)
+		}
 		return false
 	}
 	return true
@@ -444,7 +437,7 @@ func (w *EnforcementWorker) authorize(ctx context.Context, claim queue.Operation
 		return err
 	}
 	if !ok {
-		return errOverdueIntentExists
+		return ErrOverdueIntentExists
 	}
 	*granted = true
 	return nil
@@ -453,19 +446,21 @@ func (w *EnforcementWorker) authorize(ctx context.Context, claim queue.Operation
 func (w *EnforcementWorker) confirm(claim queue.Operation, step EnforcementStep, externalID string) error {
 	db, cancel := context.WithTimeout(context.Background(), enforcementDBTimeout)
 	defer cancel()
-	if err := w.store.ConfirmOverdueStep(db, claim, step, externalID); err != nil && !errors.Is(err, queue.ErrLeaseLost) {
-		w.logger.Warn("invoice overdue write confirmation deferred", "step", string(step))
+	if err := w.store.ConfirmOverdueStep(db, claim, step, externalID); err != nil {
+		if !errors.Is(err, queue.ErrLeaseLost) {
+			w.logger.Warn("invoice overdue write confirmation deferred", "step", string(step))
+		}
 		return err
 	}
 	return nil
 }
 
-func (w *EnforcementWorker) finishWriteAttempt(claim queue.Operation, s EnforcementSnapshot, step EnforcementStep, granted bool, cause error) {
-	if granted || errors.Is(cause, invoiceninja.ErrRecurringUnknown) || errors.Is(cause, sui.ErrManagedUnknown) {
-		w.hold(claim, s, ReviewOverdueUnknownWrite)
+func (w *EnforcementWorker) finishWriteAttempt(claim queue.Operation, s EnforcementSnapshot, granted bool, cause error) {
+	if granted || errors.Is(cause, invoiceninja.ErrRecurringUnknown) || errors.Is(cause, sui.ErrManagedUnknown) || errors.Is(cause, ErrOverdueIntentExists) {
+		w.holdCurrent(claim, ReviewOverdueUnknownWrite)
 		return
 	}
-	if errors.Is(cause, errOverduePaid) || errors.Is(cause, errOverdueNotUnpaid) {
+	if errors.Is(cause, ErrOverduePaid) {
 		if hasAnyEnforcementStep(s.Steps) {
 			w.hold(claim, s, ReviewOverduePayment)
 		} else {
@@ -473,23 +468,18 @@ func (w *EnforcementWorker) finishWriteAttempt(claim queue.Operation, s Enforcem
 		}
 		return
 	}
-	if errors.Is(cause, errOverdueGuardBusy) {
-		w.retry(claim, cause)
+	if errors.Is(cause, ErrOverdueNotUnpaid) {
+		w.hold(claim, s, ReviewOverduePayment)
 		return
 	}
-	if errors.Is(cause, errOverdueIntentExists) {
-		w.hold(claim, s, ReviewOverdueUnknownWrite)
+	if errors.Is(cause, ErrOverdueGuardBusy) {
+		w.retry(claim, cause)
 		return
 	}
 	if errors.Is(cause, invoiceninja.ErrRecurringReceipt) || errors.Is(cause, sui.ErrManagedConflict) || errors.Is(cause, sui.ErrManagedState) || errors.Is(cause, invoiceninja.ErrRecurringExpired) || isProviderContractError(cause) {
 		w.hold(claim, s, ReviewOverdueContract)
 		return
 	}
-	w.retry(claim, cause)
-	_ = step
-}
-
-func (w *EnforcementWorker) retryIfNoGrant(claim queue.Operation, cause error) {
 	w.retry(claim, cause)
 }
 
@@ -526,8 +516,29 @@ func (w *EnforcementWorker) hold(claim queue.Operation, s EnforcementSnapshot, c
 	ctx, cancel := context.WithTimeout(context.Background(), enforcementDBTimeout)
 	defer cancel()
 	if err := w.store.HoldOverdue(ctx, claim, w.botID, s, code, overdueReviewDrafts(w.botID, w.admins, s, code)); err != nil && !errors.Is(err, queue.ErrLeaseLost) {
-		w.logger.Warn("invoice overdue action held for review")
+		w.logger.Warn("invoice overdue review persistence failed", "error_code", code)
 	}
+}
+
+// holdCurrent refreshes durable intent evidence under the same lease before
+// recording review. Retries are DB-only; no provider call or guard release occurs.
+func (w *EnforcementWorker) holdCurrent(claim queue.Operation, code int) {
+	for attempt := 0; attempt < 3; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), enforcementDBTimeout)
+		snapshot, err := w.store.LoadOverdueSnapshot(ctx, claim, w.botID)
+		if err == nil {
+			err = w.store.HoldOverdue(ctx, claim, w.botID, snapshot, code, overdueReviewDrafts(w.botID, w.admins, snapshot, code))
+		}
+		cancel()
+		if err == nil || errors.Is(err, queue.ErrLeaseLost) {
+			return
+		}
+		if !errors.Is(err, queue.ErrConflict) {
+			w.logger.Warn("invoice overdue review persistence failed", "error_code", code)
+			return
+		}
+	}
+	w.logger.Warn("invoice overdue review persistence deferred", "error_code", code)
 }
 
 func (w *EnforcementWorker) finishPaid(claim queue.Operation, s EnforcementSnapshot) {
@@ -568,5 +579,3 @@ func overdueMessagePrefix(invoiceID string) string {
 	digest := sha256.Sum256([]byte(invoiceID))
 	return "invoice-overdue:" + hex.EncodeToString(digest[:])
 }
-
-func jsonMarshal(value any) ([]byte, error) { return json.Marshal(value) }

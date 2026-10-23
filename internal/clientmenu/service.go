@@ -207,7 +207,10 @@ func (s *Service) invoice(ctx context.Context, r Request, local Snapshot) string
 	if link == "" {
 		return unavailable
 	}
-	message := fmt.Sprintf("Счёт №%s\nСумма по счёту: %s\nОстаток: %s\nСрок оплаты: %s включительно.\nОткрыть счёт: %s\nСведения на момент запроса. Перед переводом проверьте актуальный остаток по ссылке.", invoice.Number, amount, balance, invoice.DueDate, link)
+	message := fmt.Sprintf("Счёт №%s\nСумма по счёту: %s\nОстаток: %s\nСрок оплаты в Invoice Ninja (не срок доступа): %s.\nОткрыть счёт: %s\nСведения на момент запроса. Перед переводом проверьте актуальный остаток по ссылке.", invoice.Number, amount, balance, invoice.DueDate, link)
+	if local.RecurringID != "" && date(local.CanonicalSentDate) {
+		message += "\nДля этого управляемого recurring-счёта последний день сохранения доступа при отсутствии оплаты: " + local.CanonicalSentDate + " включительно. Со следующего дня доступ могут отключить."
+	}
 	if invoice.StatusID == "4" && balance == "0" {
 		return message + "\nВ Invoice Ninja счёт отмечен оплаченным. Это не заменяет проверку платежа и само по себе не включает доступ."
 	}

@@ -244,6 +244,10 @@ func run(logger *slog.Logger, args []string) error {
 			return endpoint.Activate(bot)
 		}
 		background = func(ctx context.Context) error {
+			admins := make([]int64, 0, len(telegramConfig.AdminIDs))
+			for id := range telegramConfig.AdminIDs {
+				admins = append(admins, id)
+			}
 			configuration, err := configdelivery.New(store, configurationAPIs, client, botID, configurationConfig, logger)
 			if err != nil {
 				return err
@@ -262,10 +266,6 @@ func run(logger *slog.Logger, args []string) error {
 				workers = append(workers, broadcastWorker.Run)
 			}
 			if registrationConfig.Enabled {
-				var admins []int64
-				for id := range telegramConfig.AdminIDs {
-					admins = append(admins, id)
-				}
 				onboarding, err := registration.New(store, registrationAPI, botID, admins, registrationConfig, logger)
 				if err != nil {
 					return err
@@ -273,10 +273,6 @@ func run(logger *slog.Logger, args []string) error {
 				workers = append(workers, onboarding.Run)
 			}
 			if paymentConfig.Enabled {
-				var admins []int64
-				for id := range telegramConfig.AdminIDs {
-					admins = append(admins, id)
-				}
 				verifier, err := payments.New(store, paymentAPI, botID, admins, paymentConfig, logger)
 				if err != nil {
 					return err
@@ -284,10 +280,6 @@ func run(logger *slog.Logger, args []string) error {
 				workers = append(workers, verifier.Run)
 			}
 			if lifecycleConfig.Enabled {
-				var admins []int64
-				for id := range telegramConfig.AdminIDs {
-					admins = append(admins, id)
-				}
 				worker, err := lifecycle.New(store, lifecycleAPI, botID, admins, lifecycleConfig, logger)
 				if err != nil {
 					return err
@@ -295,10 +287,6 @@ func run(logger *slog.Logger, args []string) error {
 				workers = append(workers, worker.Run)
 			}
 			if enforcementConfig.Enabled {
-				var admins []int64
-				for id := range telegramConfig.AdminIDs {
-					admins = append(admins, id)
-				}
 				worker, err := lifecycle.NewEnforcementWorker(store, lifecycleAPI, enforcementRecurring, enforcementSUI, botID, admins, enforcementConfig, logger)
 				if err != nil {
 					return err
@@ -306,10 +294,6 @@ func run(logger *slog.Logger, args []string) error {
 				workers = append(workers, worker.Run)
 			}
 			if activationConfig.Enabled {
-				var admins []int64
-				for id := range telegramConfig.AdminIDs {
-					admins = append(admins, id)
-				}
 				provisioner, err := activation.New(store, activationAPIs, botID, admins, activationConfig, logger)
 				if err != nil {
 					return err

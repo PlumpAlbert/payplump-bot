@@ -62,7 +62,7 @@ type MappingReport struct {
 
 type invoiceReader interface {
 	ListCustomers(context.Context, int, int) (invoiceninja.Page[invoiceninja.Customer], error)
-	GetProduct(context.Context, string) (invoiceninja.Product, error)
+	GetProductWithVersion(context.Context, string) (invoiceninja.Product, string, error)
 	ListInvoices(context.Context, int, int) (invoiceninja.Page[invoiceninja.Invoice], error)
 	ListPayments(context.Context, int, int) (invoiceninja.Page[invoiceninja.Payment], error)
 	ListRecurringInvoices(context.Context, int, int) (invoiceninja.Page[invoiceninja.RecurringInvoice], error)
@@ -138,9 +138,12 @@ func check(ctx context.Context, cfg Config, ninja invoiceReader, panel suiReader
 	if !report.InvoiceNinja.InventoryComplete {
 		return fail("invoice_ninja_clients", errors.New("client inventory exceeds INTEGRATION_MAX_PAGES; no complete inventory was assumed"))
 	}
-	product, err := ninja.GetProduct(ctx, cfg.InvoiceNinja.ProductID)
+	product, productVersion, err := ninja.GetProductWithVersion(ctx, cfg.InvoiceNinja.ProductID)
 	if err != nil {
 		return fail("invoice_ninja_product", err)
+	}
+	if err := recordVersion(&report.InvoiceNinja.AppVersion, cfg.InvoiceNinja.ExpectedVersion, productVersion); err != nil {
+		return fail("invoice_ninja_version", err)
 	}
 	report.InvoiceNinja.SelectedProduct = true
 	report.InvoiceNinja.ProductActive = product.Active()

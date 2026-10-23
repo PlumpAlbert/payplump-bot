@@ -2,8 +2,10 @@ package invoiceninja
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
+	"net/url"
 	"unicode"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
@@ -65,6 +67,24 @@ func ninjaJSONValue(d *json.Decoder, depth int) bool {
 		_, delimiter := token.(json.Delim)
 		return !delimiter
 	}
+}
+
+// getUniqueNinjaJSON applies the strict read pipeline used by pinned Invoice
+// Ninja capabilities. Callers keep their own version and structural contracts.
+func getUniqueNinjaJSON(ctx context.Context, client *integrationhttp.Client, path []string, query url.Values, expectedVersion string, versionErr error, result any) error {
+	var raw json.RawMessage
+	headers, err := client.Get(ctx, path, query, &raw)
+	if err != nil {
+		return err
+	}
+	versions := headers.Values("X-APP-VERSION")
+	if len(versions) != 1 || versions[0] != expectedVersion {
+		return versionErr
+	}
+	if !uniqueNinjaJSON(raw) || json.Unmarshal(raw, result) != nil {
+		return errInvalidResponse
+	}
+	return nil
 }
 
 // encoding/json matches field names with Unicode simple folding, not lower
