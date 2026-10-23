@@ -58,8 +58,37 @@ func TestVerifiedImportPausedKeepsCurrentDebtAndDistinctHistoricalAnchor(t *test
 	if err = s.pool.QueryRow(ctx, `SELECT current_invoice_id,paid_anchor_invoice_id,template,proof,historical_invoice_ids,evidence FROM verified_import_origins WHERE client_id=$1`, clientID).Scan(&originCurrent, &anchor, &template, &proof, &history, &evidence); err != nil {
 		t.Fatal(err)
 	}
-	if originCurrent != "debt-current" || anchor != "paid-historical" || originCurrent == anchor || !strings.Contains(string(template), "historical legacy note") || !strings.Contains(string(template), `"next_send_date":"`+periodEnd+`"`) || !strings.Contains(string(proof), "paid-historical") || !strings.Contains(string(history), "debt-current") || !strings.Contains(string(history), "paid-historical") || !strings.Contains(string(evidence), `"current_invoice_status":"2"`) || !strings.Contains(string(evidence), `"balance":100`) || !strings.Contains(string(evidence), "paid-historical") || !strings.Contains(string(evidence), `"sui_name":"42"`) {
-		t.Fatalf("paused provenance current=%q anchor=%q template=%s proof=%s history=%s evidence=%s", originCurrent, anchor, template, proof, history, evidence)
+	var persistedTemplate struct {
+		NextSendDate string `json:"next_send_date"`
+		PrivateNotes string `json:"private_notes"`
+	}
+	var persistedProof struct {
+		InvoiceID string `json:"invoice_id"`
+	}
+	var persistedHistory []string
+	var persistedEvidence struct {
+		CurrentInvoiceStatus string `json:"current_invoice_status"`
+		CurrentInvoice       struct {
+			Balance json.Number `json:"balance"`
+		} `json:"current_invoice"`
+		SUIName             string `json:"sui_name"`
+		PaidAnchorInvoiceID string `json:"paid_anchor_invoice_id"`
+		CurrentInvoiceID    string `json:"current_invoice_id"`
+	}
+	if err = json.Unmarshal(template, &persistedTemplate); err != nil {
+		t.Fatalf("decode persisted legacy template: %v", err)
+	}
+	if err = json.Unmarshal(proof, &persistedProof); err != nil {
+		t.Fatalf("decode persisted proof: %v", err)
+	}
+	if err = json.Unmarshal(history, &persistedHistory); err != nil {
+		t.Fatalf("decode persisted history: %v", err)
+	}
+	if err = json.Unmarshal(evidence, &persistedEvidence); err != nil {
+		t.Fatalf("decode persisted evidence: %v", err)
+	}
+	if originCurrent != "debt-current" || anchor != "paid-historical" || originCurrent == anchor || persistedTemplate.NextSendDate != periodEnd || persistedTemplate.PrivateNotes != "historical legacy note" || persistedProof.InvoiceID != "paid-historical" || len(persistedHistory) != 2 || persistedHistory[0] != "debt-current" || persistedHistory[1] != "paid-historical" || persistedEvidence.CurrentInvoiceStatus != "2" || persistedEvidence.CurrentInvoice.Balance != "100" || persistedEvidence.PaidAnchorInvoiceID != "paid-historical" || persistedEvidence.CurrentInvoiceID != "debt-current" || persistedEvidence.SUIName != "42" {
+		t.Fatal("paused provenance does not preserve the current debt and distinct historical anchor")
 	}
 	for _, table := range []string{"operations", "payment_confirmations", "activation_sui_bindings", "invoice_lifecycle_checks", "invoice_lifecycle_invoices"} {
 		var count int

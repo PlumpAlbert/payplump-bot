@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/PlumpAlbert/payplump-bot/internal/billing"
 	"github.com/PlumpAlbert/payplump-bot/internal/importadmission"
 	"github.com/PlumpAlbert/payplump-bot/internal/importplan"
 	"github.com/PlumpAlbert/payplump-bot/internal/importverify"
@@ -103,8 +105,11 @@ func admissionBatchPreparedFixture(t *testing.T, ctx context.Context, botID int6
 	actors := []fixture{{"42", "customer-42", "recurring-42", "invoice-42"}, {"43", "customer-43", "recurring-43", "invoice-43"}}
 	now := time.Now().UTC()
 	startDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -10)
-	endDate := startDate.AddDate(0, 1, 0)
-	start, end := startDate.Format(time.DateOnly), endDate.Format(time.DateOnly)
+	start := startDate.Format(time.DateOnly)
+	end, err := billing.NextBillingDate(start)
+	if err != nil {
+		return importadmission.PreparedPlan{}, err
+	}
 	customers, recurring, invoices, settlements, payments := make(map[string]any), make(map[string]any), make(map[string]any), make(map[string]any), make(map[string]any)
 	claims := make([]importplan.Record, 0, len(actors))
 	suiRecords := make([]json.RawMessage, 0, len(actors))
@@ -245,7 +250,11 @@ func admissionBatchSUIFixture(t *testing.T, id string) (json.RawMessage, string)
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		t.Fatal(err)
 	}
-	fields["id"], _ = json.Marshal(id)
+	numericID, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || numericID <= 0 {
+		t.Fatalf("invalid SUI fixture ID %q: %v", id, err)
+	}
+	fields["id"], _ = json.Marshal(numericID)
 	fields["name"], _ = json.Marshal(id)
 	var configs map[string]map[string]any
 	if err := json.Unmarshal(fields["config"], &configs); err != nil {
@@ -259,7 +268,7 @@ func admissionBatchSUIFixture(t *testing.T, id string) (json.RawMessage, string)
 		}
 	}
 	fields["config"], _ = json.Marshal(configs)
-	raw, err := json.Marshal(fields)
+	raw, err = json.Marshal(fields)
 	if err != nil {
 		t.Fatal(err)
 	}

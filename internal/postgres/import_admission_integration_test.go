@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/billing"
 	"github.com/PlumpAlbert/payplump-bot/internal/importadmission"
 	"github.com/PlumpAlbert/payplump-bot/internal/importplan"
 	"github.com/PlumpAlbert/payplump-bot/internal/importverify"
@@ -37,7 +38,11 @@ func TestVerifiedImportAdmissionGETBridgeAndIdempotence(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `INSERT INTO telegram_bots(bot_id) VALUES($1) ON CONFLICT DO NOTHING`, admissionFixtureBotID); err != nil {
 		t.Fatal(err)
 	}
-	prepared := admissionPreparedFixture(t, ctx)
+	prepare := admissionPreparedFixtureFactory(t, ctx)
+	prepared, err := prepare(time.Now().UTC().Add(-time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := s.SyncImportAdmissionPolicy(ctx, admissionFixtureBotID, 1, prepared.PolicyHash(), prepared.SourceScopeHash(), true); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +55,7 @@ func TestVerifiedImportAdmissionGETBridgeAndIdempotence(t *testing.T) {
 	if err := s.SyncImportAdmissionPolicy(ctx, admissionFixtureBotID, 1, prepared.PolicyHash(), strings.Repeat("f", 64), true); err == nil {
 		t.Fatal("same revision accepted changed source scope")
 	}
-	stale, err := admissionPreparedFixtureAt(t, ctx, time.Now().UTC().Add(-6*time.Minute))
+	stale, err := prepare(time.Now().UTC().Add(-6 * time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +133,10 @@ func TestVerifiedImportAdmissionGETBridgeAndIdempotence(t *testing.T) {
 	if err != nil || registered.Created || registered.ClientCreated {
 		t.Fatalf("repeat registration: %+v %v", registered, err)
 	}
-	preparedAgain := admissionPreparedFixture(t, ctx)
+	preparedAgain, err := prepare(time.Now().UTC().Add(-time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
 	replayed, err := s.ApplyVerifiedImport(ctx, preparedAgain)
 	if err != nil || replayed.Admitted != 0 || replayed.AlreadyAdmitted != 1 {
 		t.Fatalf("idempotent admission: %+v %v", replayed, err)
@@ -227,7 +235,7 @@ func TestVerifiedImportRejectsExistingOwnedSUIBindingAtomically(t *testing.T) {
 		t.Fatalf("finish OWN activation: %v", err)
 	}
 	var clientID int64
-	if err := s.pool.QueryRow(ctx, `SELECT id FROM clients WHERE telegram_id=20000 AND sui_id=42`).Scan(&clientID); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT id FROM clients WHERE telegram_id=20000 AND sui_id='42'`).Scan(&clientID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ApplyVerifiedImport(ctx, prepared); err == nil {
@@ -316,10 +324,19 @@ func admissionPreparedFixture(t *testing.T, ctx context.Context) importadmission
 
 func admissionPreparedFixtureAt(t *testing.T, ctx context.Context, at time.Time) (importadmission.PreparedPlan, error) {
 	t.Helper()
+	prepare := admissionPreparedFixtureFactory(t, ctx)
+	return prepare(at)
+}
+
+func admissionPreparedFixtureFactory(t *testing.T, ctx context.Context) func(time.Time) (importadmission.PreparedPlan, error) {
+	t.Helper()
 	now := time.Now().UTC()
 	startDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -10)
-	endDate := startDate.AddDate(0, 1, 0)
-	start, end := startDate.Format(time.DateOnly), endDate.Format(time.DateOnly)
+	start := startDate.Format(time.DateOnly)
+	end, err := billing.NextBillingDate(start)
+	if err != nil {
+		t.Fatal(err)
+	}
 	suiRaw, configHash := admissionSUIFixture(t)
 	line := map[string]any{"product_key": "legacy", "notes": "legacy monthly", "cost": 100, "quantity": 1, "discount": 0, "is_amount_discount": false, "type_id": "1", "tax_name1": "", "tax_name2": "", "tax_name3": "", "tax_rate1": 0, "tax_rate2": 0, "tax_rate3": 0, "tax_id": ""}
 	recurring := map[string]any{"id": admissionFixtureRec, "client_id": admissionFixtureCust, "status_id": "2", "private_notes": "historical legacy note", "frequency_id": "5", "next_send_date": end, "next_send_datetime": end + "T00:00:00.000000Z", "last_sent_date": start, "due_date": end, "due_date_days": "on_receipt", "auto_bill": "off", "auto_bill_enabled": false, "remaining_cycles": -1, "amount": 100, "balance": 100, "uses_inclusive_taxes": false, "line_items": []any{line}, "is_deleted": false, "archived_at": 0, "discount": 0, "is_amount_discount": true, "tax_rate1": 0, "tax_rate2": 0, "tax_rate3": 0, "custom_surcharge1": 0, "custom_surcharge2": 0, "custom_surcharge3": 0, "custom_surcharge4": 0, "partial": 0, "paid_to_date": 0, "exchange_rate": 1}
@@ -371,47 +388,49 @@ func admissionPreparedFixtureAt(t *testing.T, ctx context.Context, at time.Time)
 	const ninjaToken, suiToken = "synthetic-ninja-token", "synthetic-sui-token"
 	imp, err := invoiceninja.NewImportReader(server.URL+"/ninja", ninjaToken, time.Second, 10, 2)
 	if err != nil {
-		return importadmission.PreparedPlan{}, err
+		t.Fatal(err)
 	}
 	rec, err := invoiceninja.NewRecurringReader(server.URL+"/ninja", ninjaToken, time.Second)
 	if err != nil {
-		return importadmission.PreparedPlan{}, err
+		t.Fatal(err)
 	}
 	cyc, err := invoiceninja.NewCycleReader(server.URL+"/ninja", ninjaToken, time.Second, 10, 2)
 	if err != nil {
-		return importadmission.PreparedPlan{}, err
+		t.Fatal(err)
 	}
 	settle, err := invoiceninja.NewSettlementClient(server.URL+"/ninja", ninjaToken, time.Second, 10, 2)
 	if err != nil {
-		return importadmission.PreparedPlan{}, err
+		t.Fatal(err)
 	}
 	ids, err := sui.NewIdentityReader(server.URL+"/panel", suiToken, "1.6.4", time.Second)
 	if err != nil {
-		return importadmission.PreparedPlan{}, err
+		t.Fatal(err)
 	}
 	records, err := sui.NewRecordReader(server.URL+"/panel", suiToken, "1.6.4", time.Second)
 	if err != nil {
-		return importadmission.PreparedPlan{}, err
+		t.Fatal(err)
 	}
 	suiClient, err := sui.New(server.URL+"/panel", suiToken, time.Second)
 	if err != nil {
-		return importadmission.PreparedPlan{}, err
+		t.Fatal(err)
 	}
 	scope, err := importverify.SourceScope(server.URL+"/ninja", ninjaToken, "5.13.47", server.URL+"/panel", suiToken, "1.6.4")
 	if err != nil {
-		return importadmission.PreparedPlan{}, err
+		t.Fatal(err)
 	}
 	policy := importverify.Policy{BotID: admissionFixtureBotID, SourceScopeHash: scope, PilotIDs: []string{admissionFixtureTG}, NinjaVersion: "5.13.47", SUIVersion: "1.6.4", NativeCurrencyID: "1", NativeCurrencyCode: "USD", ProductKey: "legacy", PublicSubscriptionBase: "https://subs.invalid/", ExpectedInboundIDs: []int64{1}, MaxRecords: 10, MaxInventoryRecords: 20, MaxPages: 2, MaxHistoricalAnchors: 5, EvidenceTTL: 5 * time.Minute}
 	service, err := importverify.New(policy, importverify.Providers{Customers: imp, Recurring: rec, Invoices: cyc, Payments: settle, Identities: ids, Records: records, Settings: suiClient})
 	if err != nil {
-		return importadmission.PreparedPlan{}, err
+		t.Fatal(err)
 	}
 	claim := importplan.Record{TelegramID: admissionFixtureTG, InvoiceCustomerID: admissionFixtureCust, InvoiceNumber: admissionFixtureTG, CurrentInvoiceID: admissionFixtureInv, InvoiceStatus: "paid", RecurringID: admissionFixtureRec, SUIID: admissionFixtureTG, SUIName: admissionFixtureTG, ConfigHash: configHash, PeriodStart: start, PeriodEnd: end, Currency: "USD", Lifecycle: "active", SourceVersion: "5.13.47", PinnedProvenance: true, CompleteProof: true, Amount: "100"}
 	plan := importplan.Analyze(importplan.Manifest{Records: []importplan.Record{claim}})
 	if plan.Imported != 1 {
-		return importadmission.PreparedPlan{}, fmt.Errorf("fixture claim not admissible: %v", plan.Reasons)
+		t.Fatalf("fixture claim not admissible: %v", plan.Reasons)
 	}
-	return importadmission.Prepare(ctx, service, plan, plan.Hash, 1, at)
+	return func(at time.Time) (importadmission.PreparedPlan, error) {
+		return importadmission.Prepare(ctx, service, plan, plan.Hash, 1, at)
+	}
 }
 
 func admissionSUIFixture(t *testing.T) (json.RawMessage, string) {
