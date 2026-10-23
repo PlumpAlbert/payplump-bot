@@ -2,12 +2,17 @@
 
 ## Разрешения и границы
 
-Владелец разрешил автономно продолжать код и тесты с субагентом-разработчиком
-`openai-codex/gpt-6-luna`, reasoning `xhigh`. Для каждой небольшой единицы сначала
-обновить план, затем поручить реализацию разработчику и независимую проверку другому
-агенту. Родитель выполняет commit/push, создаёт PR, ждёт зелёный CI на точном HEAD
-и сливает PR; после этого обновляет план и начинает следующий пункт. Останавливаться
-только когда действительно требуется решение или действие владельца. Не выполнять
+Владелец разрешил автономно продолжать безопасную реализацию без ожидания owner-gate.
+Для каждой небольшой единицы сначала обновить план, затем выполнить код и тесты и
+организовать независимое read-only review. Все writers завершили работу, оба
+независимых review core 11a.2 завершены. Финансовый review выявил три дефекта в
+legacy profile (`TypeID=1`, `DueDateDays=on_receipt`, фактический `NextSendDateTime`
+должен быть в будущем); основной worker исправил их и добавил четыре GET negative
+workflow cases, включая `datetime == now`. Privacy/source/evidence review прошёл
+без замечаний. Package unit/race, полный unit, vet и build после исправлений прошли.
+Родитель выполняет commit/push, создаёт PR, ждёт зелёный CI на точном HEAD и сливает
+PR; после этого обновляет план и выбирает следующий срез. Останавливаться только
+когда действительно требуется решение или действие владельца. Не выполнять
 Git/VCS, PR, CI или другие API-действия из implementation worker.
 
 Invoice Ninja и S-UI — **production с действующими пользователями**. Не обращаться
@@ -49,24 +54,36 @@ scope; не снимать и не обходить их и не расширя�
   [run 39978010690](https://github.com/PlumpAlbert/payplump-bot/actions/runs/39978010690).
   Устаревший статус «PR #21 ожидает merge» удалён. Live-проверки владельца
   остаются pending.
-- [ ] 11a.1: read-only inventory providers — Invoice Ninja `FindCustomers` /
+- [x] 11a.1: read-only inventory providers — Invoice Ninja `FindCustomers` /
   `ListRecurring` (source-pinned 5.13.47, bounded) и S-UI `ListIdentities`
-  (strict 1.6.4, bounded, redacted); синтетические loopback HTTP unit/race
-  проверки прошли. Реализация ограничена provider foundation: независимое review
-  и required CI для текущего PR ещё pending; не считать весь 11 или CLI
-  сверки реализованными.
+  (strict 1.6.4, bounded, redacted). PR #22 merged коммитом
+  `e81034a88c05dae56cde0d1a45ddf5a0d5791e77`; exact HEAD
+  `674f838e80c6bc6b89e240fee79b219311b5f1e8` прошёл required CI
+  `39980684412` и post-merge CI `39981437193` (оба all-green). RecordReader
+  сохраняет только `GetRecord`, `sui.IdentityReader` отдельно владеет
+  `ListIdentities`; исправлена совместимость `metadata.pagination.links`.
 - [x] 10: приватная административная рассылка с неизменяемым подтверждением,
   снимком получателей, долговечным прогрессом и ограниченной доставкой.
 - [ ] 11: выполнять последовательно небольшими срезами. Инертный
   import-plan/staging остаётся inert и не является verified reconciliation.
-  11a.1 — только read-only provider foundation (описан выше); после независимого
-  review и required CI — 11a.2: будущие reconciliation service/operator CLI,
-  private canonical-source evidence и repeatability, без БД и admission.
-  11b — отдельно в будущем explicit managed admission только после свежего GET;
-  нужны отдельные imported origin, binding, proof anchor и revision, без
-  имитации registration/activation journals. Сохранить actor/pilot ограничения;
-  исключить history suppression и старые долги из автоматизации, оставить их
-  ручному разбору. Не добавлять 11c или новое архитектурное решение.
+  11a.1 завершён (см. выше). 11a.2 core реализован как GET-only active/paid
+  verifier с private canonical-source evidence и repeatability; loopback GET-adapter
+  bridge и negative/unit тесты готовы. Оба независимых read-only review завершены:
+  финансовый review выявил три legacy-profile дефекта (`TypeID=1`,
+  `DueDateDays=on_receipt`, фактический `NextSendDateTime` в будущем), исправленные
+  основным worker, плюс четыре GET negative workflow cases, включая `datetime == now`;
+  privacy/source/evidence review — без дефектов. Package unit/race, полный
+  unit/vet/build после исправлений прошли. PR #23 ещё не открыт; PR, required CI
+  и merge pending. Core не пишет в БД, не выполняет admission и не включает CLI.
+  Paused/historical paid-anchor proof сейчас явно unsupported и остаётся manual,
+  будущий отдельный срез. Private `0600` operator CLI — ещё одна отдельная
+  задача после merge core, вне PR #23. 11b остаётся TODO: explicit managed
+  admission только после свежего GET, с отдельными imported origin, binding,
+  proof anchor и revision, без имитации registration/activation journals.
+  Сохранить actor/pilot ограничения. При будущем import admission исторические
+  счета должны быть подавлены, чтобы не создавать устаревшие уведомления или
+  операции. Накопившиеся неоплаченные долги остаются на ручном разборе без
+  прощения или автоматизации. Не добавлять 11c или новое архитектурное решение.
 - [ ] 12: дальнейшая подготовка синтетической isolated restore rehearsal;
   recovery report, restore helper и docs уже есть. Не выполнять автоматические
   rearm/снятие барьеров; реальные backup/restore требуют владельца.
@@ -75,10 +92,12 @@ scope; не снимать и не обходить их и не расширя�
 - [ ] 14: синтетическая подготовка и тесты safe resource harness уже есть;
   целевые измерения VPS не выполнены и требуют владельца.
 
-Очередь строго последовательная: 9a, 9b, затем 11a.1, 11a.2, 11b, 12, 13 и 14.
-Для каждого пункта создаётся небольшой PR; перед merge родитель ждёт зелёные
-обязательные проверки точного HEAD. Отсутствие owner-gate для live-проверок не
-задерживает код и синтетические тесты, которые безопасно подготовить без владельца.
+Очередь последовательная по небольшим PR: 9a и 9b завершены; 11a.1 merged;
+review 11a.2 core завершён. Следом родитель оформляет PR #23, проверяет required
+CI на точном HEAD и выполняет merge. После core отдельно запланировать CLI и
+paused/history proof; далее 11b, 12, 13 и 14. Перед каждым merge родитель ждёт
+зелёные обязательные проверки точного HEAD. Отсутствие owner-gate для live-проверок
+не задерживает безопасный код и синтетические тесты.
 
 ## Проверенные срезы
 
@@ -109,15 +128,14 @@ scope; не снимать и не обходить их и не расширя�
 Stage 8a/8b реализованы. Финансовая проверка уже принимает non-first текущий
 invoice только с точным recurring ID; подтверждения хранятся per invoice, а
 `FinishPaymentCheck` сохраняет доказательство и наблюдаемые даты без выдачи доступа.
-Этап 9a влит в основу `94095a8`; финальный PR HEAD и успешный Actions run указаны
-выше. Код и сквозные тесты 9b прошли required CI на исходном code HEAD
-`925364d85ac733d6f582d5f2bc83d5f2a0b40525`, включая PostgreSQL runtime; см. run
-`39975961988` и job `120491239073` выше. PR #21 ожидает merge. Этот CI не
-подтверждает live-проверки владельца. Использовать существующий payment-check pipeline, не создавать
-новый verifier-worker. Автоматизация не получает разрешение на production API даже
-GET. Recurring может создавать draft, поэтому workflow проверяет фактическое
-состояние и не предполагает issued invoice. Не менять чужие company/client-wide
-настройки.
+Этапы 9a и 9b merged; код и сквозные тесты 9b прошли required CI на исходном
+code HEAD `925364d85ac733d6f582d5f2bc83d5f2a0b40525`, включая PostgreSQL runtime;
+см. run `39975961988` и job `120491239073` выше. Устаревшее ожидание merge PR #21
+снято. Этот CI не подтверждает live-проверки владельца. Использовать существующий
+payment-check pipeline, не создавать новый verifier-worker. Автоматизация не
+получает разрешение на production API даже GET. Recurring может создавать draft,
+поэтому workflow проверяет фактическое состояние и не предполагает issued invoice.
+Не менять чужие company/client-wide настройки.
 
 ## Отдельные gates владельца
 
