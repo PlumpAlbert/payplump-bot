@@ -125,17 +125,17 @@ scope; не снимать и не обходить их и не расширя�
   closeSessions response after effect disable, and unknown pause/503/revision-2/
   restart with the guard pinned. No live API access or deployment was performed.
 
-  11b.6.1 imported paid renewal supports only newly observed ordinary
-  lifecycle-ledger invoices. Three PostgreSQL workflow cases are implemented;
-  parent unit/race/vet/CGO0 build/module/gofmt/diff checks and PostgreSQL
-  integration compile passed. Independent review `e06c5abf-0d4d-484` completed
-  with zero behavioral and design findings; SQL runtime, PR #31, its CI, and
-  merge remain pending. Do not mark
-  complete before CI. 11b.6.2 initial paused-baseline/current-debt restoration
-  is future work requiring explicit origin mode/FK; do not fabricate ledger
-  dates or OWN overdue journals. Protected imported configuration/menu/current
-  proof, apply CLI, and default-off startup wiring remain future work. Stage 11
-  remains incomplete. No real import, live API access, or deployment was done.
+  11b.6.1 imported paid renewal supports ordinary lifecycle-ledger invoices.
+  PR #31 merged as `a92198b`; exact code HEAD
+  `012e1249a0720b79993ce55206413ecae06b178b` passed required CI `40024818619`
+  and post-merge CI `40025798271` is green. The 11b.6.2 production/domain/unit
+  slice adds the explicit initial-paused current-debt mode, generated conditional
+  FK boundaries, and no-fake-ledger restoration through the existing renewal
+  worker. Its PostgreSQL GET/worker workflow is prepared for PR #32; PR #32 is not
+  open and review/CI are pending. Local PostgreSQL checks are compile-only. Protected
+  imported configuration/menu/current proof, apply CLI, and default-off startup
+  wiring remain future work. Stage 11 remains incomplete. No live API access or
+  deployment was done.
 
   Непереговорные TODO: actor/pilot ограничения сохраняются; будущий managed
   consumer обязан подавлять устаревшие операции/уведомления. Неоплаченные долги
@@ -162,14 +162,14 @@ and post-merge CI `40015300957`, including the full PostgreSQL runtime workflow.
 11b.5 overdue-only code and tests merged in PR #30 as
 `19d45cf7f85c784b74cdc0cb2b71f5d15cddb758`; exact code HEAD
 `b8efc247fe09b78e078b0c115c52317d47311939` passed required CI `40019995948`
-and post-merge CI `40020785993`, all green. 11b.6.1 imported paid renewal
-supports only new ordinary lifecycle-ledger invoices; three PostgreSQL workflow
-cases are implemented. Parent local unit/race/vet/CGO0 build/module/gofmt/diff
-and PostgreSQL integration compile checks passed. Independent review `e06c5abf-0d4d-484` completed with zero behavioral and
-design findings; SQL runtime, PR #31, CI, and merge remain pending. Do not mark 11b.6.1 complete before CI. 11b.6.2 initial
-paused-baseline/current-debt restoration, protected imported configuration/menu/
-current proof, apply CLI, and default-off startup wiring remain future work.
-Stage 11 is incomplete. No live verification/admission or deployment was done.
+and post-merge CI `40020785993`, all green. PR #31 (11b.6.1) merged as
+`a92198b`; exact code HEAD `012e1249a0720b79993ce55206413ecae06b178b` passed
+required CI `40024818619` and post-merge CI `40025798271`. The 11b.6.2
+production/domain/unit slice implements initial paused/current-debt restoration;
+its PostgreSQL runtime workflow is prepared for PR #32; PR #32 is not open
+and review/CI are pending. Local PostgreSQL validation is compile-only. Protected imported configuration/menu/current proof,
+apply CLI, and default-off startup wiring remain future work. Stage 11 is
+incomplete. No live verification/admission or deployment was done.
 
 ## Проверенные срезы
 

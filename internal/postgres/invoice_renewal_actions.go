@@ -63,9 +63,9 @@ func (s *Store) FreezeRenewalPlan(ctx context.Context, claim queue.Operation, bo
 	if e != nil || next != plan.TargetDate || next != actual.Proof.NextInvoiceDate || next <= time.Now().In(time.Local).Format(time.DateOnly) {
 		return lifecycle.ErrRenewalTargetExpired
 	}
-	shouldSchedule := facts.NextSendDate != next
 	baselineWhen, baselineErr := invoiceninja.ParseRecurringUTC(facts.NextSendDatetime)
-	if baselineErr != nil || !shouldSchedule && !baselineWhen.After(time.Now()) {
+	shouldSchedule := facts.NextSendDate != next || actual.ImportedInitialPaused && (baselineErr != nil || !baselineWhen.After(time.Now()))
+	if baselineErr != nil && !(actual.ImportedInitialPaused && shouldSchedule) || !shouldSchedule && !baselineWhen.After(time.Now()) {
 		return lifecycle.ErrRenewalTargetExpired
 	}
 	shouldEnable := actual.State == "overdue"
@@ -74,11 +74,13 @@ func (s *Store) FreezeRenewalPlan(ctx context.Context, claim queue.Operation, bo
 	if plan.Schedule != shouldSchedule || plan.Enable != shouldEnable || plan.Pause != shouldPause || plan.Resume != shouldResume || facts.SUIEnabled == shouldEnable || facts.StatusID != "2" && facts.StatusID != "3" {
 		return queue.ErrConflict
 	}
-	if actual.State == "active" && (!facts.SUIEnabled || facts.StatusID != "2" && !(facts.StatusID == "3" && hasRenewalOverduePausePrefix(actual))) || actual.State == "overdue" && (facts.StatusID != "3" || facts.SUIEnabled || !hasRenewalOverduePrefix(actual)) {
+	if actual.State == "active" && (!facts.SUIEnabled || facts.StatusID != "2" && !(facts.StatusID == "3" && hasRenewalOverduePausePrefix(actual))) || actual.State == "overdue" && (facts.StatusID != "3" || facts.SUIEnabled || !actual.ImportedInitialPaused && !hasRenewalOverduePrefix(actual)) {
 		return queue.ErrConflict
 	}
 	when, parseErr := invoiceninja.ParseRecurringUTC(facts.NextSendDatetime)
-	if parseErr != nil || !shouldSchedule && !when.After(time.Now()) {
+	if actual.ImportedInitialPaused && shouldSchedule && facts.NextSendDatetime == "" {
+		parseErr = nil
+	} else if parseErr != nil || !shouldSchedule && !when.After(time.Now()) {
 		return lifecycle.ErrRenewalTargetExpired
 	}
 	var epoch, owner int64
@@ -154,7 +156,7 @@ func (s *Store) AuthorizeRenewalWrite(ctx context.Context, claim queue.Operation
 	if e != nil || target != actual.Plan.TargetDate || target != actual.Proof.NextInvoiceDate {
 		return false, queue.ErrConflict
 	}
-	if actual.State == "overdue" && !hasRenewalOverduePrefix(actual) {
+	if actual.State == "overdue" && !actual.ImportedInitialPaused && !hasRenewalOverduePrefix(actual) {
 		return false, queue.ErrConflict
 	}
 	next, pending, done, valid := lifecycle.NextRenewalStep(*actual.Plan, actual.Steps)
@@ -449,6 +451,11 @@ func (s *Store) FinishRenewal(ctx context.Context, claim queue.Operation, botID 
 	if err != nil {
 		return err
 	}
+	if expected.ImportedOrigin.Valid() {
+		if err = lockImportedEffectPermissions(ctx, tx, expected.ImportedOrigin.ClientID, botID); err != nil {
+			return err
+		}
+	}
 	actual, err := readRenewalSnapshot(ctx, tx, claim, botID)
 	if err != nil {
 		return err
@@ -501,12 +508,14 @@ func (s *Store) FinishRenewal(ctx context.Context, claim queue.Operation, botID 
 	if tag.RowsAffected() != 1 {
 		return queue.ErrConflict
 	}
-	tag, err = tx.Exec(ctx, `UPDATE invoice_lifecycle_invoices SET status='paid',balance=0,paid_to_date=amount,notice_state='settled',observed_at=clock_timestamp() WHERE client_id=$1 AND invoice_id=$2 AND amount=$3::numeric AND customer_id=$4 AND recurring_id=$5`, clientID, invoiceID, actual.Proof.Amount, actual.CustomerID, actual.RecurringID)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return queue.ErrConflict
+	if !actual.ImportedInitialPaused {
+		tag, err = tx.Exec(ctx, `UPDATE invoice_lifecycle_invoices SET status='paid',balance=0,paid_to_date=amount,notice_state='settled',observed_at=clock_timestamp() WHERE client_id=$1 AND invoice_id=$2 AND amount=$3::numeric AND customer_id=$4 AND recurring_id=$5`, clientID, invoiceID, actual.Proof.Amount, actual.CustomerID, actual.RecurringID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return queue.ErrConflict
+		}
 	}
 	for _, d := range drafts {
 		if _, err = enqueueOutbox(ctx, tx, d); err != nil {
@@ -561,9 +570,12 @@ func lockRenewalClaim(ctx context.Context, tx pgx.Tx, claim queue.Operation, bot
 	if claim.ID <= 0 || claim.Attempt <= 0 || claim.ClientID <= 0 || claim.Kind != lifecycle.RenewalOperationKind || botID <= 0 {
 		return 0, "", queue.ErrLeaseLost
 	}
-	var clientID int64
-	var invoiceID, first string
-	err := tx.QueryRow(ctx, `SELECT a.client_id,a.invoice_id,COALESCE(s.first_invoice_id,'') FROM invoice_renewal_actions a JOIN subscriptions s ON s.client_id=a.client_id WHERE a.operation_id=$1 AND a.bot_id=$2`, claim.ID, botID).Scan(&clientID, &invoiceID, &first)
+	var clientID, importedOriginID, baselineOriginClientID int64
+	var invoiceID, first, originMode, ledgerInvoiceID string
+	err := tx.QueryRow(ctx, `SELECT a.client_id,a.invoice_id,COALESCE(s.first_invoice_id,''),a.origin_mode,
+        COALESCE(a.imported_origin_client_id,0),COALESCE(a.ledger_invoice_id,''),COALESCE(a.baseline_origin_client_id,0)
+        FROM invoice_renewal_actions a JOIN subscriptions s ON s.client_id=a.client_id
+        WHERE a.operation_id=$1 AND a.bot_id=$2`, claim.ID, botID).Scan(&clientID, &invoiceID, &first, &originMode, &importedOriginID, &ledgerInvoiceID, &baselineOriginClientID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, "", queue.ErrLeaseLost
 	}
@@ -598,10 +610,36 @@ func lockRenewalClaim(ctx context.Context, tx pgx.Tx, claim queue.Operation, bot
 	if _, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
 		return 0, "", err
 	}
-	if err = tx.QueryRow(ctx, `SELECT invoice_id FROM invoice_lifecycle_invoices WHERE client_id=$1 AND invoice_id=$2 FOR UPDATE`, clientID, invoiceID).Scan(&invoiceID); errors.Is(err, pgx.ErrNoRows) {
+	switch originMode {
+	case "ledger":
+		if ledgerInvoiceID != invoiceID || baselineOriginClientID != 0 {
+			return 0, "", queue.ErrConflict
+		}
+		if err = tx.QueryRow(ctx, `SELECT invoice_id FROM invoice_lifecycle_invoices WHERE client_id=$1 AND invoice_id=$2 FOR UPDATE`, clientID, ledgerInvoiceID).Scan(&invoiceID); errors.Is(err, pgx.ErrNoRows) {
+			return 0, "", queue.ErrConflict
+		} else if err != nil {
+			return 0, "", err
+		}
+	case "imported_initial_paused":
+		if importedOriginID != clientID || baselineOriginClientID != clientID || ledgerInvoiceID != "" {
+			return 0, "", queue.ErrConflict
+		}
+		var originClientID, originBotID int64
+		var lifecycleState, currentDebtInvoiceID, paidAnchorInvoiceID string
+		err = tx.QueryRow(ctx, `SELECT client_id,bot_id,lifecycle,current_invoice_id,paid_anchor_invoice_id
+            FROM verified_import_origins
+            WHERE client_id=$1 AND bot_id=$2
+            FOR KEY SHARE`, importedOriginID, botID).Scan(&originClientID, &originBotID, &lifecycleState, &currentDebtInvoiceID, &paidAnchorInvoiceID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, "", queue.ErrConflict
+		} else if err != nil {
+			return 0, "", err
+		}
+		if originClientID != clientID || originBotID != botID || lifecycleState != "paused" || currentDebtInvoiceID != invoiceID || paidAnchorInvoiceID == "" || paidAnchorInvoiceID == invoiceID {
+			return 0, "", queue.ErrConflict
+		}
+	default:
 		return 0, "", queue.ErrConflict
-	} else if err != nil {
-		return 0, "", err
 	}
 	if err = tx.QueryRow(ctx, `SELECT id FROM operations WHERE id=$1 AND client_id=$2 AND kind=$3 AND status='running' AND attempts=$4 AND locked_until>clock_timestamp() FOR UPDATE`, claim.ID, clientID, lifecycle.RenewalOperationKind, claim.Attempt).Scan(&id); errors.Is(err, pgx.ErrNoRows) {
 		return 0, "", queue.ErrLeaseLost

@@ -17,6 +17,9 @@ func validRenewalStoreFacts(s lifecycle.RenewalSnapshot, botID int64, allowed []
 		return false
 	}
 	if s.ImportedOrigin.Valid() {
+		if s.ImportedInitialPaused && !lifecycle.ValidImportedInitialAuthority(s) || !s.ImportedInitialPaused && s.ImportedInitialDebt.ID != "" {
+			return false
+		}
 		if s.ImportedOrigin.ClientID != s.ClientID || s.ImportedOrigin.BotID != botID || s.FirstInvoiceID != "" || s.RegistrationToken != "" || s.ActivationToken != "" || s.ImportedAdmissionPermissionRevision <= 0 || s.ImportedEffectsRevision <= 0 || s.ImportedRecurringProfile.Hash() == "" || s.RecurringDraft.ClientID != "" || s.RecurringDraft.PrivateNotes != "" || len(s.ImportedInboundIDs) == 0 || s.Payment.FirstInvoiceID != "" || s.Payment.ImportedOrigin != s.ImportedOrigin || s.Payment.ImportedBaselineProofHash != ([32]byte{}) {
 			return false
 		}
@@ -32,6 +35,9 @@ func validRenewalStoreFacts(s lifecycle.RenewalSnapshot, botID int64, allowed []
 	}
 	if s.Payment.ClientID != s.ClientID || s.Payment.TelegramID != s.TelegramID || s.Payment.ChatID != s.ChatID || s.Payment.BotID != botID || s.Payment.CustomerID != s.CustomerID || s.Payment.InvoiceID != s.InvoiceID || s.Payment.FirstInvoiceID != s.FirstInvoiceID || s.Payment.RecurringID != s.RecurringID || s.Payment.State != s.State || s.Payment.DesiredAccess != s.DesiredAccess || s.Proof.InvoiceID != s.InvoiceID || s.Proof.CustomerID != s.CustomerID || s.Proof.Validate() != nil {
 		return false
+	}
+	if s.ImportedInitialPaused {
+		return lifecycle.ValidImportedInitialAuthority(s) && s.LedgerCustomerID == "" && s.LedgerRecurringID == "" && s.LedgerInvoiceNumber == "" && s.LedgerStatus == "" && s.LedgerAmount == "" && s.LedgerBalance == "" && s.LedgerPaidToDate == "" && s.LedgerSentDate == "" && s.SUIBinding.ID > 0 && strconv.FormatInt(s.SUIBinding.ID, 10) == s.SUIID && s.SUIBinding.Name != "" && s.ImportedRecurringProfile.Hash() != ""
 	}
 	if s.LedgerCustomerID != s.CustomerID || s.LedgerRecurringID != s.RecurringID || s.LedgerInvoiceNumber != s.Proof.InvoiceNumber || s.LedgerAmount != s.Proof.Amount || s.LedgerStatus != "sent" && s.LedgerStatus != "partial" && s.LedgerStatus != "paid" {
 		return false
