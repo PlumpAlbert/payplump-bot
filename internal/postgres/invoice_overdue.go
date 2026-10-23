@@ -299,7 +299,7 @@ func readOverdueSnapshot(ctx context.Context, reader overdueSnapshotReader, clai
 	return snapshot, nil
 }
 
-func lockImportedOverduePermissions(ctx context.Context, tx pgx.Tx, clientID, botID int64) error {
+func lockImportedEffectPermissions(ctx context.Context, tx pgx.Tx, clientID, botID int64) error {
 	var originBot int64
 	if err := tx.QueryRow(ctx, `SELECT bot_id FROM verified_import_origins WHERE client_id=$1`, clientID).Scan(&originBot); err != nil || originBot != botID {
 		return queue.ErrConflict
@@ -376,7 +376,7 @@ func (s *Store) AuthorizeOverdueWrite(ctx context.Context, claim queue.Operation
 		return false, err
 	}
 	if expected.ImportedOrigin.Valid() {
-		if err := lockImportedOverduePermissions(ctx, tx, expected.ImportedOrigin.ClientID, botID); err != nil {
+		if err := lockImportedEffectPermissions(ctx, tx, expected.ImportedOrigin.ClientID, botID); err != nil {
 			return false, err
 		}
 	}

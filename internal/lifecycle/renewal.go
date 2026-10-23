@@ -38,20 +38,32 @@ const (
 )
 
 type RenewalWorker struct {
-	store      RenewalStore
-	invoices   RenewalInvoiceReader
-	payments   RenewalPaymentReader
-	recurring  RenewalRecurringWriter
-	panel      RenewalSUIWriter
-	botID      int64
-	admins     []int64
-	currencyID string
-	cfg        RenewalConfig
-	logger     *slog.Logger
-	now        func() time.Time
+	store             RenewalStore
+	invoices          RenewalInvoiceReader
+	payments          RenewalPaymentReader
+	recurring         RenewalRecurringWriter
+	importedRecurring RenewalImportedRecurringWriter
+	panel             RenewalSUIWriter
+	botID             int64
+	admins            []int64
+	currencyID        string
+	cfg               RenewalConfig
+	logger            *slog.Logger
+	now               func() time.Time
 }
 
 func NewRenewalWorker(store RenewalStore, invoices RenewalInvoiceReader, paymentReader RenewalPaymentReader, recurring RenewalRecurringWriter, panel RenewalSUIWriter, botID int64, admins []int64, currencyID string, cfg RenewalConfig, logger *slog.Logger) (*RenewalWorker, error) {
+	return newRenewalWorker(store, invoices, paymentReader, recurring, nil, panel, botID, admins, currencyID, cfg, logger)
+}
+
+func NewRenewalWorkerWithImported(store RenewalStore, invoices RenewalInvoiceReader, paymentReader RenewalPaymentReader, recurring RenewalRecurringWriter, importedRecurring RenewalImportedRecurringWriter, panel RenewalSUIWriter, botID int64, admins []int64, currencyID string, cfg RenewalConfig, logger *slog.Logger) (*RenewalWorker, error) {
+	if importedRecurring == nil {
+		return nil, errors.New("paid renewal requires imported recurring capability")
+	}
+	return newRenewalWorker(store, invoices, paymentReader, recurring, importedRecurring, panel, botID, admins, currencyID, cfg, logger)
+}
+
+func newRenewalWorker(store RenewalStore, invoices RenewalInvoiceReader, paymentReader RenewalPaymentReader, recurring RenewalRecurringWriter, importedRecurring RenewalImportedRecurringWriter, panel RenewalSUIWriter, botID int64, admins []int64, currencyID string, cfg RenewalConfig, logger *slog.Logger) (*RenewalWorker, error) {
 	if !cfg.Enabled {
 		return nil, errors.New("paid renewal is disabled")
 	}
@@ -71,7 +83,7 @@ func NewRenewalWorker(store RenewalStore, invoices RenewalInvoiceReader, payment
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &RenewalWorker{store: store, invoices: invoices, payments: paymentReader, recurring: recurring, panel: panel, botID: botID, admins: ids, currencyID: currencyID, cfg: cfg, logger: logger, now: time.Now}, nil
+	return &RenewalWorker{store: store, invoices: invoices, payments: paymentReader, recurring: recurring, importedRecurring: importedRecurring, panel: panel, botID: botID, admins: ids, currencyID: currencyID, cfg: cfg, logger: logger, now: time.Now}, nil
 }
 
 func validPaymentCurrency(s string) bool {
@@ -167,6 +179,17 @@ func (w *RenewalWorker) handle(service context.Context, claim queue.Operation) {
 			w.review(claim, s, ReviewRenewalProof)
 			return
 		}
+		if s.ImportedOrigin.Valid() && !s.ImportedEffectsAllowed {
+			if s.Plan == nil {
+				w.review(claim, s, ReviewRenewalAssociation)
+				return
+			}
+			_, pending, complete, valid := NextRenewalStep(*s.Plan, s.Steps)
+			if !valid || pending || !complete {
+				w.review(claim, s, ReviewRenewalAssociation)
+				return
+			}
+		}
 		decision, err := w.observe(ctx, s)
 		if err != nil {
 			if service.Err() == nil {
@@ -189,7 +212,16 @@ func (w *RenewalWorker) handle(service context.Context, claim queue.Operation) {
 			w.review(claim, s, ReviewRenewalProof)
 			return
 		}
-		record, err := w.recurring.Get(ctx, s.RecurringID)
+		var record invoiceninja.RecurringRecord
+		if s.ImportedOrigin.Valid() {
+			if w.importedRecurring == nil {
+				w.review(claim, s, ReviewRenewalAssociation)
+				return
+			}
+			record, err = w.importedRecurring.Get(ctx, s.RecurringID)
+		} else {
+			record, err = w.recurring.Get(ctx, s.RecurringID)
+		}
 		if err != nil {
 			if service.Err() == nil {
 				w.retry(claim, err)
@@ -280,7 +312,14 @@ func (w *RenewalWorker) handle(service context.Context, claim queue.Operation) {
 }
 
 func validRenewalAssociation(s RenewalSnapshot, botID int64, allowed, excluded []int64) bool {
-	return s.BotID == botID && s.ClientID > 0 && s.TelegramID > 0 && s.ChatID == s.TelegramID && s.ManagedProvenance && slices.Contains(allowed, s.TelegramID) && !slices.Contains(excluded, s.TelegramID) && s.CustomerID != "" && s.InvoiceID != "" && s.CurrentInvoiceID == s.InvoiceID && s.FirstInvoiceID != "" && s.FirstInvoiceID != s.InvoiceID && s.RecurringID != "" && s.SUIID != "" && s.RegistrationToken != "" && s.ActivationToken != "" && s.Payment.ClientID == s.ClientID && s.Payment.BotID == botID && s.Payment.CustomerID == s.CustomerID && s.Payment.InvoiceID == s.InvoiceID && s.Payment.FirstInvoiceID == s.FirstInvoiceID && s.Payment.RecurringID == s.RecurringID && s.Proof.InvoiceID == s.InvoiceID && s.Proof.CustomerID == s.CustomerID && s.Proof.Validate() == nil && validRenewalLedger(s) && s.RecurringDraft.ClientID == s.CustomerID && s.RecurringDraft.PrivateNotes == activation.Marker(s.ActivationToken) && invoiceninja.ValidateRecurringDraft(s.RecurringDraft) == nil && s.SUIBinding.ID > 0 && strconv.FormatInt(s.SUIBinding.ID, 10) == s.SUIID && s.SUIBinding.Name != ""
+	common := s.BotID == botID && s.ClientID > 0 && s.TelegramID > 0 && s.ChatID == s.TelegramID && s.ManagedProvenance && slices.Contains(allowed, s.TelegramID) && !slices.Contains(excluded, s.TelegramID) && s.CustomerID != "" && s.InvoiceID != "" && s.CurrentInvoiceID == s.InvoiceID && s.RecurringID != "" && s.SUIID != "" && s.Payment.ClientID == s.ClientID && s.Payment.BotID == botID && s.Payment.CustomerID == s.CustomerID && s.Payment.InvoiceID == s.InvoiceID && s.Payment.RecurringID == s.RecurringID && s.Proof.InvoiceID == s.InvoiceID && s.Proof.CustomerID == s.CustomerID && s.Proof.Validate() == nil && validRenewalLedger(s) && s.SUIBinding.ID > 0 && strconv.FormatInt(s.SUIBinding.ID, 10) == s.SUIID && s.SUIBinding.Name != ""
+	if !common {
+		return false
+	}
+	if s.ImportedOrigin.Valid() {
+		return s.ImportedOrigin.ClientID == s.ClientID && s.ImportedOrigin.BotID == botID && s.FirstInvoiceID == "" && s.RegistrationToken == "" && s.ActivationToken == "" && s.Payment.FirstInvoiceID == "" && s.Payment.ImportedOrigin == s.ImportedOrigin && s.Payment.ImportedBaselineProofHash == ([32]byte{}) && s.ImportedAdmissionPermissionRevision > 0 && s.ImportedEffectsRevision > 0 && s.ImportedRecurringProfile.Hash() != "" && s.RecurringDraft.ClientID == "" && s.RecurringDraft.PrivateNotes == "" && len(s.ImportedInboundIDs) > 0 && validImportedInboundIDs(s.ImportedInboundIDs)
+	}
+	return s.FirstInvoiceID != "" && s.FirstInvoiceID != s.InvoiceID && s.Payment.FirstInvoiceID == s.FirstInvoiceID && !s.Payment.ImportedOrigin.Valid() && s.Payment.ImportedBaselineProofHash == ([32]byte{}) && s.RegistrationToken != "" && s.ActivationToken != "" && s.RecurringDraft.ClientID == s.CustomerID && s.RecurringDraft.PrivateNotes == activation.Marker(s.ActivationToken) && invoiceninja.ValidateRecurringDraft(s.RecurringDraft) == nil
 }
 
 func validRenewalLedger(s RenewalSnapshot) bool {
@@ -321,7 +360,11 @@ func validRenewalLedger(s RenewalSnapshot) bool {
 }
 
 func renewalInvoiceMatches(invoice invoiceninja.CycleInvoice, s RenewalSnapshot) bool {
-	return invoice.ID == s.InvoiceID && invoice.ClientID == s.CustomerID && invoice.RecurringID == s.RecurringID && invoice.PrivateNotes == activation.Marker(s.ActivationToken) && invoice.StatusID == "4" && !invoice.IsDeleted && invoice.ArchivedAt == 0
+	notes := activation.Marker(s.ActivationToken)
+	if s.ImportedOrigin.Valid() {
+		notes = s.ImportedPrivateNotes
+	}
+	return invoice.ID == s.InvoiceID && invoice.ClientID == s.CustomerID && invoice.RecurringID == s.RecurringID && invoice.PrivateNotes == notes && invoice.StatusID == "4" && !invoice.IsDeleted && invoice.ArchivedAt == 0
 }
 
 func (w *RenewalWorker) observe(ctx context.Context, s RenewalSnapshot) (payments.Decision, error) {
@@ -334,7 +377,16 @@ func (w *RenewalWorker) observe(ctx context.Context, s RenewalSnapshot) (payment
 
 // Own-overdue provenance is captured durably by the store; only this explicit marker allows restoration.
 func validRenewalExternalState(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.ClientRecord) int {
-	if r.ID != s.RecurringID || r.ClientID != s.CustomerID || r.PrivateNotes != s.RecurringDraft.PrivateNotes || r.IsDeleted || r.ArchivedAt != 0 || !validRenewalRecurringRecord(r, s.RecurringDraft) {
+	validRecord := validRenewalRecurringRecord(r, s.RecurringDraft)
+	notes := s.RecurringDraft.PrivateNotes
+	if s.ImportedOrigin.Valid() {
+		validRecord = invoiceninja.ValidateImportedRecurringForProfile(r, s.ImportedRecurringProfile) == nil
+		notes = s.ImportedPrivateNotes
+	}
+	if r.ID != s.RecurringID || r.ClientID != s.CustomerID || r.PrivateNotes != notes || r.IsDeleted || r.ArchivedAt != 0 || !validRecord {
+		return ReviewRenewalAssociation
+	}
+	if s.ImportedOrigin.Valid() && sui.ValidateImportedRecordBinding(p, s.SUIBinding, s.ImportedInboundIDs) != nil {
 		return ReviewRenewalAssociation
 	}
 	if s.State == "active" && s.DesiredAccess {
@@ -485,7 +537,13 @@ func hasPendingRenewalIntent(steps map[RenewalStep]RenewalStepRecord) bool {
 }
 
 func renewalCompletionState(s RenewalSnapshot, plan RenewalPlan, r invoiceninja.RecurringRecord, panel sui.ClientRecord, now time.Time) bool {
-	if r.ID != s.RecurringID || r.ClientID != s.CustomerID || r.PrivateNotes != s.RecurringDraft.PrivateNotes || r.StatusID != "2" || r.NextSendDate != plan.TargetDate || r.IsDeleted || r.ArchivedAt != 0 || plan.TargetDate <= now.In(time.Local).Format(time.DateOnly) || !validRenewalRecurringRecord(r, s.RecurringDraft) || !panel.Enabled() || !suiRenewalBindingMatches(panel, s.SUIBinding) {
+	validRecord := validRenewalRecurringRecord(r, s.RecurringDraft)
+	notes := s.RecurringDraft.PrivateNotes
+	if s.ImportedOrigin.Valid() {
+		validRecord = invoiceninja.ValidateImportedRecurringForProfile(r, s.ImportedRecurringProfile) == nil
+		notes = s.ImportedPrivateNotes
+	}
+	if r.ID != s.RecurringID || r.ClientID != s.CustomerID || r.PrivateNotes != notes || r.StatusID != "2" || r.NextSendDate != plan.TargetDate || r.IsDeleted || r.ArchivedAt != 0 || plan.TargetDate <= now.In(time.Local).Format(time.DateOnly) || !validRecord || !panel.Enabled() || !suiRenewalBindingMatches(panel, s.SUIBinding) || s.ImportedOrigin.Valid() && sui.ValidateImportedRecordBinding(panel, s.SUIBinding, s.ImportedInboundIDs) != nil {
 		return false
 	}
 	when, err := invoiceninja.ParseRecurringUTC(r.NextSendDatetime)
@@ -538,38 +596,73 @@ func (w *RenewalWorker) dispatch(ctx context.Context, claim queue.Operation, s R
 	}
 	switch step {
 	case RenewalPause:
-		draft, e := invoiceninja.PreparePause(record, s.RecurringDraft)
-		if e != nil {
-			w.review(claim, s, ReviewRenewalContract)
-			return false
+		if s.ImportedOrigin.Valid() {
+			draft, e := invoiceninja.PrepareImportedPause(s.ImportedRecurringProfile, record)
+			if e != nil {
+				w.review(claim, s, ReviewRenewalContract)
+				return false
+			}
+			raw, err = json.Marshal(draft)
+			if err != nil {
+				w.review(claim, s, ReviewRenewalContract)
+				return false
+			}
+			got, e := w.importedRecurring.PauseAuthorized(ctx, draft, authorize)
+			err, resultID = e, got.ID
+		} else {
+			draft, e := invoiceninja.PreparePause(record, s.RecurringDraft)
+			if e != nil {
+				w.review(claim, s, ReviewRenewalContract)
+				return false
+			}
+			raw, err = json.Marshal(draft)
+			if err != nil {
+				w.review(claim, s, ReviewRenewalContract)
+				return false
+			}
+			got, e := w.recurring.PauseAuthorized(ctx, draft, authorize)
+			err, resultID = e, got.ID
 		}
-		raw, err = json.Marshal(draft)
-		if err != nil {
-			w.review(claim, s, ReviewRenewalContract)
-			return false
-		}
-		got, e := w.recurring.PauseAuthorized(ctx, draft, authorize)
-		err = e
-		resultID = got.ID
 	case RenewalSchedule:
 		today := w.now().In(time.Local).Format(time.DateOnly)
-		draft, e := invoiceninja.PrepareSchedule(record, s.RecurringDraft, s.Plan.TargetDate, today)
-		if e != nil {
-			w.review(claim, s, ReviewRenewalTarget)
-			return false
-		}
-		raw, err = json.Marshal(draft)
-		if err != nil {
-			w.review(claim, s, ReviewRenewalContract)
-			return false
-		}
-		got, e := w.recurring.RescheduleAuthorized(ctx, draft, authorize)
-		err = e
-		resultID = got.ID
-		if e == nil {
-			receipt, err = json.Marshal(invoiceninja.RecurringReceipt{Amount: got.Amount, NextSendDatetime: got.NextSendDatetime})
+		if s.ImportedOrigin.Valid() {
+			draft, e := invoiceninja.PrepareImportedSchedule(s.ImportedRecurringProfile, record, s.Plan.TargetDate, today)
+			if e != nil {
+				w.review(claim, s, ReviewRenewalTarget)
+				return false
+			}
+			raw, err = json.Marshal(draft)
+			if err != nil {
+				w.review(claim, s, ReviewRenewalContract)
+				return false
+			}
+			got, e := w.importedRecurring.RescheduleAuthorized(ctx, draft, authorize)
+			err, resultID = e, got.ID
+			if e == nil {
+				receipt, err = json.Marshal(invoiceninja.RecurringReceipt{Amount: got.Amount, NextSendDatetime: got.NextSendDatetime})
+			}
+		} else {
+			draft, e := invoiceninja.PrepareSchedule(record, s.RecurringDraft, s.Plan.TargetDate, today)
+			if e != nil {
+				w.review(claim, s, ReviewRenewalTarget)
+				return false
+			}
+			raw, err = json.Marshal(draft)
+			if err != nil {
+				w.review(claim, s, ReviewRenewalContract)
+				return false
+			}
+			got, e := w.recurring.RescheduleAuthorized(ctx, draft, authorize)
+			err, resultID = e, got.ID
+			if e == nil {
+				receipt, err = json.Marshal(invoiceninja.RecurringReceipt{Amount: got.Amount, NextSendDatetime: got.NextSendDatetime})
+			}
 		}
 	case RenewalEnable:
+		if s.ImportedOrigin.Valid() && sui.ValidateImportedRecordBinding(panel, s.SUIBinding, s.ImportedInboundIDs) != nil {
+			w.review(claim, s, ReviewRenewalAssociation)
+			return false
+		}
 		draft, e := sui.PrepareEnable(panel, s.SUIBinding)
 		if e != nil {
 			w.review(claim, s, ReviewRenewalExternalState)
@@ -597,19 +690,33 @@ func (w *RenewalWorker) dispatch(ctx context.Context, claim queue.Operation, s R
 				return false
 			}
 		}
-		draft, e := invoiceninja.PrepareResume(record, s.RecurringDraft, rec, w.now().In(time.Local).Format(time.DateOnly))
-		if e != nil {
-			w.review(claim, s, ReviewRenewalTarget)
-			return false
+		if s.ImportedOrigin.Valid() {
+			draft, e := invoiceninja.PrepareImportedResume(s.ImportedRecurringProfile, record, rec)
+			if e != nil {
+				w.review(claim, s, ReviewRenewalTarget)
+				return false
+			}
+			raw, err = json.Marshal(draft)
+			if err != nil {
+				w.review(claim, s, ReviewRenewalContract)
+				return false
+			}
+			got, e := w.importedRecurring.ResumeAuthorized(ctx, draft, authorize)
+			err, resultID = e, got.ID
+		} else {
+			draft, e := invoiceninja.PrepareResume(record, s.RecurringDraft, rec, w.now().In(time.Local).Format(time.DateOnly))
+			if e != nil {
+				w.review(claim, s, ReviewRenewalTarget)
+				return false
+			}
+			raw, err = json.Marshal(draft)
+			if err != nil {
+				w.review(claim, s, ReviewRenewalContract)
+				return false
+			}
+			got, e := w.recurring.ResumeAuthorized(ctx, draft, authorize)
+			err, resultID = e, got.ID
 		}
-		raw, err = json.Marshal(draft)
-		if err != nil {
-			w.review(claim, s, ReviewRenewalContract)
-			return false
-		}
-		got, e := w.recurring.ResumeAuthorized(ctx, draft, authorize)
-		err = e
-		resultID = got.ID
 	default:
 		w.review(claim, s, ReviewRenewalSequence)
 		return false

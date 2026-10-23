@@ -11,6 +11,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/lifecycle"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
+	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -43,6 +44,11 @@ func (s *Store) FreezeRenewalPlan(ctx context.Context, claim queue.Operation, bo
 	if err != nil {
 		return err
 	}
+	if expected.ImportedOrigin.Valid() {
+		if err = lockImportedEffectPermissions(ctx, tx, expected.ImportedOrigin.ClientID, botID); err != nil {
+			return err
+		}
+	}
 	actual, err := readRenewalSnapshot(ctx, tx, claim, botID)
 	if err != nil {
 		return err
@@ -50,7 +56,7 @@ func (s *Store) FreezeRenewalPlan(ctx context.Context, claim queue.Operation, bo
 	if clientID != expected.ClientID || invoiceID != expected.InvoiceID || !reflect.DeepEqual(actual, expected) {
 		return queue.ErrConflict
 	}
-	if actual.Plan != nil || actual.WriterBusy || actual.PaymentLocked || actual.PaymentReview || actual.LifecycleReview || !validRenewalStoreFacts(actual, botID, allowed) || actual.Proof.Hash != expected.Proof.Hash {
+	if actual.Plan != nil || actual.WriterBusy || actual.PaymentLocked || actual.PaymentReview || actual.LifecycleReview || actual.ImportedOrigin.Valid() && !actual.ImportedEffectsAllowed || !validRenewalStoreFacts(actual, botID, allowed) || actual.Proof.Hash != expected.Proof.Hash {
 		return queue.ErrConflict
 	}
 	next, e := billing.NextBillingDate(actual.Proof.PaymentDate)
@@ -121,6 +127,11 @@ func (s *Store) AuthorizeRenewalWrite(ctx context.Context, claim queue.Operation
 	if err != nil {
 		return false, err
 	}
+	if expected.ImportedOrigin.Valid() {
+		if err = lockImportedEffectPermissions(ctx, tx, expected.ImportedOrigin.ClientID, botID); err != nil {
+			return false, err
+		}
+	}
 	actual, err := readRenewalSnapshot(ctx, tx, claim, botID)
 	if err != nil {
 		return false, err
@@ -128,8 +139,13 @@ func (s *Store) AuthorizeRenewalWrite(ctx context.Context, claim queue.Operation
 	if clientID != expected.ClientID || invoiceID != expected.InvoiceID || !reflect.DeepEqual(actual, expected) {
 		return false, queue.ErrConflict
 	}
-	if actual.Plan == nil || !actual.Plan.Required(step) || actual.WriterBusy || actual.PaymentLocked || actual.PaymentReview || actual.LifecycleReview || !validRenewalStoreFacts(actual, botID, allowed) || actual.Proof.Hash != expected.Proof.Hash {
+	if actual.Plan == nil || !actual.Plan.Required(step) || actual.WriterBusy || actual.PaymentLocked || actual.PaymentReview || actual.LifecycleReview || actual.ImportedOrigin.Valid() && !actual.ImportedEffectsAllowed || !validRenewalStoreFacts(actual, botID, allowed) || actual.Proof.Hash != expected.Proof.Hash {
 		return false, queue.ErrConflict
+	}
+	if actual.ImportedOrigin.Valid() {
+		if err := validateImportedRenewalRequest(request, step, actual); err != nil {
+			return false, queue.ErrConflict
+		}
 	}
 	if actual.Plan.TargetDate <= today {
 		return false, lifecycle.ErrRenewalTargetExpired
@@ -179,6 +195,60 @@ func (s *Store) AuthorizeRenewalWrite(ctx context.Context, claim queue.Operation
 		return false, err
 	}
 	return true, nil
+}
+
+func validateImportedRenewalRequest(raw json.RawMessage, step lifecycle.RenewalStep, snapshot lifecycle.RenewalSnapshot) error {
+	switch step {
+	case lifecycle.RenewalPause:
+		var draft invoiceninja.ImportedPauseDraft
+		if json.Unmarshal(raw, &draft) != nil || draft.ProfileHash() != snapshot.ImportedRecurringProfile.Hash() {
+			return queue.ErrConflict
+		}
+	case lifecycle.RenewalSchedule:
+		var draft invoiceninja.ImportedScheduleDraft
+		var wire struct {
+			Date string `json:"date"`
+		}
+		if json.Unmarshal(raw, &draft) != nil || draft.ProfileHash() != snapshot.ImportedRecurringProfile.Hash() || json.Unmarshal(raw, &wire) != nil || snapshot.Plan == nil || wire.Date != snapshot.Plan.TargetDate {
+			return queue.ErrConflict
+		}
+	case lifecycle.RenewalResume:
+		if snapshot.Plan == nil {
+			return queue.ErrConflict
+		}
+		var draft invoiceninja.ImportedResumeDraft
+		var wire struct {
+			Receipt invoiceninja.RecurringReceipt `json:"receipt"`
+		}
+		if json.Unmarshal(raw, &draft) != nil || draft.ProfileHash() != snapshot.ImportedRecurringProfile.Hash() || json.Unmarshal(raw, &wire) != nil {
+			return queue.ErrConflict
+		}
+		expected := snapshot.Plan.BaselineReceipt
+		if scheduled, ok := snapshot.Steps[lifecycle.RenewalSchedule]; ok {
+			if !scheduled.Confirmed || json.Unmarshal(scheduled.Receipt, &expected) != nil {
+				return queue.ErrConflict
+			}
+		}
+		if wire.Receipt.Amount != expected.Amount || wire.Receipt.NextSendDatetime != expected.NextSendDatetime {
+			return queue.ErrConflict
+		}
+	case lifecycle.RenewalEnable:
+		var draft sui.EnableDraft
+		var wire struct {
+			Before  json.RawMessage `json:"before"`
+			Binding sui.Binding     `json:"binding"`
+		}
+		if json.Unmarshal(raw, &draft) != nil || draft.Binding() != snapshot.SUIBinding || json.Unmarshal(raw, &wire) != nil || wire.Binding != snapshot.SUIBinding || len(wire.Before) == 0 {
+			return queue.ErrConflict
+		}
+		before, err := sui.ParseClientRecord(wire.Before)
+		if err != nil || sui.ValidateImportedRecordBinding(before, snapshot.SUIBinding, snapshot.ImportedInboundIDs) != nil {
+			return queue.ErrConflict
+		}
+	default:
+		return queue.ErrConflict
+	}
+	return nil
 }
 
 func renewalStepStateAllowed(s lifecycle.RenewalSnapshot, step lifecycle.RenewalStep) bool {

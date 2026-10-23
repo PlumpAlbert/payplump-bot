@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
@@ -94,6 +95,13 @@ type RenewalSnapshot struct {
 	OverduePending                                                         bool
 	OverdueReviewPayment                                                   bool
 	OverdueOtherSteps                                                      bool
+	ImportedOrigin                                                         importorigin.Ref
+	ImportedAdmissionPermissionRevision                                    int64
+	ImportedEffectsRevision                                                int64
+	ImportedEffectsAllowed                                                 bool
+	ImportedRecurringProfile                                               invoiceninja.ImportedRecurringProfile
+	ImportedPrivateNotes                                                   string
+	ImportedInboundIDs                                                     []int64
 }
 
 func (RenewalSnapshot) String() string   { return "[sensitive paid renewal snapshot]" }
@@ -119,6 +127,12 @@ type RenewalRecurringWriter interface {
 	PauseAuthorized(context.Context, invoiceninja.PauseDraft, func(context.Context) error) (invoiceninja.RecurringRecord, error)
 	RescheduleAuthorized(context.Context, invoiceninja.ScheduleDraft, func(context.Context) error) (invoiceninja.RecurringRecord, error)
 	ResumeAuthorized(context.Context, invoiceninja.ResumeDraft, func(context.Context) error) (invoiceninja.RecurringRecord, error)
+}
+type RenewalImportedRecurringWriter interface {
+	Get(context.Context, string) (invoiceninja.RecurringRecord, error)
+	PauseAuthorized(context.Context, invoiceninja.ImportedPauseDraft, func(context.Context) error) (invoiceninja.RecurringRecord, error)
+	RescheduleAuthorized(context.Context, invoiceninja.ImportedScheduleDraft, func(context.Context) error) (invoiceninja.RecurringRecord, error)
+	ResumeAuthorized(context.Context, invoiceninja.ImportedResumeDraft, func(context.Context) error) (invoiceninja.RecurringRecord, error)
 }
 type RenewalSUIWriter interface {
 	GetRecord(context.Context, int64) (sui.ClientRecord, error)

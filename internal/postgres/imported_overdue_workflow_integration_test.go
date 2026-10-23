@@ -274,6 +274,10 @@ type importedOverdueRig struct {
 }
 
 func newImportedOverdueRig(t *testing.T, unknown bool) *importedOverdueRig {
+	return newImportedOverdueRigWithHandler(t, unknown, nil)
+}
+
+func newImportedOverdueRigWithHandler(t *testing.T, unknown bool, handler func(*importedOverdueSource) http.Handler) *importedOverdueRig {
 	t.Helper()
 	s, ctx := activationTestStore(t)
 	now := time.Now().UTC()
@@ -293,7 +297,11 @@ func newImportedOverdueRig(t *testing.T, unknown bool) *importedOverdueRig {
 	allocation := map[string]any{"id": "allocation-42", "invoice_id": admissionFixtureInv, "payment_id": "payment-42", "amount": 100, "refunded": 0, "archived_at": 0}
 	payment := map[string]any{"id": "payment-42", "client_id": admissionFixtureCust, "date": start, "status_id": "4", "currency_id": "1", "exchange_currency_id": "", "amount": 100, "refunded": 0, "applied": 100, "exchange_rate": 1, "is_manual": true, "is_deleted": false, "archived_at": 0, "paymentables": []any{allocation}, "invoices": []any{}}
 	f := &importedOverdueSource{t: t, store: s, botID: admissionFixtureBotID, recurring: recurring, invoices: []any{older, invoice}, current: invoice, older: older, payment: payment, customer: customer, settlementCustomer: settlementCustomer, suiRaw: suiRaw, unknown: unknown}
-	server := httptest.NewServer(f)
+	httpHandler := http.Handler(f)
+	if handler != nil {
+		httpHandler = handler(f)
+	}
+	server := httptest.NewServer(httpHandler)
 	t.Cleanup(server.Close)
 	imp, err := invoiceninja.NewImportReader(server.URL+"/ninja", importedOverdueNinjaToken, time.Second, 10, 2)
 	if err != nil {
@@ -679,7 +687,6 @@ func assertImportedOverdueComplete(t *testing.T, r *importedOverdueRig) {
 	paymentSQL(t, r.s, ctx, `SELECT count(*)=0 FROM activation_sui_bindings WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`)
 	paymentSQL(t, r.s, ctx, `SELECT current_invoice_id='invoice-imported-new' AND first_invoice_id IS NULL FROM subscriptions WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`)
 	paymentSQL(t, r.s, ctx, `SELECT count(*)=3 AND count(*) FILTER (WHERE step='pause_recurring' AND external_id=$1 AND confirmed_at IS NOT NULL)=1 AND count(*) FILTER (WHERE step='disable_sui' AND external_id='42' AND confirmed_at IS NOT NULL)=1 AND count(*) FILTER (WHERE step='close_sessions' AND external_id='42' AND confirmed_at IS NOT NULL)=1 FROM invoice_overdue_steps WHERE operation_id=(SELECT operation_id FROM invoice_overdue_actions WHERE invoice_id='invoice-imported-new')`, admissionFixtureRec)
-	paymentSQL(t, r.s, ctx, `SELECT revision=1 AND enabled=false FROM imported_effect_permissions WHERE bot_id=$1`, admissionFixtureBotID)
 	paymentSQL(t, r.s, ctx, `SELECT count(*)=2 FROM outbox WHERE bot_id=$1 AND message_key LIKE 'invoice-overdue:%:overdue:%'`, admissionFixtureBotID)
 	var first string
 	_ = r.s.pool.QueryRow(ctx, `SELECT first_invoice_id FROM subscriptions WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`).Scan(&first)

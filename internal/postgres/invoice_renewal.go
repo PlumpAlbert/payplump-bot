@@ -13,7 +13,21 @@ import (
 )
 
 func validRenewalStoreFacts(s lifecycle.RenewalSnapshot, botID int64, allowed []int64) bool {
-	if s.BotID != botID || s.ClientID <= 0 || s.TelegramID <= 0 || s.ChatID != s.TelegramID || s.ManagedProvenance == false || allowed != nil && !containsID(allowed, s.TelegramID) || s.CustomerID == "" || s.InvoiceID == "" || s.CurrentInvoiceID != s.InvoiceID || s.FirstInvoiceID == "" || s.FirstInvoiceID == s.InvoiceID || s.RecurringID == "" || s.SUIID == "" || s.RegistrationToken == "" || s.ActivationToken == "" {
+	if s.BotID != botID || s.ClientID <= 0 || s.TelegramID <= 0 || s.ChatID != s.TelegramID || !s.ManagedProvenance || allowed != nil && !containsID(allowed, s.TelegramID) || s.CustomerID == "" || s.InvoiceID == "" || s.CurrentInvoiceID != s.InvoiceID || s.RecurringID == "" || s.SUIID == "" {
+		return false
+	}
+	if s.ImportedOrigin.Valid() {
+		if s.ImportedOrigin.ClientID != s.ClientID || s.ImportedOrigin.BotID != botID || s.FirstInvoiceID != "" || s.RegistrationToken != "" || s.ActivationToken != "" || s.ImportedAdmissionPermissionRevision <= 0 || s.ImportedEffectsRevision <= 0 || s.ImportedRecurringProfile.Hash() == "" || s.RecurringDraft.ClientID != "" || s.RecurringDraft.PrivateNotes != "" || len(s.ImportedInboundIDs) == 0 || s.Payment.FirstInvoiceID != "" || s.Payment.ImportedOrigin != s.ImportedOrigin || s.Payment.ImportedBaselineProofHash != ([32]byte{}) {
+			return false
+		}
+		seen := map[int64]bool{}
+		for _, id := range s.ImportedInboundIDs {
+			if id <= 0 || seen[id] {
+				return false
+			}
+			seen[id] = true
+		}
+	} else if s.FirstInvoiceID == "" || s.FirstInvoiceID == s.InvoiceID || s.RegistrationToken == "" || s.ActivationToken == "" || s.Payment.ImportedOrigin.Valid() || s.Payment.ImportedBaselineProofHash != ([32]byte{}) {
 		return false
 	}
 	if s.Payment.ClientID != s.ClientID || s.Payment.TelegramID != s.TelegramID || s.Payment.ChatID != s.ChatID || s.Payment.BotID != botID || s.Payment.CustomerID != s.CustomerID || s.Payment.InvoiceID != s.InvoiceID || s.Payment.FirstInvoiceID != s.FirstInvoiceID || s.Payment.RecurringID != s.RecurringID || s.Payment.State != s.State || s.Payment.DesiredAccess != s.DesiredAccess || s.Proof.InvoiceID != s.InvoiceID || s.Proof.CustomerID != s.CustomerID || s.Proof.Validate() != nil {
@@ -59,7 +73,13 @@ func validRenewalStoreFacts(s lifecycle.RenewalSnapshot, botID int64, allowed []
 	default:
 		return false
 	}
-	if s.RecurringDraft.ClientID != s.CustomerID || s.RecurringDraft.PrivateNotes != activation.Marker(s.ActivationToken) || invoiceninja.ValidateRecurringDraft(s.RecurringDraft) != nil || s.SUIBinding.ID <= 0 || strconv.FormatInt(s.SUIBinding.ID, 10) != s.SUIID || s.SUIBinding.Name == "" {
+	if s.SUIBinding.ID <= 0 || strconv.FormatInt(s.SUIBinding.ID, 10) != s.SUIID || s.SUIBinding.Name == "" {
+		return false
+	}
+	if s.ImportedOrigin.Valid() {
+		return s.ImportedRecurringProfile.Hash() != ""
+	}
+	if s.RecurringDraft.ClientID != s.CustomerID || s.RecurringDraft.PrivateNotes != activation.Marker(s.ActivationToken) || invoiceninja.ValidateRecurringDraft(s.RecurringDraft) != nil {
 		return false
 	}
 	return true

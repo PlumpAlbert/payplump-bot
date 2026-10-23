@@ -17,10 +17,12 @@ and post-merge CI `40005923953`, both green. 11b.3 payment tracking merged as
 and post-merge CI `40015300957`, including all three imported lifecycle tests
 and the full three-phase worker/actual CycleReader PostgreSQL workflow. The
 nullable-first-invoice CAS defect was fixed before merge. 11b.5 OVERDUE-only
-code and tests are ready; independent review `b5148ca3-905d-495` found zero
-behavioral/design findings. Local unit/race/vet/CGO0 build/module/gofmt/diff
-checks and PostgreSQL integration compile passed. SQL runtime, PR #30, its CI,
-and merge remain pending.
+code merged as PR #30 at `19d45cf7f85c784b74cdc0cb2b71f5d15cddb758`; exact
+code HEAD `b8efc247fe09b78e078b0c115c52317d47311939` passed required CI
+`40019995948` and post-merge CI `40020785993`, all green. Imported paid renewal
+11b.6.1 is in progress; parent unit/race/vet/CGO0 build/module/gofmt/diff
+checks and PostgreSQL integration compile passed. Independent review `e06c5abf-0d4d-484` completed with zero behavioral and
+design findings; SQL runtime, PR #31, CI, and merge remain pending.
 
 ## Как вести план
 
@@ -348,8 +350,10 @@ Live-проверки и реальные импорты не выполняют
 - [x] 11b.2 provider-only slice: separate imported recurring profile and typed pause/schedule/resume adapter preserves legacy notes and frozen price, with GET preflight and final authorization. PR #27 exact HEAD `0fad9355c818424089a72aa1211bf33be5ab6ced` passed required CI `40005099529` and post-merge CI `40005923953`, both green. It remains unwired and does not make imported origins generally managed.
 - [x] 11b.3 payment-tracking-only: separate default-off imported-runtime permission; DB-validated comparable imported-origin snapshot with current configuration revision; imported-only payment tracking; active paid-baseline proof pin and storage-boundary suppression of historical confirmation notices. PR #28 squash `925d994619864e4f07b9d72fcb2e68cdfcd8e449`; exact HEAD `839144922e91fb27bfea7b08b8f204b437c38545` passed required CI `40010097193` and post-merge CI `40010923644`, all green. Coverage included real GET active/paused workflows, first-proof pinning, multibot scoping, due/privacy and pre-010 unknown-migration fixtures, full PG17, smoke, and Docker. Permission sync is explicit, not startup configuration. No fake first invoice or source effects.
 - [x] 11b.4 read-only imported invoice tracking: GET discovery of ordinary new recurring invoices, normal new-invoice ledger/current-ID updates/notices, and frozen historical-ID suppression without fabricated dates. PR #29 merged as `149d6b679ff007b1cff6d9679862675f03048412`; exact HEAD `4c7a879da681ea75410526fc98f7bc37ab18e096` passed required CI `40014461532` and post-merge CI `40015300957`, including all three `TestImportedInvoiceLifecycle...` tests and the full three-phase worker/actual CycleReader PostgreSQL workflow. Nullable-first-invoice CAS defect was fixed before merge.
-- [ ] 11b.5 imported overdue-only effects: separate default-off effects permission, immutable action-frozen current admission/runtime/effects permission revisions (distinct from historical origin admission revision), imported profile/S-UI binding, snapshot and authorization fencing. Code and tests are ready; independent review `b5148ca3-905d-495` found zero behavioral/design findings. Local unit/race/vet/CGO0 build/module/gofmt/diff and PostgreSQL integration compile checks passed. SQL runtime, PR #30, required CI and merge remain pending; do not mark complete until CI passes.
-- [ ] Remaining 11b after 11b.5: imported renewal; protected origin configuration/FK with current DB proof; explicit apply CLI; and runtime-environment wiring. Keep OWN-only renewal behavior strict. Stage 11 remains incomplete; saved verification reports are not admission authority.
+- [x] 11b.5 imported overdue-only effects: separate default-off effects permission, immutable action-frozen current admission/runtime/effects permission revisions (distinct from historical origin admission revision), imported profile/S-UI binding, snapshot and authorization fencing. PR #30 merged as `19d45cf7f85c784b74cdc0cb2b71f5d15cddb758`; exact code HEAD `b8efc247fe09b78e078b0c115c52317d47311939` passed required CI `40019995948` and post-merge CI `40020785993`, all green. Its CI included two loopback workflows and three permission fences.
+- [ ] 11b.6.1 imported paid renewal: new ordinary lifecycle-ledger invoices only; three PostgreSQL workflow cases are implemented. Parent unit/race/vet/CGO0 build/module verification/gofmt/diff and PostgreSQL compile checks passed. Independent review `e06c5abf-0d4d-484` completed with zero behavioral and design findings; SQL runtime, PR #31, CI, and merge remain pending. Do not mark complete before CI.
+- [ ] 11b.6.2 initial paused-baseline/current-debt restoration: future work requiring explicit origin mode/FK; never fabricate ledger dates or OWN overdue journals.
+- [ ] Remaining 11b: protected origin configuration/current DB proof, protected imported configuration/menu/current-proof, apply CLI, and default-off startup wiring. Stage 11 remains incomplete; saved reports/artifacts are not admission authority.
 - [ ] Preserve actor/pilot restrictions. Historical invoices must not produce stale notices or operations; 11b.4 suppresses their IDs without fabricated sent dates or first-activation history. Leave unpaid imported debts for manual review, without forgiveness or automation.
 - [ ] Перед любым будущим admission выделять дубли, отсутствующие пары и противоречия для ручного разбора; реальные данные и live API требуют отдельного owner gate.
 
