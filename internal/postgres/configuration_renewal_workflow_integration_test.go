@@ -26,6 +26,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const renewalWorkflowBotID int64 = 77123
@@ -380,10 +381,19 @@ func runRenewalProtectedConfigurationCase(t *testing.T, late bool) {
 				return errors.New("schedule write preceded committed pause receipt")
 			}
 			var exact bool
-			if err := s.pool.QueryRow(ctx, `SELECT jsonb_object_length(st.request)=3 AND st.request ? 'before' AND st.request ? 'template'
+			if err := s.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM jsonb_object_keys(st.request))=3 AND st.request ? 'before' AND st.request ? 'template'
 				AND st.request->>'desired_date'=$2 AND (st.request->'before')->>'id'='recurring-synthetic'
 				AND (st.request->'template')->>'client_id'=$3
-				FROM invoice_renewal_steps st WHERE st.operation_id=$1 AND st.step='schedule_recurring'`, opID, target, customer).Scan(&exact); err != nil || !exact {
+				FROM invoice_renewal_steps st WHERE st.operation_id=$1 AND st.step='schedule_recurring'`, opID, target, customer).Scan(&exact); err != nil {
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) {
+					t.Logf("renewal_schedule_callback SQLSTATE=%s", pgErr.Code)
+				} else {
+					t.Log("renewal_schedule_callback SQL failed outside PostgreSQL")
+				}
+				return errors.New("schedule intent SQL verification failed")
+			}
+			if !exact {
 				return errors.New("schedule intent did not freeze the expected sparse recurring date")
 			}
 		}
