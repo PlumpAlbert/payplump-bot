@@ -262,7 +262,7 @@ resume recurring. Повтор оплаты не должен сдвигать �
 - [ ] После отдельного разрешения владельца проверить полный lifecycle на установленных сервисах и тестовой записи, включая фактическое отключение и доставку уведомлений.
 
 
-## 9. Оплаченные recurring-периоды: 9a merged, код 9b и CI проверены; PR #21 ожидает merge
+## 9. Оплаченные recurring-периоды: 9a и 9b merged
 
 `payments.Observe` / `payments.Evaluate` уже проверяют финансовое доказательство
 для non-first `current_invoice_id` при точном recurring ID. `payment_confirmations`
@@ -288,14 +288,15 @@ resume recurring. Повтор оплаты не должен сдвигать �
 Код этапа 9b расширяет ту же защищённую выдачу. Режим периода закрепляется в
 неизменяемом запросе; provenance первой активации остаётся прежней, а renewal
 использует отдельное актуальное подтверждение счёта и завершённую квитанцию
-renewal. Код и тесты PR #21 прошли все обязательные проверки на точном исходном
-HEAD `925364d85ac733d6f582d5f2bc83d5f2a0b40525`: [GitHub Actions run 39975961988](https://github.com/PlumpAlbert/payplump-bot/actions/runs/39975961988)
-(`fast-checks`, `postgres-integration`, `test`). В runtime-логе [job 120491239073](https://github.com/PlumpAlbert/payplump-bot/actions/runs/39975961988/job/120491239073)
-прошёл `TestRealRenewalToProtectedConfigurationWorkflow` в сценариях
-`active_reschedule` (2.83 s) и `late_overdue_restoration` (2.87 s), а также
-`TestConfigurationUnknownSecretCannotReplayAfterNewPaidPeriod`. Полный SQL/race,
-smoke и Docker checks также прошли. Это результат для исходного code HEAD, не
-новый документационный HEAD. Merge PR #21 ещё ожидается; live-проверки не проводились.
+renewal. PR #21 влит в `b98d351d20e2cf2a420ba773c3af464ba1564e64`, финальный
+HEAD `1c63194dde4920c0e8157be59f533a16ea4352e6`. Код и тесты прошли required CI
+на исходном code HEAD `925364d85ac733d6f582d5f2bc83d5f2a0b40525`:
+[run 39975961988](https://github.com/PlumpAlbert/payplump-bot/actions/runs/39975961988);
+после merge зелёный required main CI — [run 39978010690](https://github.com/PlumpAlbert/payplump-bot/actions/runs/39978010690).
+Проверки включали `fast-checks`, `postgres-integration`, `test`, PostgreSQL
+SQL/race, smoke и Docker checks. В runtime прошли `TestRealRenewalToProtectedConfigurationWorkflow`
+для обычного и позднего renewal, а также `TestConfigurationUnknownSecretCannotReplayAfterNewPaidPeriod`.
+Live-проверки не проводились.
 
 - [x] Расширить защищённую выдачу на текущий оплаченный период с explicit mode/FK, current-proof GET и неизменной S-UI binding; URL остаётся вне outbox.
 - [x] Добавить renewal lifecycle-recurring validation, финальную квитанцию/даты и fencing изменений invoice/renewal authority.
@@ -315,18 +316,16 @@ smoke и Docker checks также прошли. Это результат для
 
 ## 11. Сверка и импорт существующих клиентов
 
-Инертные синтетические `import-plan` и DB staging уже реализованы: они валидируют
-план, сохраняют неизменяемые факты и не выдают capability. Проверенная admission
-и управляемый импорт не реализованы. Live-проверки требуют отдельного решения
-владельца и не блокируют подготовительный код и синтетические тесты.
+Инертные синтетические `import-plan` и DB staging валидируют план, сохраняют
+неизменяемые факты и не выдают capability; они не являются verified reconciliation.
+Live-проверки и реальные импорты не выполняются.
 
 - [x] Добавить строгую проверку синтетического import plan и идемпотентный inert DB staging без создания клиентов, привязок, подтверждений, outbox-сообщений или доступа.
-- [ ] Добавить режим сверки без изменений: сопоставление Invoice Ninja и S-UI по Telegram ID, recurring, текущему счёту и оплаченному периоду.
-- [ ] Выделять дубли, отсутствующие пары и противоречивые даты для ручного разбора; не импортировать их автоматически.
-- [ ] Импортировать только однозначные соответствия, сохраняя текущие цены, имена, реквизиты и действующие ссылки подписок.
-- [ ] Не рассылать исторические счета повторно и не пересоздавать уже существующие сущности при повторе импорта.
-- [ ] Разобрать накопившиеся неоплаченные счета отдельно: правило одного ожидающего счёта не списывает старые долги.
-- [ ] Проверить исходные оплаченные периоды и назначенные управляемые подписки перед включением отключений.
+- [x] 11a.1 provider foundation: bounded read-only Invoice Ninja `FindCustomers` / `ListRecurring`, закреплённый source 5.13.47; bounded strict S-UI `ListIdentities`, версия 1.6.4 с redaction. Синтетические loopback HTTP unit/race тесты прошли; независимое review и required CI текущего PR pending. Это не завершённый этап 11, не reconciliation service/CLI и не доказательство состояния production.
+- [ ] 11a.2 (будущий отдельный PR): verified reconciliation service и operator CLI; private canonical-source evidence и repeatability. Без БД-записей и без admission.
+- [ ] 11b (будущий отдельный PR): explicit managed admission только после свежего GET; отдельные imported origin, binding, proof anchor и revision. Не подделывать registration/activation journals.
+- [ ] Сохранить actor/pilot ограничения; history suppression и накопившиеся неоплаченные долги исключить из автоматизации и оставить ручному разбору.
+- [ ] Перед любым будущим admission выделять дубли, отсутствующие пары и противоречия для ручного разбора; реальные данные и live API требуют отдельного owner gate.
 
 ## 12. Резервное копирование и восстановление
 
