@@ -238,6 +238,15 @@ func (d *ImportedResumeDraft) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
+// ValidateImportedRecurringForProfile verifies an imported recurring record against its immutable profile
+// while allowing either supported pre-mutation status. It grants no write capability.
+func ValidateImportedRecurringForProfile(record RecurringRecord, profile ImportedRecurringProfile) error {
+	if !profile.valid() || record.StatusID != "2" && record.StatusID != "3" || !importedSame(profile, record, record.StatusID) {
+		return ErrRecurringReceipt
+	}
+	return nil
+}
+
 func PrepareImportedPause(p ImportedRecurringProfile, r RecurringRecord) (ImportedPauseDraft, error) {
 	if !p.valid() || !importedSame(p, r, "2") {
 		return ImportedPauseDraft{}, ErrRecurringReceipt

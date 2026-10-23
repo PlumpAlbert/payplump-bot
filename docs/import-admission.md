@@ -59,7 +59,7 @@ is escalated for review. This is payment observation only: it does not grant acc
 activation history. The existing OWN registration-provenance predicate remains
 unchanged. Imported invoice tracking separately performs only Invoice Ninja
 GET discovery and normal ledger/current-invoice/ordinary-notice updates for
-new invoices; neither tracking path writes to Invoice Ninja or S-UI. Imported overdue-only code and tests are ready as the next isolated effect slice. A separate default-off effect permission is used; each immutable action freezes current admission-permission, runtime-permission, and effect-permission revisions. All three enabled permissions must match the immutable origin hashes and their frozen revisions before new writes; the historical origin admission revision remains distinct from the action's current admission-permission revision. Imported recurring pause uses the typed provider capability. Review `b5148ca3-905d-495` found zero behavioral/design findings; no legacy-overdue fixture predating migration 020 was found. The independent PG workflow covers full GET/admit/baseline-observe/CycleWorker/EnforcementWorker success, known closeSessions response after effect disable, and unknown pause/503/revision-2/restart with the guard pinned. Parent local unit/race/vet/CGO0 build/module/gofmt/diff checks and PostgreSQL integration compile passed. SQL runtime, PR #30, required CI and merge remain pending; do not mark this slice complete or use imported overdue effects for real imports until CI passes. Imported renewal remains unimplemented.
+new invoices; neither tracking path writes to Invoice Ninja or S-UI. Imported overdue-only code and tests merged in PR #30 (status and CI are recorded below). A separate default-off effect permission is used; each immutable action freezes current admission-permission, runtime-permission, and effect-permission revisions. The historical origin admission revision remains distinct from the action's current admission-permission revision. Imported recurring pause uses the typed provider capability. Review `b5148ca3-905d-495` found zero behavioral/design findings; no legacy-overdue fixture predating migration 020 was found. The independent PG workflow covers full GET/admit/baseline-observe/CycleWorker/EnforcementWorker success, known closeSessions response after effect disable, and unknown pause/503/revision-2/restart with the guard pinned. Imported paid renewal 11b.6.1 supports only new ordinary lifecycle-ledger invoices; its three PostgreSQL workflow cases are implemented. Parent local unit/race/vet/CGO0 build/module/gofmt/diff checks and PostgreSQL integration compile passed. Independent review `e06c5abf-0d4d-484` completed with zero behavioral and design findings; SQL runtime, PR #31, CI, and merge remain pending. Do not treat this as complete. 11b.6.2 baseline-debt restoration, protected origin/configuration state, apply CLI, and runtime wiring remain future work.
 
 The overall 11b workflow remains incomplete: there is no apply CLI, protected
 origin-mode/configuration with origin FK and current database proof, or
@@ -68,4 +68,23 @@ and is not enabled automatically at startup. The lifecycle discovery/notice
 code exists but is not wired into startup. Frozen invoice history is suppressed
 through the immutable origin's seen-invoice set; legacy sent dates are never
 fabricated from payment dates. The adapter is not an import consumer. No owner,
-production API, deployment, or real-import permission has changed. 11b.4 is complete: PR #29 merged as `149d6b679ff007b1cff6d9679862675f03048412`; exact code HEAD `4c7a879da681ea75410526fc98f7bc37ab18e096` passed required CI `40014461532` and post-merge CI `40015300957`, including all three `TestImportedInvoiceLifecycle...` workflows and the full three-phase worker/actual CycleReader PostgreSQL workflow. The nullable-first-invoice CAS defect found during validation was fixed before merge. 11b.5 imported overdue code/tests are ready and independent review found zero behavioral/design findings; SQL runtime, PR #30, required CI, and merge remain pending. Do not use imported overdue effects for real imports until required PostgreSQL 17 CI passes.
+production API, deployment, or real-import permission has changed. 11b.4 is
+complete: PR #29 merged as `149d6b679ff007b1cff6d9679862675f03048412`; exact
+code HEAD `4c7a879da681ea75410526fc98f7bc37ab18e096` passed required CI
+`40014461532` and post-merge CI `40015300957`, including all three
+`TestImportedInvoiceLifecycle...` workflows and the full three-phase worker/
+actual CycleReader PostgreSQL workflow. The nullable-first-invoice CAS defect
+found during validation was fixed before merge. 11b.5 overdue-only code merged
+in PR #30 as `19d45cf7f85c784b74cdc0cb2b71f5d15cddb758`; exact code HEAD
+`b8efc247fe09b78e078b0c115c52317d47311939` passed required CI `40019995948`
+and post-merge CI `40020785993`, all green.
+
+11b.6.1 imported paid renewal supports new ordinary lifecycle-ledger invoices
+only; three PostgreSQL workflow cases are implemented. Parent unit/race/vet/
+CGO0 build/module/gofmt/diff and PostgreSQL integration compile checks passed.
+Independent review `e06c5abf-0d4d-484` completed with zero behavioral and design findings. SQL runtime, PR #31,
+CI, and merge remain pending; do not mark this slice complete before CI. The
+separate 11b.6.2 initial paused-baseline/current-debt restoration is future work
+requiring an explicit origin mode/FK; do not fabricate ledger dates or OWN
+overdue journals. Protected imported configuration/menu/current proof, apply
+CLI, and default-off startup wiring remain future work. Stage 11 is incomplete.
