@@ -48,6 +48,19 @@ existing S-UI identities/links, old debts, and all external facts, then design a
 separately reviewed explicit capability-admission operation. None is implemented
 here. Historical invoices are never sent again by staging.
 
+## Read-only legacy import verification
+
+`payplump import-verify --file PRIVATE_PATH --expected-hash PLAN_HASH --read-only`
+validates a private mode-0600 manifest and performs bounded fresh GET-only
+reconciliation. It requires an explicit bot ID, private pilot allowlist, exclusions,
+source settings, currency-code acknowledgement, and selected legacy product key;
+see [import-verification.md](import-verification.md) and `.env.example`. This
+command does not use runtime feature flags, database settings, Telegram tokens,
+or startup workers. Output is redacted JSON. The optional `--evidence-file`
+contains sensitive private facts, is create-only mode 0600, and is not admission
+authority. Do not use production provider credentials in local tests. No live
+verification or managed admission has been performed.
+
 ## Backup and isolated restore check
 
 An owner must arrange independent backups of the bot PostgreSQL database, bot
