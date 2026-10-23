@@ -401,6 +401,7 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 	sort.Slice(invoices, func(i, j int) bool { return invoices[i].ID < invoices[j].ID })
 	unpaid := 0
 	var current *invoiceninja.CycleInvoice
+	latestIssuedDate, latestIssuedID, latestIssuedCount := "", "", 0
 	seenInvoices := map[string]bool{}
 	invoiceIDs := make([]string, 0, len(invoices))
 	for i := range invoices {
@@ -413,6 +414,22 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 		if iv.StatusID == "2" || iv.StatusID == "3" {
 			unpaid++
 		}
+		if !iv.IsDeleted && iv.ArchivedAt == 0 && iv.RecurringID == r.RecurringID {
+			switch iv.StatusID {
+			case "1", "5": // Draft and cancelled records are not current issued invoices.
+			case "2", "3", "4":
+				if !canonicalDate(iv.Date) {
+					return ReasonUnsupported, PrivateEvidence{}
+				}
+				if iv.Date > latestIssuedDate {
+					latestIssuedDate, latestIssuedID, latestIssuedCount = iv.Date, iv.ID, 1
+				} else if iv.Date == latestIssuedDate {
+					latestIssuedCount++
+				}
+			default:
+				return ReasonUnsupported, PrivateEvidence{}
+			}
+		}
 		if iv.ID == r.CurrentInvoiceID && iv.RecurringID == r.RecurringID && !iv.IsDeleted && iv.ArchivedAt == 0 {
 			if current != nil {
 				return ReasonAmbiguous, PrivateEvidence{}
@@ -423,6 +440,9 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 	slices.Sort(invoiceIDs)
 	if unpaid != r.UnpaidInvoices || unpaid != 0 {
 		return ReasonUnpaid, PrivateEvidence{}
+	}
+	if latestIssuedCount != 1 || latestIssuedID != r.CurrentInvoiceID {
+		return ReasonAmbiguous, PrivateEvidence{}
 	}
 	if r.Lifecycle != "active" || r.Currency != s.policy.NativeCurrencyCode || current == nil || current.StatusID != "4" || !isZero(current.Balance) || !amountStringEqual(current.Amount.String(), r.Amount) {
 		return ReasonUnsupported, PrivateEvidence{}
@@ -527,6 +547,11 @@ func amountEqual(a, b json.Number) bool { return amountStringEqual(a.String(), b
 func isZero(value json.Number) bool {
 	formatted, ok := normalizedAmount(value)
 	return ok && formatted == "0"
+}
+
+func canonicalDate(value string) bool {
+	parsed, err := time.Parse(time.DateOnly, value)
+	return err == nil && parsed.Format(time.DateOnly) == value
 }
 
 func sameInvoice(a, b invoiceninja.CycleInvoice) bool {

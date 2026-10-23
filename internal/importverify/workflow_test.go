@@ -226,6 +226,35 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 			}
 		}
 	}
+	// Older paid history is allowed, but the claimed current invoice must be the unique date-latest issued cycle.
+	setExtraInvoice := func(id, date, status string) {
+		extraInvoice = map[string]any{}
+		for k, v := range invoice {
+			extraInvoice.(map[string]any)[k] = v
+		}
+		extraInvoice.(map[string]any)["id"] = id
+		extraInvoice.(map[string]any)["date"] = date
+		extraInvoice.(map[string]any)["status_id"] = status
+	}
+	setExtraInvoice("invoice-old", "2026-02-01", "4")
+	out, _, err := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || out.Verified != 1 {
+		t.Fatal("older paid history hid the current invoice", out.Reasons, err)
+	}
+	extraInvoice = nil
+	setExtraInvoice("invoice-newer", "2026-03-02", "4")
+	out, _, err = svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || out.Verified != 0 || out.Reasons[ReasonAmbiguous] != 1 {
+		t.Fatal("newer paid cycle did not make claimed current ambiguous", out.Reasons, err)
+	}
+	extraInvoice = nil
+	setExtraInvoice("invoice-same-date", "2026-03-01", "4")
+	out, _, err = svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || out.Verified != 0 || out.Reasons[ReasonAmbiguous] != 1 {
+		t.Fatal("same-date issued cycles were not manual", out.Reasons, err)
+	}
+	extraInvoice = nil
+
 	// These source-only mutations are readable by the strict adapter but outside the supported legacy profile.
 	for _, mutation := range []struct {
 		field  string
@@ -242,7 +271,7 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		}
 		original := mutation.target[key]
 		mutation.target[key] = mutation.value
-		out, _, err := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+		out, _, err = svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
 		if err != nil || out.Verified != 0 || out.Manual != 1 || out.Reasons[ReasonUnsupported] != 1 {
 			t.Fatalf("unsupported recurring %s was accepted: reasons=%v err=%v", mutation.field, out.Reasons, err)
 		}
@@ -250,7 +279,7 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	}
 	// Source ownership, live recurring ambiguity, and additional debt cannot be authorized by manifest claims.
 	customer["id_number"] = "43"
-	out, _, err := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	out, _, err = svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
 	if err != nil || out.Verified != 0 || out.Manual != 1 {
 		t.Fatal("foreign source owner was accepted", out.Reasons, err)
 	}

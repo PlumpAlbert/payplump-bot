@@ -21,7 +21,12 @@ accounts receive `paused_history_not_supported`; historical-debt, unsupported
 legacy recurring and unverifiable profiles remain manual. Active verification
 requires exactly one live recurring, complete bounded invoices with zero unpaid
 debts, exact native-currency fully allocated cash proof, and matching S-UI
-identity. It never repairs or rewrites legacy data, assumes a bot provenance
+identity. Its current-invoice rule is deliberately date-based and conservative:
+the claimed invoice must be the unique latest-dated live issued (sent, partial, or
+paid) invoice for that recurring. Older paid history is allowed; newer or same-date
+issued records and unknown relevant statuses require manual review. This is not a
+general Invoice Ninja current-cycle authority; ambiguous same-date invoices and
+manual schedule edits remain unsupported. It never repairs or rewrites legacy data, assumes a bot provenance
 marker, or treats manifest proof booleans as provider evidence.
 
 The report contains counts, copied plan reason codes, the plan hash, and a hash
