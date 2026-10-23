@@ -73,10 +73,19 @@ scope; не снимать и не обходить их и не расширя�
   valid older paid-history handling и P2 отсутствовавших snapshots. Parent full
   unit/race/vet/CGO0 build/module verification и PostgreSQL integration
   compile-only прошли. Исторический лимит 1..20; превышение не усекает inventory.
-  PR #24, required CI и merge pending. Никаких БД-записей, admission, CLI или
-  capability/grant.
+  PR #24 code HEAD `b24bf849ca4e3f6589c82ef2bebb885b5419702a` merged as main
+  `9fe0c2aaec847a4fe2948f09d755a346318e5c4c`; required CI `39989051793` and
+  post-merge CI `39989900953` passed, including PG17/smoke/Docker.
+  11a.2 operator `import-verify --read-only` CLI and real-reader synthetic HTTP
+  workflow bridge are implemented; positive factory/source-reader and private
+  artifact checks pass, as do exclusion, bad-hash and no-payment-source cases.
+  Independent review completed with no code defects; one P3 documentation
+  inconsistency was fixed here. Full parent local
+  unit/race/vet/CGO0/build/module checks and SQL compile verification passed.
+  PR #25 is not open; its exact-HEAD CI/merge remain pending. No live verification.
+  Whole 11 remains incomplete; no DB admission or capability/grant.
 
-  Непереговорные TODO: отдельный private `0600` CLI и 11b explicit managed
+  Непереговорные TODO: 11b explicit managed
   admission только после свежего GET, с imported origin/binding/proof
   anchor/revision, без имитации registration/activation journals. Сохранить
   actor/pilot ограничения; будущий admission обязан подавлять устаревшие
@@ -90,12 +99,12 @@ scope; не снимать и не обходить их и не расширя�
 - [ ] 14: синтетическая подготовка и тесты safe resource harness уже есть;
   целевые измерения VPS не выполнены и требуют владельца.
 
-Очередь последовательная по небольшим PR: 9a и 9b завершены; 11a.1 и active
-11a.2 core merged. History-only paused report review завершён и parent local checks
-passed; PR #24 и required CI на точном HEAD pending. Private CLI остаётся отдельной
-задачей; затем 11b, 12, 13 и 14. Перед каждым merge родитель ждёт
-зелёные обязательные проверки точного HEAD. Отсутствие owner-gate для live-проверок
-не задерживает безопасный код и синтетические тесты.
+Очередь последовательная по небольшим PR: 9a и 9b завершены; 11a.1 и 11a.2
+core/history merged. PR #24 и required/post-merge CI зелёные. Operator CLI и
+synthetic real-reader workflow прошли независимый review (zero code defects;
+P3 docs inconsistency fixed) и parent local checks; PR #25 ещё не открыт, exact-HEAD
+CI/merge pending. Затем остаётся 11b, 12, 13 и 14. Весь этап 11 не завершён;
+live verification/admission не выполнялись.
 
 ## Проверенные срезы
 

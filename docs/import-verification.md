@@ -47,11 +47,39 @@ settings must match the explicitly configured public base; the personal
 subscription URL is never fetched. Credential fingerprints are compared to the
 manifest's explicit hash claim, not treated as authorization.
 
-Current limits: the service accepts only candidates selected by the existing
-inert import plan, requires a bounded configured pilot, and does not implement
-CLI/config delivery, database persistence, or managed admission. Unit tests cover
-policy, redaction, exclusion/digest preflight, active paid verification, and
-paused historical-anchor proof through real read adapters against synthetic
-loopback HTTP. This verified report is not an admission capability. Adversarial
-scenarios use synthetic sources only; installed providers and live systems were
-not contacted.
+## Operator CLI (11a.3)
+
+Run `payplump import-verify --file PRIVATE_PATH --expected-hash PLAN_HASH --read-only`.
+The required `--read-only` switch is a confirmation, not an effectful mode;
+`--apply`, unknown flags, and positional arguments are rejected. The command
+validates and hashes the mode-0600 manifest before reading policy environment
+variables or constructing HTTP clients. It does not open PostgreSQL, migrate,
+start workers, configure Telegram, or call `getMe`. All provider capabilities are
+GET-only, and S-UI personal subscription URLs are never fetched.
+
+Policy comes from explicit operator-only `IMPORT_VERIFY_*` keys plus the legacy
+source settings documented in `.env.example`. `IMPORT_VERIFY_BOT_ID` is a
+canonical positive ID; pilot IDs are required, canonical, unique, and limited to
+1..20. Optional exclusions are unioned with registration exclusions and Telegram
+admins; exclusions (including the bot itself) win over pilot membership. The
+currency code is an explicit owner acknowledgement for the native currency ID,
+never an inferred API mapping. The product key is an explicit selected legacy
+key: source verification checks the actual recurring line item and freezes its
+observed legacy price/template, not the current catalog price. This SKU
+acknowledgement is not financial proof. Future admission must re-read sources and
+revalidate both source and policy bindings.
+
+The report is safe JSON counts, reasons, plan hash, and evidence hash only. An
+optional `--evidence-file` creates a new, exclusive mode-0600 private file; it
+contains sensitive customer/provider facts and must be protected accordingly.
+It never overwrites a file or follows a symlink. Evidence is an audit snapshot,
+not a grant or reusable capability. Limits are bounded (20 records, 1000
+inventory records, 20 historical anchors, 15-minute evidence TTL, three-minute
+overall context). Use synthetic settings for tests only. The operator CLI is
+implemented on this branch, including its real-reader synthetic HTTP CLI workflow
+bridge. Local tests pass; independent review remains pending before PR #25 and
+exact-HEAD required CI. PR #24 merged as `9fe0c2aaec847a4fe2948f09d755a346318e5c4c` from exact code HEAD
+`b24bf849ca4e3f6589c82ef2bebb885b5419702a`; required CI `39989051793` and
+post-merge CI `39989900953` passed, including PG17/smoke/Docker. No live
+verification has been performed; all of 11 remains incomplete and 11b admission
+is still TODO.
