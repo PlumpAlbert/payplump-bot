@@ -87,7 +87,7 @@ class Helpers(unittest.TestCase):
         for mutate in mutations:
             c = config(); mutate(c); self.check(c, False)
         c = config(); c["services"]["payplump"]["environment"]["LIFECYCLE_ENABLED"] = "false"; self.check(c, False)
-        for gate in ("INVOICE_LIFECYCLE_ENABLED", "INVOICE_OVERDUE_ENFORCEMENT_ENABLED"):
+        for gate in ("INVOICE_LIFECYCLE_ENABLED", "INVOICE_OVERDUE_ENFORCEMENT_ENABLED", "INVOICE_RENEWAL_ENABLED"):
             c = config(); c["services"]["payplump"]["environment"].pop(gate); self.check(c, False)
         c = config(); c["services"]["payplump"]["environment"].pop("TELEGRAM_ENABLED"); c["services"]["payplump"]["environment"]["COMMENT"] = "TELEGRAM_ENABLED: false"; self.check(c, False)
 
@@ -130,6 +130,12 @@ class Helpers(unittest.TestCase):
                 "INVOICE_OVERDUE_MAX_ACCOUNTS": "1000",
                 "INVOICE_OVERDUE_POLL_INTERVAL": "1s",
                 "INVOICE_OVERDUE_HTTP_TIMEOUT": "5s",
+                "INVOICE_RENEWAL_ENABLED": "false",
+                "INVOICE_RENEWAL_EXCLUSIVE_WRITER": "false",
+                "INVOICE_RENEWAL_WORKERS": "1",
+                "INVOICE_RENEWAL_MAX_ACCOUNTS": "1000",
+                "INVOICE_RENEWAL_POLL_INTERVAL": "1s",
+                "INVOICE_RENEWAL_HTTP_TIMEOUT": "5s",
             }
             for name, value in expected.items():
                 self.assertEqual(resolved.get(name), value, "unexpected resolved setting: " + name)
