@@ -68,7 +68,7 @@ func TestImportedOverdueWorkflowLoopback(t *testing.T) {
 			t.Fatal(e)
 		}
 		observed := &observedImportedLifecycleStore{Store: trig.s, finished: make(chan error, 2)}
-		lcfg := lifecycle.Config{Enabled: true, BaseURL: trig.ninjaBase, Token: importedOverdueNinjaToken, WebhookSecret: "synthetic-imported-overdue-secret-012345", AllowedTelegramIDs: []int64{42}, Workers: 1, PageSize: 10, MaxPages: 2, MaxAccounts: 10, PollInterval: 50 * time.Millisecond, RecheckInterval: 30 * time.Second, HTTPTimeout: time.Second}
+		lcfg := lifecycle.Config{Enabled: true, BaseURL: trig.ninjaBase, Token: importedOverdueNinjaToken, WebhookSecret: "synthetic-imported-overdue-secret-012345", AllowedTelegramIDs: []int64{42}, Workers: 1, PageSize: 10, MaxPages: 2, MaxAccounts: 10, PollInterval: 100 * time.Millisecond, RecheckInterval: 30 * time.Second, HTTPTimeout: time.Second}
 		lw, e := lifecycle.New(observed, trig.cycle, botID, []int64{9001}, lcfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		if e != nil {
 			t.Fatal(e)
@@ -155,7 +155,7 @@ func TestImportedOverdueWorkflowLoopback(t *testing.T) {
 			t.Fatal(e)
 		}
 		observed := &observedImportedLifecycleStore{Store: trig.s, finished: make(chan error, 2)}
-		lcfg := lifecycle.Config{Enabled: true, BaseURL: trig.ninjaBase, Token: importedOverdueNinjaToken, WebhookSecret: "synthetic-imported-overdue-secret-012345", AllowedTelegramIDs: []int64{42}, Workers: 1, PageSize: 10, MaxPages: 2, MaxAccounts: 10, PollInterval: 50 * time.Millisecond, RecheckInterval: 30 * time.Second, HTTPTimeout: time.Second}
+		lcfg := lifecycle.Config{Enabled: true, BaseURL: trig.ninjaBase, Token: importedOverdueNinjaToken, WebhookSecret: "synthetic-imported-overdue-secret-012345", AllowedTelegramIDs: []int64{42}, Workers: 1, PageSize: 10, MaxPages: 2, MaxAccounts: 10, PollInterval: 100 * time.Millisecond, RecheckInterval: 30 * time.Second, HTTPTimeout: time.Second}
 		lw, e := lifecycle.New(observed, trig.cycle, botID, []int64{9001}, lcfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		if e != nil {
 			t.Fatal(e)
@@ -572,7 +572,7 @@ func (r *importedOverdueRig) newEnforcement(t *testing.T, unknown bool) *lifecyc
 		t.Fatal(e)
 	}
 	r.source.unknown = unknown
-	cfg := lifecycle.EnforcementConfig{Enabled: true, ExclusiveWriter: true, BaseURL: r.ninjaBase, Token: importedOverdueNinjaToken, InvoiceNinjaVersion: "5.13.47", SUIBaseURL: strings.TrimSuffix(r.ninjaBase, "/ninja") + "/panel", SUIToken: importedOverdueSUIToken, SUIVersion: "1.6.4", AllowedTelegramIDs: []int64{42}, Workers: 1, MaxAccounts: 10, PollInterval: 50 * time.Millisecond, HTTPTimeout: time.Second}
+	cfg := lifecycle.EnforcementConfig{Enabled: true, ExclusiveWriter: true, BaseURL: r.ninjaBase, Token: importedOverdueNinjaToken, InvoiceNinjaVersion: "5.13.47", SUIBaseURL: strings.TrimSuffix(r.ninjaBase, "/ninja") + "/panel", SUIToken: importedOverdueSUIToken, SUIVersion: "1.6.4", AllowedTelegramIDs: []int64{42}, Workers: 1, MaxAccounts: 10, PollInterval: 100 * time.Millisecond, HTTPTimeout: time.Second}
 	w, e := lifecycle.NewEnforcementWorkerWithImported(r.s, r.cycle, owned, rc, panel, admissionFixtureBotID, []int64{9001}, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if e != nil {
 		t.Fatal(e)
