@@ -4,16 +4,11 @@
 
 Владелец разрешил автономно продолжать безопасную реализацию без ожидания owner-gate.
 Для каждой небольшой единицы сначала обновить план, затем выполнить код и тесты и
-организовать независимое read-only review. Все writers завершили работу, оба
-независимых review core 11a.2 завершены. Финансовый review выявил три дефекта в
-legacy profile (`TypeID=1`, `DueDateDays=on_receipt`, фактический `NextSendDateTime`
-должен быть в будущем); основной worker исправил их и добавил четыре GET negative
-workflow cases, включая `datetime == now`. Privacy/source/evidence review прошёл
-без замечаний. Package unit/race, полный unit, vet и build после исправлений прошли.
-Родитель выполняет commit/push, создаёт PR, ждёт зелёный CI на точном HEAD и сливает
-PR; после этого обновляет план и выбирает следующий срез. Останавливаться только
-когда действительно требуется решение или действие владельца. Не выполнять
-Git/VCS, PR, CI или другие API-действия из implementation worker.
+организовать независимое read-only review. Родитель выполняет commit/push, создаёт
+PR, ждёт зелёный CI на точном HEAD и сливает PR; после этого обновляет план и
+выбирает следующий срез. Останавливаться только когда действительно требуется
+решение или действие владельца. Не выполнять Git/VCS, PR, CI или другие
+API-действия из implementation worker.
 
 Invoice Ninja и S-UI — **production с действующими пользователями**. Не обращаться
 к установленным API даже для GET; контракты изучать по закреплённым публичным
@@ -66,24 +61,27 @@ scope; не снимать и не обходить их и не расширя�
   снимком получателей, долговечным прогрессом и ограниченной доставкой.
 - [ ] 11: выполнять последовательно небольшими срезами. Инертный
   import-plan/staging остаётся inert и не является verified reconciliation.
-  11a.1 завершён (см. выше). 11a.2 core реализован как GET-only active/paid
-  verifier с private canonical-source evidence и repeatability; loopback GET-adapter
-  bridge и negative/unit тесты готовы. Оба независимых read-only review завершены:
-  финансовый review выявил три legacy-profile дефекта (`TypeID=1`,
-  `DueDateDays=on_receipt`, фактический `NextSendDateTime` в будущем), исправленные
-  основным worker, плюс четыре GET negative workflow cases, включая `datetime == now`;
-  privacy/source/evidence review — без дефектов. Package unit/race, полный
-  unit/vet/build после исправлений прошли. PR #23 ещё не открыт; PR, required CI
-  и merge pending. Core не пишет в БД, не выполняет admission и не включает CLI.
-  Paused/historical paid-anchor proof сейчас явно unsupported и остаётся manual,
-  будущий отдельный срез. Private `0600` operator CLI — ещё одна отдельная
-  задача после merge core, вне PR #23. 11b остаётся TODO: explicit managed
-  admission только после свежего GET, с отдельными imported origin, binding,
-  proof anchor и revision, без имитации registration/activation journals.
-  Сохранить actor/pilot ограничения. При будущем import admission исторические
-  счета должны быть подавлены, чтобы не создавать устаревшие уведомления или
-  операции. Накопившиеся неоплаченные долги остаются на ручном разборе без
-  прощения или автоматизации. Не добавлять 11c или новое архитектурное решение.
+  11a.1 завершён (см. выше). PR #23 code HEAD
+  `d792ffb39aae8d56bc09cfc2a25be0a755d5ba5c` влит squash-коммитом main
+  `0131f618b2ba4ca364be2a8a9e7fe0f38160c32f`; required CI `39986043209` и
+  post-merge main CI `39986939558` зелёные.
+
+  History-only slice добавляет paused exact-current-debt + unique fully paid
+  historical-anchor report через GET-only источники. Real-reader loopback tests
+  включают несколько исторических месяцев, отрицательные сценарии и
+  аудитируемые private snapshots долга/settings. Review завершён: исправлены
+  valid older paid-history handling и P2 отсутствовавших snapshots. Parent full
+  unit/race/vet/CGO0 build/module verification и PostgreSQL integration
+  compile-only прошли. Исторический лимит 1..20; превышение не усекает inventory.
+  PR #24, required CI и merge pending. Никаких БД-записей, admission, CLI или
+  capability/grant.
+
+  Непереговорные TODO: отдельный private `0600` CLI и 11b explicit managed
+  admission только после свежего GET, с imported origin/binding/proof
+  anchor/revision, без имитации registration/activation journals. Сохранить
+  actor/pilot ограничения; будущий admission обязан подавлять устаревшие
+  операции/уведомления. Неоплаченные долги остаются ручными, без прощения или
+  автоматизации. Не добавлять 11c или новое архитектурное решение.
 - [ ] 12: дальнейшая подготовка синтетической isolated restore rehearsal;
   recovery report, restore helper и docs уже есть. Не выполнять автоматические
   rearm/снятие барьеров; реальные backup/restore требуют владельца.
@@ -92,10 +90,10 @@ scope; не снимать и не обходить их и не расширя�
 - [ ] 14: синтетическая подготовка и тесты safe resource harness уже есть;
   целевые измерения VPS не выполнены и требуют владельца.
 
-Очередь последовательная по небольшим PR: 9a и 9b завершены; 11a.1 merged;
-review 11a.2 core завершён. Следом родитель оформляет PR #23, проверяет required
-CI на точном HEAD и выполняет merge. После core отдельно запланировать CLI и
-paused/history proof; далее 11b, 12, 13 и 14. Перед каждым merge родитель ждёт
+Очередь последовательная по небольшим PR: 9a и 9b завершены; 11a.1 и active
+11a.2 core merged. History-only paused report review завершён и parent local checks
+passed; PR #24 и required CI на точном HEAD pending. Private CLI остаётся отдельной
+задачей; затем 11b, 12, 13 и 14. Перед каждым merge родитель ждёт
 зелёные обязательные проверки точного HEAD. Отсутствие owner-gate для live-проверок
 не задерживает безопасный код и синтетические тесты.
 

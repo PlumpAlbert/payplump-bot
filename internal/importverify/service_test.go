@@ -92,15 +92,17 @@ func TestHashRejectedBeforeAnyProviderRead(t *testing.T) {
 	}
 }
 func TestEvidenceHashCoversPrivateFacts(t *testing.T) {
-	base := PrivateEvidence{SourceScope: strings.Repeat("a", 64), Proof: json.RawMessage(`{"proof":"one"}`), SourceFactsHash: strings.Repeat("b", 64), PaidAnchorInvoiceID: "invoice-1", VerifiedAt: time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)}
+	base := PrivateEvidence{SourceScope: strings.Repeat("a", 64), Proof: json.RawMessage(`{"proof":"one"}`), CurrentInvoice: json.RawMessage(`{"id":"invoice-current","balance":100}`), SUISettings: sui.Settings{SubURI: "https://subs.invalid/", SubPath: "private-path"}, SourceFactsHash: strings.Repeat("b", 64), PaidAnchorInvoiceID: "invoice-1", VerifiedAt: time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)}
 	baseline, err := hashEvidence([]PrivateEvidence{base})
 	if err != nil {
 		t.Fatal(err)
 	}
-	variants := []PrivateEvidence{base, base, base, base}
+	variants := []PrivateEvidence{base, base, base, base, base, base}
 	variants[1].Proof = json.RawMessage(`{"proof":"two"}`)
 	variants[2].SourceFactsHash = strings.Repeat("c", 64)
 	variants[3].PaidAnchorInvoiceID = "invoice-2"
+	variants[4].CurrentInvoice = json.RawMessage(`{"id":"invoice-current","balance":99}`)
+	variants[5].SUISettings.SubPath = "changed-path"
 	for i := 1; i < len(variants); i++ {
 		got, err := hashEvidence([]PrivateEvidence{variants[i]})
 		if err != nil || got == baseline {
@@ -166,6 +168,15 @@ func TestPolicyRequiresExplicitBoundsAndCurrency(t *testing.T) {
 	p.ExpectedInboundIDs = []int64{2, 1}
 	if p.Validate() == nil {
 		t.Fatal("noncanonical inbound set accepted")
+	}
+	p = validPolicy()
+	p.MaxHistoricalAnchors = 21
+	if p.Validate() == nil {
+		t.Fatal("historical anchor limit above 20 accepted")
+	}
+	p.MaxHistoricalAnchors = 0
+	if p.Validate() == nil {
+		t.Fatal("missing historical anchor limit accepted")
 	}
 }
 func TestPrivateEvidenceGenericSerializationRedacted(t *testing.T) {
