@@ -80,6 +80,9 @@ func TestImportApplyRequiresExplicitApplyAndCanonicalRevision(t *testing.T) {
 // Prepare implementation; only the final persistence capability is substituted.
 func TestImportApplyUsesFreshOpaquePlanAndDoesNotEnableByDefault(t *testing.T) {
 	f := newImportApplyFixture(t)
+	if age := time.Since(f.now); age < 0 || age > 10*time.Second {
+		t.Fatalf("fixture clock is not near real time: age=%s now=%s", age, f.now)
+	}
 	var out bytes.Buffer
 	opened := false
 	store := &applyTestStore{t: t}

@@ -78,14 +78,20 @@ func newImportApplyFixture(t *testing.T) *importApplyFixture {
 	ch := parsed.CredentialsHash()
 	configHash := hex.EncodeToString(ch[:])
 	line := map[string]any{"product_key": "legacy", "notes": "legacy monthly", "cost": 100, "quantity": 1, "discount": 0, "is_amount_discount": false, "type_id": "1", "tax_name1": "", "tax_name2": "", "tax_name3": "", "tax_rate1": 0, "tax_rate2": 0, "tax_rate3": 0, "tax_id": ""}
-	recurring := map[string]any{"id": recurringID, "client_id": customerID, "status_id": "2", "private_notes": "historical legacy note", "frequency_id": "5", "next_send_date": "2026-04-01", "next_send_datetime": "2026-04-01T00:00:00.000000Z", "last_sent_date": "2026-03-02", "due_date": "2026-04-02", "due_date_days": "on_receipt", "auto_bill": "off", "auto_bill_enabled": false, "remaining_cycles": -1, "amount": 100, "balance": 100, "uses_inclusive_taxes": false, "line_items": []any{line}, "is_deleted": false, "archived_at": 0, "discount": 0, "is_amount_discount": true, "tax_rate1": 0, "tax_rate2": 0, "tax_rate3": 0, "custom_surcharge1": 0, "custom_surcharge2": 0, "custom_surcharge3": 0, "custom_surcharge4": 0, "partial": 0, "paid_to_date": 0, "exchange_rate": 1}
-	invoice := map[string]any{"id": invoiceID, "client_id": customerID, "recurring_id": recurringID, "number": "N-42", "private_notes": "paid current cycle", "status_id": "4", "date": "2026-03-01", "due_date": "2026-03-02", "amount": 100, "balance": 0, "paid_to_date": 100, "exchange_rate": 1, "is_deleted": false, "archived_at": 0, "updated_at": 0, "invitations": []any{}}
+	now := time.Now().UTC().Add(-time.Second).Truncate(time.Second)
+	paidDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	nextDate := paidDate.AddDate(0, 1, 0)
+	paidDateString := paidDate.Format("2006-01-02")
+	nextDateString := nextDate.Format("2006-01-02")
+	nextDateTimeString := nextDate.Format("2006-01-02T15:04:05.000000Z")
+	recurring := map[string]any{"id": recurringID, "client_id": customerID, "status_id": "2", "private_notes": "historical legacy note", "frequency_id": "5", "next_send_date": nextDateString, "next_send_datetime": nextDateTimeString, "last_sent_date": paidDateString, "due_date": nextDate.AddDate(0, 0, 1).Format("2006-01-02"), "due_date_days": "on_receipt", "auto_bill": "off", "auto_bill_enabled": false, "remaining_cycles": -1, "amount": 100, "balance": 100, "uses_inclusive_taxes": false, "line_items": []any{line}, "is_deleted": false, "archived_at": 0, "discount": 0, "is_amount_discount": true, "tax_rate1": 0, "tax_rate2": 0, "tax_rate3": 0, "custom_surcharge1": 0, "custom_surcharge2": 0, "custom_surcharge3": 0, "custom_surcharge4": 0, "partial": 0, "paid_to_date": 0, "exchange_rate": 1}
+	invoice := map[string]any{"id": invoiceID, "client_id": customerID, "recurring_id": recurringID, "number": "N-42", "private_notes": "paid current cycle", "status_id": "4", "date": paidDateString, "due_date": paidDate.AddDate(0, 0, 1).Format("2006-01-02"), "amount": 100, "balance": 0, "paid_to_date": 100, "exchange_rate": 1, "is_deleted": false, "archived_at": 0, "updated_at": 0, "invitations": []any{}}
 	customer := map[string]any{"id": customerID, "id_number": "42", "private_notes": "legacy customer", "is_deleted": false, "archived_at": 0}
 	settlementCustomer := map[string]any{"id": customerID, "id_number": "42", "group_settings_id": "", "settings": map[string]any{"currency_id": "1"}, "currency_id": "ignored", "is_deleted": false, "archived_at": 0}
-	settlementInvoice := map[string]any{"id": invoiceID, "client_id": customerID, "recurring_id": recurringID, "number": "N-42", "status_id": "4", "date": "2026-03-01", "due_date": "2026-03-02", "amount": 100, "balance": 0, "paid_to_date": 100, "exchange_rate": 1, "is_deleted": false, "archived_at": 0}
+	settlementInvoice := map[string]any{"id": invoiceID, "client_id": customerID, "recurring_id": recurringID, "number": "N-42", "status_id": "4", "date": paidDateString, "due_date": paidDate.AddDate(0, 0, 1).Format("2006-01-02"), "amount": 100, "balance": 0, "paid_to_date": 100, "exchange_rate": 1, "is_deleted": false, "archived_at": 0}
 	allocation := map[string]any{"id": "allocation-42", "invoice_id": invoiceID, "payment_id": "payment-42", "amount": 100, "refunded": 0, "archived_at": 0}
-	payment := map[string]any{"id": "payment-42", "client_id": customerID, "date": "2026-03-01", "status_id": "4", "currency_id": "1", "exchange_currency_id": "", "amount": 100, "refunded": 0, "applied": 100, "exchange_rate": 1, "is_manual": true, "is_deleted": false, "archived_at": 0, "paymentables": []any{allocation}, "invoices": []any{}}
-	f := &importApplyFixture{now: time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)}
+	payment := map[string]any{"id": "payment-42", "client_id": customerID, "date": paidDateString, "status_id": "4", "currency_id": "1", "exchange_currency_id": "", "amount": 100, "refunded": 0, "applied": 100, "exchange_rate": 1, "is_manual": true, "is_deleted": false, "archived_at": 0, "paymentables": []any{allocation}, "invoices": []any{}}
+	f := &importApplyFixture{now: now}
 	var invoiceGets atomic.Int64
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || (r.Body != http.NoBody && r.ContentLength != 0) {
@@ -155,7 +161,7 @@ func newImportApplyFixture(t *testing.T) *importApplyFixture {
 	}))
 	t.Cleanup(f.server.Close)
 	f.env = map[string]string{"INVOICE_NINJA_BASE_URL": f.server.URL + "/ninja", "INVOICE_NINJA_API_TOKEN": ninjaToken, "INVOICE_NINJA_VERSION": "5.13.47", "INVOICE_NINJA_TELEGRAM_ID_FIELD": "id_number", "SUI_BASE_URL": f.server.URL + "/panel", "SUI_API_TOKEN": suiToken, "SUI_VERSION": "1.6.4", "SUI_SUBSCRIPTION_BASE_URL": "https://subs.invalid/", "SUI_INBOUND_IDS": "1", "PAYMENTS_CURRENCY_ID": "1", "IMPORT_VERIFY_BOT_ID": "9", "IMPORT_VERIFY_ALLOWED_TELEGRAM_IDS": "42", "IMPORT_VERIFY_CURRENCY_CODE": "USD", "IMPORT_VERIFY_PRODUCT_KEY": "legacy", "TZ": "UTC"}
-	claim := importplan.Record{TelegramID: "42", InvoiceCustomerID: customerID, InvoiceNumber: "42", CurrentInvoiceID: invoiceID, InvoiceStatus: "paid", RecurringID: recurringID, SUIID: "42", SUIName: "42", ConfigHash: configHash, PeriodStart: "2026-03-01", PeriodEnd: "2026-04-01", Currency: "USD", Lifecycle: "active", SourceVersion: "5.13.47", PinnedProvenance: true, CompleteProof: true, UnpaidInvoices: 0, Amount: "100"}
+	claim := importplan.Record{TelegramID: "42", InvoiceCustomerID: customerID, InvoiceNumber: "42", CurrentInvoiceID: invoiceID, InvoiceStatus: "paid", RecurringID: recurringID, SUIID: "42", SUIName: "42", ConfigHash: configHash, PeriodStart: paidDateString, PeriodEnd: nextDateString, Currency: "USD", Lifecycle: "active", SourceVersion: "5.13.47", PinnedProvenance: true, CompleteProof: true, UnpaidInvoices: 0, Amount: "100"}
 	data, err := claim.PrivateJSON()
 	if err != nil {
 		t.Fatal(err)
