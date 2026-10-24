@@ -241,7 +241,7 @@ production, unit and isolated PG test code is complete; parent local checks and
 independent review `67ca1346-a4f9-49c` found zero proven behavior/design
 findings. Command SQL runtime and exact-HEAD CI have since passed in PR #35 as recorded above. The full stage 11 and live verification/admission remain incomplete.
 
-## Imported runtime startup permission (11b.9, implementation/review ready; CI pending)
+## Delivered imported read-runtime startup (11b.9)
 
 This is a separate read/runtime permission, not admission. The delivered
 `import-apply` command grants admission only when the operator explicitly passes
@@ -250,15 +250,15 @@ protected configuration delivery. Admission permission persists independently
 and is owner/CLI-controlled. Application startup must not synchronize or revoke
 admission.
 
-The 11b.9 production/config/main/fence/hash/unit-test and tagged PostgreSQL
-workflow implementation is complete. Parent normal unit/race/vet/CGO0 build,
-module verification, gofmt and diff checks passed (logs
-`/tmp/payplump-import-runtime-{unit,race}.log`); tagged command+PostgreSQL
-compile-only passed. Full independent review `164166cb-25b2-465` covered the
-exact 850-line patch `/tmp/payplump-import-runtime-review.patch` plus related
-contracts and found zero proven behavior/design findings. `TestImportedRuntimeReadOnlyStartupWorkflowRealPostgres` has not run at SQL runtime; exact-head CI and PR #36 remain pending.
-There are no active code producers. This is implementation/review readiness,
-not verified runtime behavior. Its config adds only
+11b.9 implementation and tests passed local normal/race/vet/CGO0 build/module,
+gofmt/diff, and tagged compile-only checks. Full review `164166cb-25b2-465` of
+`/tmp/payplump-import-runtime-review.patch` (850 lines) found zero proven
+behavior/design findings. The PostgreSQL workflow
+`TestImportedRuntimeReadOnlyStartupWorkflowRealPostgres` passed. PR #36 merged
+as `a5fd93b28f0c0fe78e9485ddbe169837af49544`; exact code HEAD
+`277b37c12433f271ee72d60d486551644749de92` passed required CI `40046909184`
+(fast, race, disposable PostgreSQL 17 and smoke/Docker), and post-merge main CI
+`40047448373` succeeded. Its config adds only
 `IMPORTED_RUNTIME_ENABLED=false` and `IMPORTED_RUNTIME_REVISION=`. When disabled,
 unused import source-policy settings are ignored. Enabling requires Telegram
 and payments plus the same strict source/pilot/exclusion/currency/product/public
@@ -274,13 +274,39 @@ normal webhook setup and ordinary actual bot verification, install only the
 current explicit matching runtime permission before activation. This install
 must not grant effects, admission or configuration delivery. It introduces no
 provider GET, startup worker or new bot identity. Existing service bot
-verification remains the normal capability. Until disposable-PG17 exact-head CI completes, describe the slice as locally
-reviewed implementation rather than verified runtime behavior. The authored
-empty-schema test asserts that no admission/workflow/permission rows were
+verification remains the normal capability. The fresh-schema test asserts that no admission/workflow/permission rows were
 created before bot setup; it does not assert an empty database, because known
 bot metadata and migration/guard infrastructure may exist. The workflow also
 checks guard epoch/owner unchanged across the full sequence, no source GET before
 the fence, read permission revision 1 denied then explicit revision 3 accepted,
 effects remain disabled at revision 2, admission remains enabled at revision 1,
 origin stays unchanged, and the actual normal payment-confirmation proof is
-preserved. Exact CI, PR #36 and merge are pending; 11b.9 remains unchecked.
+preserved. Exact CI, merge and runtime verification are complete; 11b.9 is delivered.
+
+## Imported native effects startup (11b.10 implementation ready; CI pending)
+
+The 11b.10 implementation and tests are complete; all three producers are done
+and no active producers remain. Parent full normal unit/race/vet/CGO0
+build/module verification/gofmt/diff passed (logs
+`/tmp/payplump-import-effects-{unit,race}.log`); tagged command+PostgreSQL
+compile-only passed. Independent full review `e72f63f9-cad9-4ed` of exact 827-line
+patch `/tmp/payplump-import-effects-review.patch` plus durable-effects,
+source-scope and core contracts found zero proven behavior/design findings.
+Parent fixed test assertions: effects-denied bot mismatch retains read
+permission (counts `1,1,0`, not `1,0,0`); effects bad-revision uses read
+revision 7, valid for read, and reaches the effects-revision rejection with no
+source GET. `.env.example` clarifies admission versus read-runtime permission
+terms. The new startup test has not run PostgreSQL SQL runtime; exact-HEAD CI,
+PR #37 and merge remain pending. Stage 11 and owner live gates remain incomplete.
+
+Flags are `IMPORTED_EFFECTS_ENABLED=false` and `IMPORTED_EFFECTS_REVISION=`;
+revision is canonical positive iff effects are explicitly enabled, and effects
+require read runtime. Source-policy fingerprint is unchanged; admission,
+read-runtime, effects and configuration-secret permissions remain independent.
+The current PR #37 write set is 13 paths: seven implementation/config paths
+(initial staging only; no source fields or secrets) and these six docs. After
+PR #37, preserve sequence 12 synthetic restore CI → 13 manual release
+preparation with publishing off → 14 synthetic measurements/owner live gates;
+do not skip 12. See [operator.md](operator.md) and
+[autonomous-work.md](autonomous-work.md) for fences, provider constraints and
+test scope.

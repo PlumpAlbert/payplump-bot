@@ -177,6 +177,10 @@ func run(logger *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	billingProviders, err := newImportedBillingProviders(importedRuntimeConfig, enforcementConfig, renewalConfig)
+	if err != nil {
+		return err
+	}
 	var deliveryConfig outbox.Config
 	if telegramConfig.Enabled {
 		deliveryConfig, err = outbox.ConfigFromEnv()
@@ -264,6 +268,9 @@ func run(logger *slog.Logger, args []string) error {
 			if err := installImportedRuntimePermission(ctx, store, botID, importedRuntimeConfig); err != nil {
 				return err
 			}
+			if err := installImportedEffectPermission(ctx, store, botID, importedRuntimeConfig); err != nil {
+				return err
+			}
 			if paymentEndpoint != nil {
 				if err := paymentEndpoint.Activate(botID); err != nil {
 					return err
@@ -320,14 +327,24 @@ func run(logger *slog.Logger, args []string) error {
 				workers = append(workers, worker.Run)
 			}
 			if enforcementConfig.Enabled {
-				worker, err := lifecycle.NewEnforcementWorker(store, lifecycleAPI, enforcementRecurring, enforcementSUI, botID, admins, enforcementConfig, logger)
+				var worker *lifecycle.EnforcementWorker
+				if billingProviders.Enforcement != nil {
+					worker, err = lifecycle.NewEnforcementWorkerWithImported(store, lifecycleAPI, enforcementRecurring, billingProviders.Enforcement, enforcementSUI, botID, admins, enforcementConfig, logger)
+				} else {
+					worker, err = lifecycle.NewEnforcementWorker(store, lifecycleAPI, enforcementRecurring, enforcementSUI, botID, admins, enforcementConfig, logger)
+				}
 				if err != nil {
 					return err
 				}
 				workers = append(workers, worker.Run)
 			}
 			if renewalConfig.Enabled {
-				worker, err := lifecycle.NewRenewalWorker(store, lifecycleAPI, paymentAPI, renewalRecurring, renewalSUI, botID, admins, paymentConfig.CurrencyID, renewalConfig, logger)
+				var worker *lifecycle.RenewalWorker
+				if billingProviders.Renewal != nil {
+					worker, err = lifecycle.NewRenewalWorkerWithImported(store, lifecycleAPI, paymentAPI, renewalRecurring, billingProviders.Renewal, renewalSUI, botID, admins, paymentConfig.CurrencyID, renewalConfig, logger)
+				} else {
+					worker, err = lifecycle.NewRenewalWorker(store, lifecycleAPI, paymentAPI, renewalRecurring, renewalSUI, botID, admins, paymentConfig.CurrencyID, renewalConfig, logger)
+				}
 				if err != nil {
 					return err
 				}
