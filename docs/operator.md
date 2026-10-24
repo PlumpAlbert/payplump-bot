@@ -61,7 +61,7 @@ contains sensitive private facts, is create-only mode 0600, and is not admission
 authority. Do not use production provider credentials in local tests. No live
 verification or managed admission has been performed.
 
-## Verified import apply CLI (code preparation only)
+## Historical checkpoint: import-apply before PR #35 merge (superseded below)
 
 The `payplump import-apply` CLI implementation, expanded unit tests/finite
 fixture, and isolated PostgreSQL workflows are ready for parent verification.
@@ -95,6 +95,44 @@ requires a higher revision. Applying does not enable imported runtime/effects
 or protected configuration delivery; startup wiring remains separate. A live
 operator would need an already-known bot record and service-owner permission,
 but there is no authorization here to run against live systems.
+
+## Current imported runtime wiring status (supersedes the checkpoint above)
+
+The 11b.8 `import-apply` command is delivered. PR #35 merged at
+`c0c5f41de7dc98eb03530bebda394b0024842061`; exact HEAD
+`2a69caa2802e3ad78a67da023a68334f8566e377` passed required CI
+`40044946187` and post-merge main CI `40045550655`. Disposable PostgreSQL 17
+runtime passed `TestImportApplyWorkflowRealPostgres` subtests
+`explicit_enable_and_idempotent_replay` and `default_off_denies_empty_schema`.
+The separate clean schema denied apply without `--enable-admission` and left no
+rows; explicit enable/apply/replay was idempotent. Earlier CI failures were test
+fixture issues: `40043431687` failed while scanning textual server version in
+test setup, and `40044064678` denied a stale synthetic date under the correct
+production freshness check. The final CI passed without weakening those
+production guards. No live execution is authorized or claimed.
+
+11b.9 implementation and tests are complete; parent normal unit/race/vet/CGO0
+build/module/gofmt/diff checks and tagged command+PostgreSQL compile-only passed.
+Independent review `164166cb-25b2-465` examined exact patch
+`/tmp/payplump-import-runtime-review.patch` (850 lines) plus related contracts;
+zero proven behavior/design findings. PostgreSQL SQL runtime, exact-head CI and
+PR #36 remain pending, so this is not yet runtime-verified or an operational
+runbook. It adds default-off `IMPORTED_RUNTIME_ENABLED` and explicit canonical
+`IMPORTED_RUNTIME_REVISION`. Startup fences imported effect permissions before
+readiness; when runtime is disabled it also disables imported runtime. Enabling
+installs only a matching runtime policy after normal verified bot setup. This
+does not grant admission, effects, or configuration delivery; startup does not
+alter the separately CLI-owned admission permission.
+
+The authored real PostgreSQL workflow checks an empty schema before bot setup:
+there are no admission/workflow/permission rows and no source GET, but this is
+not an assertion that the entire database has no rows (known bot metadata and
+migration/guard infrastructure may exist). It checks the guard epoch/owner
+across all steps, actual read-worker completion/GET count, revision-1 denial and
+explicit revision-3 read permission success, effects still disabled at revision
+2, admission still enabled at revision 1, unchanged origin, and full normal
+payment-confirmation proof. These are test assertions only until the SQL
+workflow runs in disposable PostgreSQL 17 CI.
 
 ## Backup and isolated restore check
 

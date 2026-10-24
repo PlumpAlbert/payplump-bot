@@ -25,6 +25,9 @@ func (s *Store) SyncImportedEffectPermission(ctx context.Context, botID, revisio
 	if _, err = tx.Exec(ctx, `SET LOCAL synchronous_commit=on`); err != nil {
 		return errors.New("could not require durable imported effect permission")
 	}
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':import-effect-permissions-global',0))`); err != nil {
+		return errors.New("could not serialize imported effect permission update")
+	}
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':import-effect-permission:' || $1::bigint::text,0))`, botID); err != nil {
 		return errors.New("could not serialize imported effect permission update")
 	}

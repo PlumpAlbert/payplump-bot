@@ -105,11 +105,38 @@ passed runtime: `TestCompletedImportedRenewalAllowsProtectedConfiguration`,
 `TestUnknownInitialRestorationDeniesConfiguration`, and
 `TestCompletedImportedRenewalStaleConfigurationRevisionDenied`. This does not
 change Stage 1/2 default-off status, authorize live use, or mean imported runtime
-is wired at startup. Apply CLI production/unit/isolated-PG code is complete;
-parent local checks and independent review `67ca1346-a4f9-49c` (zero proven
-behavior/design findings) passed. SQL runtime, exact-HEAD CI and PR #35 remain
-pending, as does default-off startup wiring. No live
-API/Telegram/payment/database/publish/deploy was used.
+is wired at startup. The `import-apply` CLI is delivered in PR #35 and passed
+exact-head required CI `40044946187` and post-merge CI `40045550655`, including
+both PostgreSQL CLI workflows. The separate 11b.9 startup/read-runtime implementation and tests are complete;
+local checks and independent review `164166cb-25b2-465` (zero proven
+behavior/design findings) passed. PostgreSQL SQL runtime, exact-head CI, PR #36
+and merge remain pending, so this slice is not runtime-verified. No live API/Telegram/payment/database/publish/deploy was used.
+
+## Imported read-runtime startup is separate
+
+Imported-origin lifecycle invoice observation remains GET-only: it can discover
+ordinary new recurring invoices and update the normal local invoice ledger and
+notices under the imported-runtime permission, but it does not write to Invoice
+Ninja/S-UI, restore access, or deliver a protected URL. The imported runtime
+permission is distinct from import admission and billing-effect permissions.
+
+The 11b.9 startup wiring and tests are implemented and independently reviewed
+(`164166cb-25b2-465`; zero proven behavior/design findings); parent local checks
+passed. Exact-head disposable PostgreSQL CI is pending, so runtime behavior is
+not yet verified. Its startup fence disables imported effect permissions before
+readiness; if runtime is configured off it also disables imported runtime.
+Explicit runtime installation requires a matching configured policy after the
+ordinary bot setup. It does not enable effectful workers, admission, or
+protected configuration delivery.
+
+The authored PostgreSQL workflow checks that before bot setup the empty schema
+has no admission/workflow/permission rows and no source GET (known bot metadata
+and migration/guard infrastructure may exist, so this does not mean an empty
+DB). It checks guard epoch/owner unchanged across all steps, read-worker GET
+count stopping after completion, revision-1 read denial and explicit revision-3
+success, effects disabled at revision 2, admission enabled at revision 1,
+unchanged origin, and the full normal payment-confirmation proof. These are
+pending SQL runtime assertions, not passed workflow results.
 
 ## Verification
 

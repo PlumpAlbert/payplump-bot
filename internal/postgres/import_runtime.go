@@ -7,8 +7,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// SyncImportedRuntimePermission is a durable, monotonic operator-controlled
-// runtime gate. It is intentionally not synchronized by startup wiring.
+// SyncImportedRuntimePermission durably sets the runtime gate on an explicit
+// operator request or explicit startup configuration after bot verification. The
+// default-off startup fence revokes existing grants; this gate grants neither
+// admission nor effect permissions.
 func (s *Store) SyncImportedRuntimePermission(ctx context.Context, botID, revision int64, policyHash, sourceScopeHash string, enabled bool) error {
 	ph, err := importDigest(policyHash)
 	if err != nil {
@@ -25,6 +27,9 @@ func (s *Store) SyncImportedRuntimePermission(ctx context.Context, botID, revisi
 	defer rollback(tx)
 	if _, err = tx.Exec(ctx, `SET LOCAL synchronous_commit=on`); err != nil {
 		return errors.New("could not require durable imported runtime permission")
+	}
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':import-runtime-permissions-global',0))`); err != nil {
+		return errors.New("could not serialize imported runtime permission update")
 	}
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':import-runtime-permission:' || $1::bigint::text,0))`, botID); err != nil {
 		return errors.New("could not serialize imported runtime permission update")

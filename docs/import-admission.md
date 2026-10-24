@@ -136,7 +136,7 @@ durable chat barrier across revocation/new request/restart. The unknown case
 performs no further URL/provider/chat GET. No live consumer readiness or live
 provider/Telegram/payment/working-DB/publish/deploy result is claimed.
 
-## Current delivery status: PR #34 and apply CLI
+## Delivered 11b.7.2 and 11b.8; current delivery status
 
 11b.7.2 protected imported CURRENT COMPLETED renewal merged in PR #34 as
 `1c21061e0ad8f02fab45678c9d92d343855fd26a`. Exact final code HEAD
@@ -150,23 +150,25 @@ workflows: `TestCompletedImportedRenewalAllowsProtectedConfiguration`,
 history remains: `40038835592` was a real migration 024 syntax failure before
 SQL scenarios; syntax fix narrowly reviewed (`6709e271-efcb-47e`); `40039692048`
 passed migration and old SQL but found four test-only boundary/fixture failures;
-`40040735229` passed all jobs. No production fences were weakened. Full review
+`40040735229` passed all jobs. No production fences were weakened. This is historical 11b.7.2 evidence, not the current CLI status. Full review
 `e370ed66-465a-4ef` and narrow syntax review completed. No live API, Telegram,
 payment, working DB, publish or deploy.
 
-### Apply CLI: code and local review ready, SQL runtime pending
+### Delivered import-apply CLI (11b.8)
 
 `payplump import-apply --file PRIVATE --expected-hash HASH --admission-revision N --apply [--enable-admission]`
-production code, expanded unit tests/finite fixture, and isolated PostgreSQL
-workflows are implemented. Parent normal unit/race/vet/CGO0 build/module/gofmt/
-diff checks passed; command+PostgreSQL integration compile-only check passed:
-`scripts/test-safe.sh -run='^$' -tags=integration ./cmd/payplump ./internal/postgres`.
-Independent reviewer `67ca1346-a4f9-49c` reviewed the full 936-line patch,
-four new command files, main/CI changes, and admission/source contracts; zero
-proven behavior/design findings. These are local/compile/review results only:
-PostgreSQL SQL runtime has NOT run, exact-HEAD CI is pending, and PR #35 is not
-open yet. Proposed CI adds the command-tagged suite only to disposable PG17;
-manual Neon remains unchanged.
+production code, tests, and isolated PostgreSQL workflows merged in PR #35 at
+`c0c5f41de7dc98eb03530bebda394b0024842061`. Exact final code HEAD
+`2a69caa2802e3ad78a67da023a68334f8566e377` passed required CI `40044946187`
+(all jobs: fast, race, disposable PostgreSQL 17, Docker smoke) and post-merge
+main CI `40045550655`. `TestImportApplyWorkflowRealPostgres` passed
+`explicit_enable_and_idempotent_replay` and `default_off_denies_empty_schema`.
+The successful path used fresh GET-only verification and an existing known bot;
+replay was idempotent without origin mutation. A fresh empty schema denied apply
+without `--enable-admission`, with no rows and no automatic admission policy.
+CI fixture failures and their bounded corrections are recorded in
+[operator.md](operator.md) and the latest [autonomous handoff](autonomous-work.md).
+Runtime permission/effects/configuration permissions remain separate.
 
 The CLI checks invalid arguments, canonical positive revision, private regular
 mode-0600 nonsymlink file, and hash before environment/factory/DB. It performs
@@ -192,7 +194,7 @@ direct `current_schema` plus exact `search_path` before store open/migration;
 cleanup errors are reported. Covered fresh default-off/no-enable denial in a
 separate empty schema, explicit enable/apply/replay, and revocation. Synthetic
 known bot ID 9 is only the fixture precondition. Do not run against real
-services or data; SQL runtime remains pending.
+services or data; PostgreSQL runtime passed in the exact PR #35 CI as recorded above.
 
 ## Delivered 11b.7.2: imported current-renewal delivery
 
@@ -237,6 +239,48 @@ and the four new SQL workflows ran successfully.
 Full review `e370ed66-465a-4ef` and narrow syntax review completed. Apply CLI
 production, unit and isolated PG test code is complete; parent local checks and
 independent review `67ca1346-a4f9-49c` found zero proven behavior/design
-findings. Command SQL runtime remains unexecuted; exact-HEAD CI and PR #35/merge
-are pending. The full stage 11 and live verification/admission remain
-incomplete.
+findings. Command SQL runtime and exact-HEAD CI have since passed in PR #35 as recorded above. The full stage 11 and live verification/admission remain incomplete.
+
+## Imported runtime startup permission (11b.9, implementation/review ready; CI pending)
+
+This is a separate read/runtime permission, not admission. The delivered
+`import-apply` command grants admission only when the operator explicitly passes
+`--enable-admission`; it does not grant imported runtime, billing effects or
+protected configuration delivery. Admission permission persists independently
+and is owner/CLI-controlled. Application startup must not synchronize or revoke
+admission.
+
+The 11b.9 production/config/main/fence/hash/unit-test and tagged PostgreSQL
+workflow implementation is complete. Parent normal unit/race/vet/CGO0 build,
+module verification, gofmt and diff checks passed (logs
+`/tmp/payplump-import-runtime-{unit,race}.log`); tagged command+PostgreSQL
+compile-only passed. Full independent review `164166cb-25b2-465` covered the
+exact 850-line patch `/tmp/payplump-import-runtime-review.patch` plus related
+contracts and found zero proven behavior/design findings. `TestImportedRuntimeReadOnlyStartupWorkflowRealPostgres` has not run at SQL runtime; exact-head CI and PR #36 remain pending.
+There are no active code producers. This is implementation/review readiness,
+not verified runtime behavior. Its config adds only
+`IMPORTED_RUNTIME_ENABLED=false` and `IMPORTED_RUNTIME_REVISION=`. When disabled,
+unused import source-policy settings are ignored. Enabling requires Telegram
+and payments plus the same strict source/pilot/exclusion/currency/product/public
+base/inbound/time-zone policy validation as fresh import verification; revision
+is canonical positive only when explicitly enabled. Persist only enablement,
+revision, bot and policy/source-scope hashes, never tokens.
+
+Startup ordering is deliberate: after migrations and before readiness or any
+GetMe call, fence off existing imported effect permissions on every start. If
+runtime is configured disabled, also revoke the imported runtime permission.
+If enabled, do not first disable or bump an unchanged runtime revision: after
+normal webhook setup and ordinary actual bot verification, install only the
+current explicit matching runtime permission before activation. This install
+must not grant effects, admission or configuration delivery. It introduces no
+provider GET, startup worker or new bot identity. Existing service bot
+verification remains the normal capability. Until disposable-PG17 exact-head CI completes, describe the slice as locally
+reviewed implementation rather than verified runtime behavior. The authored
+empty-schema test asserts that no admission/workflow/permission rows were
+created before bot setup; it does not assert an empty database, because known
+bot metadata and migration/guard infrastructure may exist. The workflow also
+checks guard epoch/owner unchanged across the full sequence, no source GET before
+the fence, read permission revision 1 denied then explicit revision 3 accepted,
+effects remain disabled at revision 2, admission remains enabled at revision 1,
+origin stays unchanged, and the actual normal payment-confirmation proof is
+preserved. Exact CI, PR #36 and merge are pending; 11b.9 remains unchecked.
