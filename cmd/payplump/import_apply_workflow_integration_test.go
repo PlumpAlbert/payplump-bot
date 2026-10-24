@@ -45,7 +45,7 @@ func newImportApplyPostgresSchema(t *testing.T) *importApplyPostgresSchema {
 		t.Fatalf("connect to disposable test PostgreSQL: %v", err)
 	}
 	var version int
-	if err := admin.QueryRow(ctx, `SHOW server_version_num`).Scan(&version); err != nil || version < 170000 || version >= 180000 {
+	if err := admin.QueryRow(ctx, `SELECT current_setting('server_version_num')::integer`).Scan(&version); err != nil || version < 170000 || version >= 180000 {
 		_ = admin.Close(context.Background())
 		t.Fatalf("integration requires PostgreSQL 17, got %d (err=%v)", version, err)
 	}
