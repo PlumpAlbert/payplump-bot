@@ -231,6 +231,26 @@ PR #34 and merge remain pending. Remaining 11b includes 11b.7.2 delivery,
 apply CLI and default-off startup wiring. Stage 11 is incomplete.
 No live verification/admission or deployment was done.
 
+## Latest handoff status
+
+The above PR #34 status is superseded: PR #34 merged at
+`1c21061e0ad8f02fab45678c9d92d343855fd26a`; exact final code HEAD
+`1cdd30d4b4b4fbb0bf3544a64ff31156a705bd60` passed required CI `40040735229`
+(all jobs, PG17/race/smoke/Docker), and post-merge main CI `40041362995`
+succeeded. All four new SQL tests passed: `TestCompletedImportedRenewalAllowsProtectedConfiguration`,
+`TestCompletedImportedInitialRestorationAllowsProtectedConfiguration`,
+`TestUnknownInitialRestorationDeniesConfiguration`, and
+`TestCompletedImportedRenewalStaleConfigurationRevisionDenied`. Preserve the
+honest history: `40038835592` was a real migration syntax failure before cases;
+`40039692048` passed migration/old SQL but failed four test-only boundaries;
+`40040735229` passed all. No fence changes or live verification.
+
+Apply CLI production code, expanded unit tests/finite fixture, and isolated PostgreSQL workflows are complete. Parent normal unit/race/vet/CGO0 build/module/gofmt/diff checks passed; tagged command+PostgreSQL compile-only passed:
+`scripts/test-safe.sh -run='^$' -tags=integration ./cmd/payplump ./internal/postgres`.
+Independent review `67ca1346-a4f9-49c` covered the full 936-line patch, four new command files, main/CI and admission/source contracts; zero proven behavior/design findings. SQL runtime has NOT run, exact-HEAD CI is pending, and PR #35 is not open. Proposed CI adds command tests only to disposable PG17; manual Neon remains unchanged.
+
+Safety contract: validate arguments, canonical positive revision, private regular mode-0600 nonsymlink file and hash before env/factory/DB. Fresh GET-only `VerifyProviders` plus concrete `importverify.Service` prepares complete opaque plan before DB open; reports/artifacts are not authority. Reuse source policy/pinned versions/public base/inbounds/TZ. `DB_MAX_CONNS` defaults to 4, canonical 1..64. Existing known `telegram_bots` row required; no GetMe, bot metadata manufacture, workers or auto-migration. Safe plan hash/counts only. `--apply` mandatory; `--enable-admission` separate and default-off. Permission sync may persist if later batch apply fails; no automatic rollback/rearm. It does not enable imported runtime/effects/configuration. PG workflows are loopback PG17/`TEST_DATABASE_URL` only, empty `PGOPTIONS`, one-query explicit SSL mode; direct current schema and exact search_path checked before store open/migration, cleanup errors reported. They cover fresh empty-schema default-off denial/no rows, explicit enable/apply/replay, and revocation. Unit tests cover provider 503/unpaid, invalid config/TZ/pool/revision/hash/mode/symlink/evidence flag, early no-DB dispatch, explicit-only policy sync and safe errors/output. No live execution. Next: parent exact-HEAD CI and PR #35/merge, then default-off startup/import-permission/runtime wiring. Stage 11 remains incomplete.
+
 ## Проверенные срезы
 
 - PR [#12](https://github.com/PlumpAlbert/payplump-bot/pull/12), squash

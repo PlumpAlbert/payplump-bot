@@ -61,6 +61,41 @@ contains sensitive private facts, is create-only mode 0600, and is not admission
 authority. Do not use production provider credentials in local tests. No live
 verification or managed admission has been performed.
 
+## Verified import apply CLI (code preparation only)
+
+The `payplump import-apply` CLI implementation, expanded unit tests/finite
+fixture, and isolated PostgreSQL workflows are ready for parent verification.
+Parent normal unit/race/vet/CGO0 build/module/gofmt/diff and command+PostgreSQL
+compile-only checks passed. Independent review `67ca1346-a4f9-49c` covered the
+full patch (four command files, main/CI and admission/source contracts) with
+zero proven behavior/design findings. PostgreSQL SQL runtime has NOT run, exact-
+HEAD CI is pending, and PR #35 is not open. This is not a live operator
+procedure. Do not run against real providers, manifests, or databases.
+
+The contract is
+`payplump import-apply --file PRIVATE --expected-hash HASH --admission-revision N --apply [--enable-admission]`.
+Arguments, canonical positive revision, private regular mode-0600 nonsymlink
+manifest, and hash are checked before environment, source-provider construction,
+or database access. The command then performs fresh GET-only verification of the
+complete plan and prepares an opaque plan before DB open; saved reports and
+evidence are never authority. Output is limited to safe plan hash/counts. It
+reuses the `import-verify` source-policy settings and pinned versions/public
+base/inbounds. A known pre-existing `telegram_bots` row is required; the command
+does not create bot metadata or call GetMe. `DB_MAX_CONNS` defaults to 4 and
+accepts canonical values 1..64.
+
+`--apply` is mandatory and omission rejects. Without `--enable-admission`, apply
+requires a matching currently enabled admission policy. `--enable-admission` is
+a separate explicit permission change, default off: it syncs the prepared
+bot/revision/policy hash/source scope enabled, then applies the batch. This
+permission update commits in a separate durable transaction and can persist if
+batch application conflicts; permission enable and batch apply are not atomic
+together. There is no automatic rollback/rearm. Re-enabling after disable
+requires a higher revision. Applying does not enable imported runtime/effects
+or protected configuration delivery; startup wiring remains separate. A live
+operator would need an already-known bot record and service-owner permission,
+but there is no authorization here to run against live systems.
+
 ## Backup and isolated restore check
 
 An owner must arrange independent backups of the bot PostgreSQL database, bot

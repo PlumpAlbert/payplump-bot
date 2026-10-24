@@ -136,7 +136,65 @@ durable chat barrier across revocation/new request/restart. The unknown case
 performs no further URL/provider/chat GET. No live consumer readiness or live
 provider/Telegram/payment/working-DB/publish/deploy result is claimed.
 
-## Next slice: 11b.7.2 imported current-renewal delivery
+## Current delivery status: PR #34 and apply CLI
+
+11b.7.2 protected imported CURRENT COMPLETED renewal merged in PR #34 as
+`1c21061e0ad8f02fab45678c9d92d343855fd26a`. Exact final code HEAD
+`1cdd30d4b4b4fbb0bf3544a64ff31156a705bd60` passed required CI `40040735229`
+(all three jobs, including PostgreSQL 17/race/smoke/Docker); post-merge main CI
+`40041362995` succeeded on the exact merge base. Runtime passed all four new SQL
+workflows: `TestCompletedImportedRenewalAllowsProtectedConfiguration`,
+`TestCompletedImportedInitialRestorationAllowsProtectedConfiguration`,
+`TestUnknownInitialRestorationDeniesConfiguration`, and
+`TestCompletedImportedRenewalStaleConfigurationRevisionDenied`. Earlier CI
+history remains: `40038835592` was a real migration 024 syntax failure before
+SQL scenarios; syntax fix narrowly reviewed (`6709e271-efcb-47e`); `40039692048`
+passed migration and old SQL but found four test-only boundary/fixture failures;
+`40040735229` passed all jobs. No production fences were weakened. Full review
+`e370ed66-465a-4ef` and narrow syntax review completed. No live API, Telegram,
+payment, working DB, publish or deploy.
+
+### Apply CLI: code and local review ready, SQL runtime pending
+
+`payplump import-apply --file PRIVATE --expected-hash HASH --admission-revision N --apply [--enable-admission]`
+production code, expanded unit tests/finite fixture, and isolated PostgreSQL
+workflows are implemented. Parent normal unit/race/vet/CGO0 build/module/gofmt/
+diff checks passed; command+PostgreSQL integration compile-only check passed:
+`scripts/test-safe.sh -run='^$' -tags=integration ./cmd/payplump ./internal/postgres`.
+Independent reviewer `67ca1346-a4f9-49c` reviewed the full 936-line patch,
+four new command files, main/CI changes, and admission/source contracts; zero
+proven behavior/design findings. These are local/compile/review results only:
+PostgreSQL SQL runtime has NOT run, exact-HEAD CI is pending, and PR #35 is not
+open yet. Proposed CI adds the command-tagged suite only to disposable PG17;
+manual Neon remains unchanged.
+
+The CLI checks invalid arguments, canonical positive revision, private regular
+mode-0600 nonsymlink file, and hash before environment/factory/DB. It performs
+fresh GET only via `VerifyProviders` and concrete `importverify.Service`, then
+prepares the complete opaque plan before opening DB; saved reports/artifacts are
+not authority. It reuses import-verification policy variables and pinned
+provider versions/public-base/inbounds/TZ. `DB_MAX_CONNS` defaults to 4 and
+accepts canonical 1..64. A pre-existing known `telegram_bots` row is required;
+no bot metadata is manufactured and no GetMe/workers/migrations are invoked.
+Output is safe plan hash/counts only.
+
+`--apply` is mandatory and omission rejects. `--enable-admission` is separately
+explicit and defaults off. Without it, a current enabled matching admission gate
+is required. When supplied, sync prepared bot/revision/policy hash/source scope
+enabled, then apply the verified batch. This permission sync commits in a
+separate durable transaction and MAY persist if batch application later fails;
+there is no automatic rollback/rearm. Re-enable after disable requires a higher
+revision; same-revision replay is idempotent, not automatic old-origin
+re-admission after revision change. Runtime/effects/configuration-delivery
+permissions are not enabled. PG workflows require isolated loopback PG17,
+`TEST_DATABASE_URL`, empty `PGOPTIONS`, one-query explicit SSL mode, and verify
+direct `current_schema` plus exact `search_path` before store open/migration;
+cleanup errors are reported. Covered fresh default-off/no-enable denial in a
+separate empty schema, explicit enable/apply/replay, and revocation. Synthetic
+known bot ID 9 is only the fixture precondition. Do not run against real
+services or data; SQL runtime remains pending.
+
+## Delivered 11b.7.2: imported current-renewal delivery
 
 11b.7.2 implementation and four PostgreSQL workflow cases are in PR #34 at
 `815d54c6e019e03e5a8391dccaec21e2e7a39fd3`. Eligibility is a protected imported
@@ -169,14 +227,16 @@ other. The new unknown-native case is Resume mutation→503, pinned global guard
 and local overdue, followed by ordinary menu denial without a configuration
 request; it is not a Telegram-unknown test.
 
-The first PR CI run `40038835592` passed fast checks, but PostgreSQL integration
-failed before all feature scenarios while parsing migration 024 (`SQLSTATE
-42601`, mismatched parentheses). This is a real migration syntax defect, not a
-fixture-only failure; Store producer is correcting syntax without weakening
-predicates. No SQL scenario has run in CI; local PG workflows are compile-only.
-The independent full-patch review `e370ed66-465a-4ef` found zero behavioral/
-design findings before this runtime parse failure; the migration fix needs a
-narrow recheck. Parent local unit/race/vet/CGO0 build/module/gofmt and PG
-compile-only checks passed before the migration correction. Corrected-HEAD CI,
-SQL runtime and merge remain pending. Apply CLI/default-off startup wiring is
-later work; 11b and live verification/admission remain incomplete.
+CI history: `40038835592` passed fast checks but PostgreSQL integration failed
+before feature scenarios while parsing migration 024 (`SQLSTATE 42601`), a real
+syntax defect. The correction was narrowly reviewed (`6709e271-efcb-47e`, no
+fence changes). `40039692048` passed migration and old SQL cases, then exposed
+four test-only boundary/worker fixture failures; only fixture/assertion scope was
+corrected without weakening protected predicates. `40040735229` passed all jobs
+and the four new SQL workflows ran successfully.
+Full review `e370ed66-465a-4ef` and narrow syntax review completed. Apply CLI
+production, unit and isolated PG test code is complete; parent local checks and
+independent review `67ca1346-a4f9-49c` found zero proven behavior/design
+findings. Command SQL runtime remains unexecuted; exact-HEAD CI and PR #35/merge
+are pending. The full stage 11 and live verification/admission remain
+incomplete.

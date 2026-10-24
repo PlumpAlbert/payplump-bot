@@ -92,8 +92,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Full PostgreSQL integration/race suite, including both synthetic workflow E2Es
-        run: go test -v -race -tags=integration -count=1 -timeout=60m ./internal/postgres
+      - name: Full PostgreSQL integration/race suite, including synthetic workflows
+        run: go test -v -race -tags=integration -count=1 -timeout=60m ./internal/postgres ./cmd/payplump
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/payplump ./cmd/payplump
       - name: Create isolated smoke schema in local PostgreSQL
         id: smoke-schema
