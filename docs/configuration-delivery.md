@@ -193,9 +193,25 @@ does not enable or authorize live protected delivery. Apply CLI production,
 unit and isolated PG test code is delivered in PR #35; exact-head required CI
 `40044946187` and post-merge CI `40045550655` passed, including both real CLI
 PostgreSQL workflows. This does not authorize live protected delivery. Separate
-11b.9 startup/runtime-permission implementation and tests are complete and
-passed local checks plus independent exact-patch review `164166cb-25b2-465`
-(zero proven behavior/design findings). Its PostgreSQL SQL runtime, exact-head
-CI, PR #36 and merge remain pending; runtime enablement still does not enable
-protected configuration delivery. No live provider, Telegram, payment, working database,
-publish or deployment result is claimed.
+11b.9 read-runtime startup merged in PR #36 at
+`a5fd93b28f0c0fe78e9485ddbe169837af49544`; exact HEAD
+`277b37c12433f271ee72d60d486551644749de92` passed required CI `40046909184`
+and post-merge main CI `40047448373`. Its real PostgreSQL startup workflow
+passed; full review `164166cb-25b2-465` had zero proven behavior/design
+findings. Runtime enablement still does not enable protected configuration
+delivery or clear its per-chat barrier.
+
+11b.10 implementation and tests are ready; all three producers are done. Parent
+full normal unit/race/vet/CGO0 build/module verification/gofmt/diff passed
+(`/tmp/payplump-import-effects-{unit,race}.log`); tagged command+PostgreSQL
+compile-only passed. Independent full review `e72f63f9-cad9-4ed` covered the
+exact 827-line patch `/tmp/payplump-import-effects-review.patch` and related
+contracts with zero proven behavior/design findings. The new SQL workflow has
+not run; exact-HEAD CI, PR #37 and merge remain pending. Startup effects are a
+separate explicit permission from read runtime and configuration delivery; read
+enablement still does not authorize protected URL delivery or clear its chat
+barrier. Current PR #37 covers 13 paths (seven implementation/config paths for
+initial staging, no source fields/secrets, and these six docs). No live provider,
+Telegram, payment, working database, publish or deployment result is claimed.
+After PR #37, retain sequence 12 synthetic restore CI → 13 manual release
+preparation with publishing off → 14 synthetic measurements/owner live gates.

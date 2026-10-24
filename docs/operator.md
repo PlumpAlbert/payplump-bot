@@ -96,7 +96,7 @@ or protected configuration delivery; startup wiring remains separate. A live
 operator would need an already-known bot record and service-owner permission,
 but there is no authorization here to run against live systems.
 
-## Current imported runtime wiring status (supersedes the checkpoint above)
+## Current imported runtime and effects wiring status (supersedes the checkpoint above)
 
 The 11b.8 `import-apply` command is delivered. PR #35 merged at
 `c0c5f41de7dc98eb03530bebda394b0024842061`; exact HEAD
@@ -115,9 +115,11 @@ production guards. No live execution is authorized or claimed.
 build/module/gofmt/diff checks and tagged command+PostgreSQL compile-only passed.
 Independent review `164166cb-25b2-465` examined exact patch
 `/tmp/payplump-import-runtime-review.patch` (850 lines) plus related contracts;
-zero proven behavior/design findings. PostgreSQL SQL runtime, exact-head CI and
-PR #36 remain pending, so this is not yet runtime-verified or an operational
-runbook. It adds default-off `IMPORTED_RUNTIME_ENABLED` and explicit canonical
+zero proven behavior/design findings. PR #36 merged at `a5fd93b28f0c0fe78e9485ddbe169837af49544`; exact code HEAD
+`277b37c12433f271ee72d60d486551644749de92` passed required CI `40046909184`
+(all three jobs: fast, race, disposable PostgreSQL 17 and smoke/Docker), and
+post-merge main CI `40047448373` succeeded. `TestImportedRuntimeReadOnlyStartupWorkflowRealPostgres`
+passed at SQL runtime. It adds default-off `IMPORTED_RUNTIME_ENABLED` and explicit canonical
 `IMPORTED_RUNTIME_REVISION`. Startup fences imported effect permissions before
 readiness; when runtime is disabled it also disables imported runtime. Enabling
 installs only a matching runtime policy after normal verified bot setup. This
@@ -131,8 +133,39 @@ migration/guard infrastructure may exist). It checks the guard epoch/owner
 across all steps, actual read-worker completion/GET count, revision-1 denial and
 explicit revision-3 read permission success, effects still disabled at revision
 2, admission still enabled at revision 1, unchanged origin, and full normal
-payment-confirmation proof. These are test assertions only until the SQL
-workflow runs in disposable PostgreSQL 17 CI.
+payment-confirmation proof. The workflow verified actual CLI fresh admission/GET-only planning/read-worker
+completion and payment confirmation, read revisions 1 denied/3 accepted,
+effects disabled at revision 2, admission still enabled at revision 1, unchanged
+origin/guard epoch/owner, and no source GET by loader/fence/install. The
+fresh-schema assertion means no admission/workflow/permission rows before bot
+setup, not an empty DB; known bot metadata and migration/guard infrastructure
+may exist.
+
+11b.10 implementation and tests are complete; all three code producers are done.
+Parent full normal unit/race/vet/CGO0 build/module verification/gofmt/diff
+passed (logs `/tmp/payplump-import-effects-{unit,race}.log`); tagged
+command+PostgreSQL compile-only passed. Independent review `e72f63f9-cad9-4ed`
+covered the exact 827-line patch `/tmp/payplump-import-effects-review.patch` and
+related durable-effects/source-scope/core contracts; zero proven behavior/design
+findings. The parent-fixed bot-mismatch test keeps the read row when effects are
+denied (counts `1,1,0`); bad-effects-revision uses valid read revision 7, reaches
+the effects-revision rejection and asserts no source GET. `.env.example` now
+clarifies admission versus read-runtime permission terms. New startup SQL runtime
+has not run; exact-HEAD CI and PR #37/merge are pending. Stage 11 and owner live
+gates remain incomplete.
+
+Flags `IMPORTED_EFFECTS_ENABLED=false` / `IMPORTED_EFFECTS_REVISION=` are
+independent of source-policy fingerprint, admission, read-runtime and
+configuration-secret permissions. Effects require read runtime; pure provider
+construction requires exact source scope and makes no HTTP request. Read-enabled
+/effects-off may support fresh-GET completion of a known original receipt under
+existing authorization, not automatic writes or broader protected-reader
+capabilities. Existing native known/unknown mutation workflows are prior
+coverage; this slice adds no new native mutation workflow. PR #37 currently
+covers 13 paths (seven implementation/config paths for initial staging, no
+source fields/secrets, plus the six docs). After PR #37, next stages are strictly
+12 synthetic restore CI → 13 manual release preparation with publishing off →
+14 synthetic measurements and owner live gates. Do not skip 12.
 
 ## Backup and isolated restore check
 
