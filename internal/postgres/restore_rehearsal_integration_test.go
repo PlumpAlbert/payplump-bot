@@ -125,7 +125,8 @@ func TestRestoreRehearsalPrepareSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRehearsalSemantics(t, ctx, s)
-	if report.UnresolvedKnownReceipts < 1 || report.Guard.OperationID == nil || *report.Guard.OperationID != claim.ID || report.Guard.Step == nil || *report.Guard.Step != string(lifecycle.OverdueDisableSUI) || report.ProtectedUnknownTotal < 1 {
+	// A closed review operation is excluded from the unresolved-known summary; its receipt is asserted below.
+	if report.UnresolvedKnownReceipts != 0 || report.Guard.OperationID == nil || *report.Guard.OperationID != claim.ID || report.Guard.Step == nil || *report.Guard.Step != string(lifecycle.OverdueDisableSUI) || report.ProtectedUnknownTotal < 1 {
 		t.Fatalf("synthetic recovery state not represented: %+v", report)
 	}
 	assertUnknownRehearsalState(t, ctx, s, *report.Guard.OperationID, message.ID)
@@ -161,7 +162,8 @@ func TestRestoreRehearsalVerifyTarget(t *testing.T) {
 	if report.Guard.OperationID != nil {
 		assertUnknownRehearsalState(t, ctx, s, *report.Guard.OperationID, 0)
 	}
-	if report.Guard.OperationID == nil || report.Guard.Step == nil || *report.Guard.Step != string(lifecycle.OverdueDisableSUI) || report.UnresolvedKnownReceipts < 1 || report.ProtectedUnknownTotal < 1 {
+	// A closed review operation is excluded from the unresolved-known summary; its receipt is asserted above.
+	if report.Guard.OperationID == nil || report.Guard.Step == nil || *report.Guard.Step != string(lifecycle.OverdueDisableSUI) || report.UnresolvedKnownReceipts != 0 || report.ProtectedUnknownTotal < 1 {
 		t.Fatalf("restored recovery barriers missing: %+v", report)
 	}
 	after := rehearsalSnapshot(t, ctx, s)
