@@ -23,6 +23,8 @@ services:
       INVOICE_LIFECYCLE_ENABLED: "false"
       INVOICE_OVERDUE_ENFORCEMENT_ENABLED: "false"
       INVOICE_RENEWAL_ENABLED: "false"
+      IMPORTED_RUNTIME_ENABLED: "false"
+      IMPORTED_EFFECTS_ENABLED: "false"
       PGHOST: ${PGHOST:?set externally}
       PGPORT: ${PGPORT:-5432}
       PGUSER: ${PGUSER:?set externally}

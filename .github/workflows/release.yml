@@ -1,0 +1,239 @@
+name: Manual release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full 40-character commit SHA, reachable from protected main and green in required CI checks
+        required: true
+        type: string
+      platform:
+        description: Explicit target platform
+        required: true
+        type: choice
+        options:
+          - linux/amd64
+          - linux/arm64
+      publish:
+        description: Publish only after explicit review and protected-environment approval
+        required: true
+        default: false
+        type: boolean
+      confirm:
+        description: Type publish-reviewed-commit only to confirm publishing this exact commit
+        required: false
+        default: ''
+        type: string
+      previous_image:
+        description: Pinned image reference with sha256 digest (required for publishing)
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      checks: read
+    outputs:
+      commit: ${{ steps.result.outputs.commit }}
+      platform: ${{ steps.result.outputs.platform }}
+      image_tag: ${{ steps.result.outputs.image_tag }}
+    steps:
+      - name: Checkout trusted workflow tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tools
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release request
+        id: result
+        env:
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          RELEASE_PLATFORM: ${{ inputs.platform }}
+          RELEASE_PUBLISH: ${{ inputs.publish }}
+          RELEASE_CONFIRM: ${{ inputs.confirm }}
+          RELEASE_PREVIOUS_IMAGE: ${{ inputs.previous_image }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          private_dir="$(mktemp -d "${RUNNER_TEMP}/release-preflight.XXXXXX")"
+          chmod 700 "$private_dir"
+          trap 'rm -rf "$private_dir"' EXIT
+          python3 release-tools/scripts/release-preflight.py \
+            --commit "$RELEASE_COMMIT" \
+            --repository "$GITHUB_REPOSITORY" \
+            --platform "$RELEASE_PLATFORM" \
+            --publish "$RELEASE_PUBLISH" \
+            --confirm "$RELEASE_CONFIRM" \
+            --previous-image "$RELEASE_PREVIOUS_IMAGE" \
+            --output "$private_dir/intent.json"
+          python3 - "$private_dir/intent.json" "$GITHUB_OUTPUT" <<'PY'
+          import json, re, sys
+          with open(sys.argv[1], encoding="utf-8") as f:
+              data = json.load(f)
+          sha, platform, tag = data.get("commit"), data.get("platform"), data.get("image_tag")
+          if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+              raise SystemExit("preflight returned invalid commit")
+          if platform not in ("linux/amd64", "linux/arm64"):
+              raise SystemExit("preflight returned invalid platform")
+          if not isinstance(tag, str) or not re.fullmatch(r"ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+:git-[0-9a-f]{40}-run-[0-9]+-[0-9]+", tag):
+              raise SystemExit("preflight returned invalid image tag")
+          with open(sys.argv[2], "a", encoding="utf-8") as out:
+              out.write(f"commit={sha}\nplatform={platform}\nimage_tag={tag}\n")
+          PY
+
+  dry-run-build:
+    if: ${{ inputs.publish == false }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      checks: read
+    steps:
+      - name: Checkout trusted workflow tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tools
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Revalidate request
+        env:
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          RELEASE_PLATFORM: ${{ inputs.platform }}
+          RELEASE_PUBLISH: ${{ inputs.publish }}
+          RELEASE_CONFIRM: ${{ inputs.confirm }}
+          RELEASE_PREVIOUS_IMAGE: ${{ inputs.previous_image }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          private_dir="$(mktemp -d "${RUNNER_TEMP}/release-preflight.XXXXXX")"
+          chmod 700 "$private_dir"
+          trap 'rm -rf "$private_dir"' EXIT
+          python3 release-tools/scripts/release-preflight.py --commit "$RELEASE_COMMIT" --repository "$GITHUB_REPOSITORY" --platform "$RELEASE_PLATFORM" --publish "$RELEASE_PUBLISH" --confirm "$RELEASE_CONFIRM" --previous-image "$RELEASE_PREVIOUS_IMAGE" --output "$private_dir/intent.json"
+      - name: Checkout validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.commit }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build and validate local artifact
+        id: build
+        env:
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          RELEASE_PLATFORM: ${{ inputs.platform }}
+          RELEASE_PUBLISH: ${{ inputs.publish }}
+          RELEASE_CONFIRM: ${{ inputs.confirm }}
+          RELEASE_PREVIOUS_IMAGE: ${{ inputs.previous_image }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          output="$(mktemp -d "${RUNNER_TEMP}/release-output.XXXXXX")"
+          chmod 700 "$output"
+          python3 release-tools/scripts/release-preflight.py --commit "$RELEASE_COMMIT" --repository "$GITHUB_REPOSITORY" --platform "$RELEASE_PLATFORM" --publish "$RELEASE_PUBLISH" --confirm "$RELEASE_CONFIRM" --previous-image "$RELEASE_PREVIOUS_IMAGE" --output "$output/intent.json"
+          release-tools/scripts/release-build.sh --intent "$output/intent.json" --source-dir "$GITHUB_WORKSPACE/source" --output-dir "$output"
+          python3 - "$output" "$RUNNER_TEMP" "$GITHUB_OUTPUT" <<'PY'
+          import os, sys
+          output, temp = (os.path.realpath(p) for p in sys.argv[1:3])
+          if not output.startswith(temp.rstrip(os.sep) + os.sep) or any(c in output for c in "\r\n"):
+              raise SystemExit("unsafe release output path")
+          with open(sys.argv[3], "a", encoding="utf-8") as f:
+              f.write(f"output_dir={output}\n")
+          PY
+      - name: Upload validated local artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ needs.preflight.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.build.outputs.output_dir }}/release-manifest.json
+            ${{ steps.build.outputs.output_dir }}/image.tar
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-build:
+    if: ${{ inputs.publish == true }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+      checks: read
+      packages: write
+    steps:
+      - name: Checkout trusted workflow tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tools
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Revalidate request
+        env:
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          RELEASE_PLATFORM: ${{ inputs.platform }}
+          RELEASE_PUBLISH: ${{ inputs.publish }}
+          RELEASE_CONFIRM: ${{ inputs.confirm }}
+          RELEASE_PREVIOUS_IMAGE: ${{ inputs.previous_image }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -euo pipefail
+          private_dir="$(mktemp -d "${RUNNER_TEMP}/release-preflight.XXXXXX")"
+          chmod 700 "$private_dir"
+          trap 'rm -rf "$private_dir"' EXIT
+          python3 release-tools/scripts/release-preflight.py --commit "$RELEASE_COMMIT" --repository "$GITHUB_REPOSITORY" --platform "$RELEASE_PLATFORM" --publish "$RELEASE_PUBLISH" --confirm "$RELEASE_CONFIRM" --previous-image "$RELEASE_PREVIOUS_IMAGE" --require-approval --output "$private_dir/intent.json"
+      - name: Checkout validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.commit }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build and publish validated image
+        id: build
+        env:
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          RELEASE_PLATFORM: ${{ inputs.platform }}
+          RELEASE_PUBLISH: ${{ inputs.publish }}
+          RELEASE_CONFIRM: ${{ inputs.confirm }}
+          RELEASE_PREVIOUS_IMAGE: ${{ inputs.previous_image }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          output="$(mktemp -d "${RUNNER_TEMP}/release-output.XXXXXX")"
+          chmod 700 "$output"
+          python3 release-tools/scripts/release-preflight.py --commit "$RELEASE_COMMIT" --repository "$GITHUB_REPOSITORY" --platform "$RELEASE_PLATFORM" --publish "$RELEASE_PUBLISH" --confirm "$RELEASE_CONFIRM" --previous-image "$RELEASE_PREVIOUS_IMAGE" --require-approval --output "$output/intent.json"
+          release-tools/scripts/release-build.sh --intent "$output/intent.json" --source-dir "$GITHUB_WORKSPACE/source" --output-dir "$output"
+          python3 - "$output" "$RUNNER_TEMP" "$GITHUB_OUTPUT" <<'PY'
+          import os, sys
+          output, temp = (os.path.realpath(p) for p in sys.argv[1:3])
+          if not output.startswith(temp.rstrip(os.sep) + os.sep) or any(c in output for c in "\r\n"):
+              raise SystemExit("unsafe release output path")
+          with open(sys.argv[3], "a", encoding="utf-8") as f:
+              f.write(f"output_dir={output}\n")
+          PY
+      - name: Upload release manifest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ needs.preflight.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.build.outputs.output_dir }}/release-manifest.json
+          if-no-files-found: error
+          retention-days: 7

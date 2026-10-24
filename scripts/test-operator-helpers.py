@@ -89,7 +89,19 @@ class Helpers(unittest.TestCase):
         c = config(); c["services"]["payplump"]["environment"]["LIFECYCLE_ENABLED"] = "false"; self.check(c, False)
         for gate in ("INVOICE_LIFECYCLE_ENABLED", "INVOICE_OVERDUE_ENFORCEMENT_ENABLED", "INVOICE_RENEWAL_ENABLED"):
             c = config(); c["services"]["payplump"]["environment"].pop(gate); self.check(c, False)
+        for gate in validator.FLAGS:
+            c = config(); c["services"]["payplump"]["environment"][gate] = "true"; self.check(c, False)
+        for unexpected in ("REVISION", "SOURCE_TOKEN"):
+            c = config(); c["services"]["payplump"]["environment"][unexpected] = "synthetic"; self.check(c, False)
         c = config(); c["services"]["payplump"]["environment"].pop("TELEGRAM_ENABLED"); c["services"]["payplump"]["environment"]["COMMENT"] = "TELEGRAM_ENABLED: false"; self.check(c, False)
+
+    def test_release_template_declares_imported_gates_and_image_user(self):
+        compose = (ROOT / "compose.release.yaml").read_text()
+        for gate in ("IMPORTED_RUNTIME_ENABLED", "IMPORTED_EFFECTS_ENABLED"):
+            self.assertIn(f'{gate}: "false"', compose)
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertEqual(dockerfile.count("USER 65532:65532"), 1)
+        self.assertLess(dockerfile.index("COPY --from=build /out/payplump /payplump"), dockerfile.index("USER 65532:65532"))
 
     def test_dev_compose_resolves_lifecycle_settings_without_starting_containers(self):
         docker = shutil.which("docker")
