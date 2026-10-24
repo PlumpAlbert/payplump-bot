@@ -399,17 +399,21 @@ gates: [docs/release.md](docs/release.md).
 Stage 14 профили, тесты и CI artifact wiring подготовлены в рабочем изменении.
 Parent Go unit/race/vet (22 packages), CGO0 build, `go mod verify`, tagged
 PostgreSQL compile-only, gofmt and YAML parse passed. Measurement/helper tests:
-38 total, 37 passed and one existing Docker-dependent operator skip. Local Darwin
+38 total, 37 passed, one existing Docker-dependent operator skip. Local Darwin
 arm64/Go 1.27.2 profiles passed 1/1, 2/2, 2/2, 4/4; importplan 15/15. An initial
-`unit-smoke` run returned 155/156 and correctly failed; after JSON diagnosis, a
-manual retry passed 156/156. No production defect inferred. Independent review
-`1dd52647-2607-400` final recheck found zero findings; the `--prof` P3 and
-fixture SHA/marker test issue are fixed. Required CI for PR #40 and actual CI
-artifact remain pending. Public repo: only public-safe JSON metadata. Artifact отражает runner unit workloads,
-не приложение, VPS или production-нагрузку. Guide: [resource measurement](docs/resource-measurement.md).
+`unit-smoke` run returned 155/156 and correctly failed; after JSON diagnosis,
+a manual retry passed 156/156. No production defect inferred. Independent review
+`1dd52647-2607-400` final recheck found zero findings. First required PR #40 CI
+run `40059203387` passed all three jobs on code HEAD
+`7d247b20da2ff0408a22382115ccad9918fc3d1c`; downloaded and validated four
+public-safe JSON profiles in artifact `12545794446`
+(`synthetic-unit-resources-40059203387-1`). Exact measurements and limits are
+in [docs/resource-measurement.md](docs/resource-measurement.md). This is runner
+unit evidence, not VPS/app capacity evidence. Полные значения и ограничения:
+[resource measurement](docs/resource-measurement.md).
 
 - [x] Подготовить исходный dry-run harness; он не измеряет VPS.
-- [ ] Пройти required CI PR #40 и проверить четыре фактических public-safe JSON artifact; не выдавать локальные unit results за production measurement.
+- [x] Проверить bounded unit harness, review с нулём findings и первый required CI/artifact checkpoint: PR code HEAD `7d247b20da2ff0408a22382115ccad9918fc3d1c`, run `40059203387` all three jobs success, artifact `12545794446` (4 JSON validated). Это runner-only evidence, не production measurement.
 - [ ] Зафиксировать архитектуру, RAM / SSD VPS, число клиентов и настройки пула БД, размеров порций, параллельности и API-таймаутов.
 - [ ] Измерить простой, обработку счетов, сверку после перезапуска и рассылку с повторами неудачных запросов.
 - [ ] Отдельно записать размер образа на диске / загрузки из реестра, RSS процесса, память контейнера, CPU и пики с версией образа и длительностью сценариев.

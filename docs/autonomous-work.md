@@ -206,12 +206,13 @@ scope; не снимать и не обходить их и не расширя�
   rearm/снятие барьеров; реальные backup/restore требуют владельца.
 - [ ] 13: release manifest и ручной opt-in build/publish workflow; Compose и
   validator уже есть. Никаких реальных публикаций или deploy.
-- [ ] 14: профили, tests и CI artifact wiring готовы в worktree. Parent checks
-  и локальные unit/profile/helper tests прошли (см. resource guide).
-  `RLIMIT_FSIZE` и EOF/wall-timeout fixes завершены. Independent review
-  `1dd52647-2607-400` финально завершён с нулём findings после исправления
-  P3 `--prof` и fixture SHA/marker test. Required CI PR #40 и artifact runtime
-  pending. Repo public: только public-safe JSON; VPS measurements требуют владельца.
+- [x] 14a: bounded unit resource harness, tests, independent final review
+  `1dd52647-2607-400` (zero findings), and first required CI/artifact checkpoint
+  verified: code HEAD `7d247b20da2ff0408a22382115ccad9918fc3d1c`, run
+  `40059203387` all three required jobs green, artifact `12545794446` with four
+  validated public-safe JSON profiles. Results/scope: [resource guide](resource-measurement.md).
+- [ ] 14b: VPS/application measurements and all owner-controlled operational
+  gates remain incomplete; see plan 14.
 
 Очередь последовательная по небольшим PR: 9a и 9b завершены; 11a.1, 11a.2
 core/history и operator CLI merged. PR #25 exact-HEAD required CI `39992168476`
@@ -249,7 +250,7 @@ honest history: `40038835592` was a real migration syntax failure before cases;
 `40039692048` passed migration/old SQL but failed four test-only boundaries;
 `40040735229` passed all. No fence changes or live verification.
 
-Apply CLI production code, expanded unit tests/finite fixture, and isolated PostgreSQL workflows are complete. Parent normal unit/race/vet/CGO0 build/module/gofmt/diff checks passed; tagged command+PostgreSQL compile-only passed:
+Historical pre-PR #35 merge snapshot (superseded by the delivered status below): Apply CLI production code, expanded unit tests/finite fixture, and isolated PostgreSQL workflows were complete. Parent normal unit/race/vet/CGO0 build/module/gofmt/diff checks passed; tagged command+PostgreSQL compile-only passed:
 `scripts/test-safe.sh -run='^$' -tags=integration ./cmd/payplump ./internal/postgres`.
 Independent review `67ca1346-a4f9-49c` covered the full 936-line patch, four new command files, main/CI and admission/source contracts; zero proven behavior/design findings. SQL runtime has NOT run, exact-HEAD CI is pending, and PR #35 is not open. Proposed CI adds command tests only to disposable PG17; manual Neon remains unchanged.
 
@@ -345,6 +346,6 @@ The implementation uses exact intent field `run_attempt`, a fresh private intent
 
 Manifest records source commit/migrations, PG17, target platform/architecture, image labels, user `65532:65532`, entrypoint/healthcheck and actual local Docker archive bytes/SHA. Dry-run has `published=false`, `registry_digest=null`; local image ID/archive SHA are not registry digest and archive bytes are not registry download size. Previous digest must be same-repo and owner-provided; it is not evidence of a working image. Only a real approved push yields actual registry digest. Existing app/restore CI is not proof of release pipeline. No manual release workflow dispatch/build/runtime, registry API/publication, Komodo deploy or SSH has occurred for this tooling. Ordinary source CI build/smoke images are not release artifacts. VPS architecture, owner config, limits and live signals are unknown.
 
-Status: stage 12 done; stage 13 delivered with review, exact-HEAD required CI `40056489006` and post-merge CI `40057042166` successful. Stage 14 profiles/tests/artifact wiring are prepared. Parent Go unit/race/vet (22 packages), CGO0 build/mod verify, tagged PostgreSQL compile-only, gofmt and YAML parse passed. Helper tests: 38 total, 37 passed, 1 existing skip. Local four added profiles passed 1/1, 2/2, 2/2, 4/4 on Darwin arm64/Go 1.27.2. The first `unit-smoke` run returned 155/156 as a nonzero failure; after JSON diagnosis, manual retry passed 156/156; no production defect is inferred. `RLIMIT_FSIZE` and EOF/wall-timeout fixes are complete. Independent review `1dd52647-2607-400` final recheck found zero findings after fixing the `--prof` P3 and fixture SHA/marker issue. Required CI PR #40 and actual artifact remain pending. Repository is public; future JSON must contain only public-safe metadata. VPS inputs are unavailable. Owner live gates remain incomplete. No manual release workflow dispatch (including dry-run), local Docker runtime, registry login/push, publication, deployment or SSH was performed; dispatch remains forbidden in this task. Ordinary source CI Docker/smoke checks are not a manual release build.
+Status: stage 12 done; stage 13 delivered with review, required CI `40056489006` and post-merge CI `40057042166` successful. Stage 14 first bounded-unit checkpoint is delivered: parent Go unit/race/vet (22 packages), CGO0 build/mod verify, tagged PostgreSQL compile-only, gofmt and YAML parse passed; helper tests 38 total, 37 passed and one existing skip. Local four added profiles passed 1/1, 2/2, 2/2, 4/4 on Darwin arm64/Go 1.27.2. One initial local `unit-smoke` run was 155/156 and correctly nonzero; it was unreproduced and manual retry passed 156/156. Independent review `1dd52647-2607-400` final recheck found zero findings. PR #40 code HEAD `7d247b20da2ff0408a22382115ccad9918fc3d1c` passed required CI run `40059203387` (all three jobs); artifact `12545794446` has four validated public-safe JSON profiles, details in `docs/resource-measurement.md`. This does not measure app/VPS capacity. Repository is public; artifacts inherit repo access. VPS inputs/measurements and owner operational gates remain unavailable/pending. Owner live gates remain incomplete. No manual release workflow dispatch (including dry-run), local Docker runtime, registry login/push, publication, deployment or SSH was performed; dispatch remains forbidden in this task. Ordinary source CI Docker/smoke checks are not a manual release build.
 
 Current docs-only write set: `IMPLEMENTATION_PLAN.md`, `docs/autonomous-work.md`, `docs/operator.md`, `docs/backup-restore.md`, `docs/release.md`, `docs/resource-measurement.md`, `README.md` and `/tmp/payplump-autonomy-handoff.md`. No code/tests/workflow/config changes, release dispatch, Docker build, registry access, publish/deploy, live API, local SQL runtime, or owner gate performed.

@@ -93,10 +93,11 @@ re-review `43d6862f-9f7a-477` не нашёл доказуемых замеча�
 `40056489006`, merge base `0f1f1deb8dcd7d1bfec5e6d2bcac7c43a5b12d3d` прошёл
 post-merge CI `40057042166`. Manual release workflow не запускали; release image этим workflow не
 произведён. Обычный source CI build/smoke не является release artifact. Stage 14:
-профили/tests/artifact wiring готовы в worktree; `RLIMIT_FSIZE` и
-EOF/wall-timeout issues исправлены. Review `1dd52647-2607-400575` финально
-завершён с нулём findings после исправления P3 `--prof` и fixture SHA/marker
-test. Required CI PR #40/artifact runtime и owner measurements pending.
-Репозиторий публичный, поэтому будущий CI JSON может содержать только
-public-safe metadata; retention не ограничивает доступ. Никаких SSH, чтения real env, production GET/DB, публикации
+Stage 14 bounded unit harness прошёл independent final review
+`1dd52647-2607-400` без findings и первый required PR #40 CI run `40059203387`
+(all three jobs). Artifact `12545794446` содержит четыре проверенных
+public-safe JSON; результаты см. в [resource-measurement.md](resource-measurement.md).
+Это runner unit evidence, не приложение/VPS. Owner measurements и operational
+gates остаются pending. Репозиторий публичный, artifact access наследует repo
+read access; retention не является ACL. Никаких SSH, чтения real env, production GET/DB, публикации
 или deployment в рамках этого runbook.

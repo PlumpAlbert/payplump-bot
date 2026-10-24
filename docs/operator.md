@@ -65,14 +65,10 @@ verification or managed admission has been performed.
 
 ## Historical checkpoint: import-apply before PR #35 merge (superseded below)
 
-The `payplump import-apply` CLI implementation, expanded unit tests/finite
-fixture, and isolated PostgreSQL workflows are ready for parent verification.
-Parent normal unit/race/vet/CGO0 build/module/gofmt/diff and command+PostgreSQL
-compile-only checks passed. Independent review `67ca1346-a4f9-49c` covered the
-full patch (four command files, main/CI and admission/source contracts) with
-zero proven behavior/design findings. PostgreSQL SQL runtime has NOT run, exact-
-HEAD CI is pending, and PR #35 is not open. This is not a live operator
-procedure. Do not run against real providers, manifests, or databases.
+This is a historical pre-merge snapshot only: implementation and local checks
+were ready, but PostgreSQL runtime/required CI/PR #35 delivery had not yet
+occurred at that time. Superseded by the delivered status immediately below;
+this remains no authorization for live providers, manifests, or databases.
 
 The contract is
 `payplump import-apply --file PRIVATE --expected-hash HASH --admission-revision N --apply [--enable-admission]`.
@@ -152,9 +148,9 @@ related durable-effects/source-scope/core contracts; zero proven behavior/design
 findings. The parent-fixed bot-mismatch test keeps the read row when effects are
 denied (counts `1,1,0`); bad-effects-revision uses valid read revision 7, reaches
 the effects-revision rejection and asserts no source GET. `.env.example` now
-clarifies admission versus read-runtime permission terms. New startup SQL runtime
-has not run; exact-HEAD CI and PR #37/merge are pending. Stage 11 and owner live
-gates remain incomplete.
+clarifies admission versus read-runtime permission terms. Historical pre-PR #37 checkpoint: new startup SQL runtime and exact-HEAD CI
+were pending at that snapshot. Superseded by the delivered PR #37 status below;
+Stage 11 owner live gates remain incomplete.
 
 Flags `IMPORTED_EFFECTS_ENABLED=false` / `IMPORTED_EFFECTS_REVISION=` are
 independent of source-policy fingerprint, admission, read-runtime and
@@ -163,11 +159,10 @@ construction requires exact source scope and makes no HTTP request. Read-enabled
 /effects-off may support fresh-GET completion of a known original receipt under
 existing authorization, not automatic writes or broader protected-reader
 capabilities. Existing native known/unknown mutation workflows are prior
-coverage; this slice adds no new native mutation workflow. PR #37 currently
-covers 13 paths (seven implementation/config paths for initial staging, no
-source fields/secrets, plus the six docs). After PR #37, next stages are strictly
-12 synthetic restore CI → 13 manual release preparation with publishing off →
-14 synthetic measurements and owner live gates. Do not skip 12.
+coverage; this slice added no new native mutation workflow. Historical PR #37
+scope was 13 paths (seven implementation/config paths, no source fields/secrets,
+plus six docs); PR #37 has since merged. The sequence proceeded through stages
+12–14; current delivery evidence is recorded in the later status sections.
 
 ## Backup and isolated restore check
 
@@ -248,14 +243,11 @@ live validation remain owner-gated.
 ## Safe resource measurements
 
 See [resource-measurement.md](resource-measurement.md) for harness usage,
-profile scope, metric meanings and the owner-only VPS measurement worksheet.
-The harness is dry-run by default. Closed Stage 14 profiles, tests and CI JSON
-artifact wiring are present in the current worktree; parent Go/helper checks
-passed and local profiles ran as described in [resource-measurement.md](resource-measurement.md).
-`RLIMIT_FSIZE` and EOF/wall-timeout issues are fixed. Review
-`1dd52647-2607-400` final recheck found zero findings after fixing the
-`--prof` P3 and fixture SHA/marker test issue. Required CI PR #40 and actual
-artifact remain pending. The repo is public, so future JSON must contain only
-public-safe metadata. Any future CI artifact will measure bounded unit tests on a
-runner, not application/container/VPS behavior. Do not infer production limits
-from runner figures or sample Compose values.
+profile scope, the verified first CI artifact and the owner-only VPS measurement
+worksheet. The bounded unit harness passed independent final review
+`1dd52647-2607-400` with zero findings and required PR #40 CI run `40059203387`
+(all three jobs). Artifact `12545794446` contains four validated public-safe
+JSON profiles. These are runner unit metrics, not app/VPS capacity measurements.
+The public repository's artifact access inherits repo read access; do not upload
+private data or infer production limits from runner figures or sample Compose
+values.
