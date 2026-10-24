@@ -21,6 +21,7 @@ import (
 
 	"github.com/PlumpAlbert/payplump-bot/internal/configdelivery"
 	"github.com/PlumpAlbert/payplump-bot/internal/lifecycle"
+	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -115,7 +116,8 @@ func TestRestoreRehearsalPrepareSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.HoldOverdue(ctx, claim, botID, snapshot, lifecycle.ReviewOverdueUnknownWrite, nil); err != nil {
+	adminNotice := queue.Draft{BotID: botID, ChatID: 9001, Key: "invoice-overdue:restore-rehearsal:review:unknown", Text: "synthetic restore manual review"}
+	if err = s.HoldOverdue(ctx, claim, botID, snapshot, lifecycle.ReviewOverdueUnknownWrite, []queue.Draft{adminNotice}); err != nil {
 		t.Fatal(err)
 	}
 	report, err := s.RecoverySnapshot(ctx, claim.ID)

@@ -239,13 +239,16 @@ patch `/tmp/payplump-restore-rehearsal-review-fixed.patch`, verified the fix and
 source rollback probe, and reported zero final findings. Initial P2: schema
 digest omitted trigger enabled state and `attgenerated`/`attidentity`; test-only
 hashing was corrected, retaining logical active-column ordinals. The source-only
-probe transactionally removes `verified_import_origin_immutable`, confirms hash
+probe temporarily disables `verified_import_origin_immutable` inside a source-only
+read-write transaction (it does not drop/remove the trigger), confirms hash
 change, rolls back and verifies the full baseline snapshot. Target remains
 read-only. Parent normal/race/vet/CGO0/module/build/sh-n/operator checks and PG
-compile-only passed; 13 helper negative tests passed, one fake-Docker test
-skipped, Docker not invoked. SQL/restore runtime remains unverified; PR #38 and
-exact CI are pending. Real backup/export/restore and live validation remain
-owner-gated.
+compile-only passed. Operator-helper log reports 13 tests total: 12 passed and
+one existing Docker-dependent test skipped. Both new negative-test functions
+passed using a fake-Docker marker; the fake Docker was never invoked. SQL/restore
+runtime remains unverified. PR #38 is open at HEAD
+`3c1390d95bc85d142264fe8313cb3aa10b8fb692`, CI is starting; exact result is
+pending. Real backup/export/restore and live validation remain owner-gated.
 
 ## Safe resource measurements
 
