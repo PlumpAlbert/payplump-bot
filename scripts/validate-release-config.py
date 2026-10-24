@@ -8,7 +8,13 @@ import sys
 
 SAFE = "release compose configuration rejected"
 FORBIDDEN_ENV = re.compile(r"(TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL)", re.I)
-EMPTY_SECRET_ENV = {"DATABASE_URL", "PGPASSWORD"}
+CLEARED_DATABASE_ENV = {
+    "DATABASE_URL", "PGPASSWORD", "PGOPTIONS", "PGSERVICE", "PGSERVICEFILE",
+    "PGSSLKEY", "PGSSLCERT", "PGSSLSNI", "PGSSLROOTCERT", "PGSSLPASSWORD",
+    "PGSSLNEGOTIATION", "PGTARGETSESSIONATTRS", "PGTZ", "PGMINPROTOCOLVERSION",
+    "PGMAXPROTOCOLVERSION", "PGCHANNELBINDING", "PGREQUIREAUTH", "PGAPPNAME",
+    "PGCONNECT_TIMEOUT",
+}
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -56,16 +62,16 @@ def validate(path, expected):
         if any(s.get(k) for k in ("ports", "devices", "device_cgroup_rules", "volumes_from", "sysctls")) or any(s.get(k) is not None for k in ("entrypoint", "command", "build", "post_start", "pre_stop")) or s.get("userns_mode") == "host":
             reject()
         files = s.get("env_file")
-        if not isinstance(files, list) or len(files) != 1 or not isinstance(files[0], dict) or files[0].get("required") is not True:
+        if not isinstance(files, list) or len(files) != 1 or not isinstance(files[0], dict) or files[0].get("required", True) is not True or set(files[0]) - {"path", "required"}:
             reject()
         private_external_file(files[0].get("path"), check_mode=True)
         env = s.get("environment")
         if not isinstance(env, dict):
             reject()
-        allowed_env = {"HTTP_ADDR", "DB_MAX_CONNS", "PGHOST", "PGPORT", "PGUSER", "PGDATABASE", "PGSSLMODE", "PGPASSFILE"} | EMPTY_SECRET_ENV
-        if set(env) - allowed_env or any(FORBIDDEN_ENV.search(str(k)) and k not in EMPTY_SECRET_ENV for k in env):
+        allowed_env = {"HTTP_ADDR", "DB_MAX_CONNS", "PGHOST", "PGPORT", "PGUSER", "PGDATABASE", "PGSSLMODE", "PGPASSFILE"} | CLEARED_DATABASE_ENV
+        if set(env) - allowed_env or any(FORBIDDEN_ENV.search(str(k)) and k not in CLEARED_DATABASE_ENV for k in env):
             reject()
-        if any(env.get(k) != "" for k in EMPTY_SECRET_ENV):
+        if any(env.get(k) != "" for k in CLEARED_DATABASE_ENV):
             reject()
         if not all(isinstance(env.get(k), str) and env[k] for k in ("PGHOST", "PGUSER", "PGDATABASE")):
             reject()

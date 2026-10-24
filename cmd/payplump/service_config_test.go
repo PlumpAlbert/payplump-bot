@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -169,17 +171,40 @@ func TestServiceImportReusesBusinessSettingsAndPreservesAdminExclusions(t *testi
 	if !p.Automatic || p.BotID != 9 || p.ProductKey != "monthly" || p.NativeCurrencyID != "1" || p.NativeCurrencyCode != "USD" || !reflect.DeepEqual(p.ExcludedIDs, []string{"101", "102", "44"}) || !reflect.DeepEqual(p.ExpectedInboundIDs, []int64{7, 9}) {
 		t.Fatal("shared source settings or import exclusions changed")
 	}
+	enforcement, err := lifecycle.EnforcementConfigFromEnvironment(get, true, true, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := serviceImportedRuntimeConfig(enforcement)
+	if err != nil || !runtime.Enabled || !runtime.EffectsEnabled || runtime.SourceScopeHash != p.SourceScopeHash {
+		t.Fatal("normal imported providers did not retain the verified source scope")
+	}
+	enforcement.BaseURL = "https://user:synthetic-secret@billing.invalid"
+	if _, err := serviceImportedRuntimeConfig(enforcement); err == nil || strings.Contains(err.Error(), "synthetic-secret") {
+		t.Fatal("invalid source accepted or leaked into an error")
+	}
 	registrationConfig, err := registration.ConfigFromEnvironment(get, true)
 	if err != nil || slices.Contains(registrationConfig.ExcludedTelegramIDs, 101) {
 		t.Fatal("import exclusions incorrectly excluded administrators from OWN registration")
 	}
 }
 
-func TestExplicitHealthOnlyStartupDoesNotNeedSourceCredentials(t *testing.T) {
-	values := map[string]string{"TELEGRAM_ENABLED": "false"}
-	get, standard, e := serviceEnvironment(func(k string) string { return values[k] })
-	if e != nil || standard {
-		t.Fatal("health-only mode rejected")
+func TestExplicitHealthOnlyEnvironmentForcesAllFeaturesOff(t *testing.T) {
+	values := map[string]string{"TELEGRAM_ENABLED": "true", "UNRELATED_SETTING": "preserved"}
+	for _, key := range serviceFeatures {
+		values[key] = "true"
+	}
+	get := healthEnvironment(func(k string) string { return values[k] })
+	if get("TELEGRAM_ENABLED") != "false" {
+		t.Fatal("health-only mode did not force Telegram off")
+	}
+	for _, key := range serviceFeatures {
+		if get(key) != "false" {
+			t.Fatalf("health-only mode did not force %s off", key)
+		}
+	}
+	if get("UNRELATED_SETTING") != "preserved" {
+		t.Fatal("health-only mode changed an unrelated setting")
 	}
 	cfg, e := telegram.ConfigFromEnvironment(get)
 	if e != nil || cfg.Enabled {
@@ -188,5 +213,32 @@ func TestExplicitHealthOnlyStartupDoesNotNeedSourceCredentials(t *testing.T) {
 	r, e := registration.ConfigFromEnvironment(get, false)
 	if e != nil || r.Enabled {
 		t.Fatal("health-only configured registration")
+	}
+}
+
+func TestServeHealthRoutesToDatabaseStartupWithoutBusinessCredentials(t *testing.T) {
+	t.Setenv("DATABASE_URL", "invalid-database-config")
+	if err := run(slog.New(slog.NewTextHandler(io.Discard, nil)), []string{"serve-health"}); err == nil || strings.Contains(err.Error(), "TELEGRAM") {
+		t.Fatal("serve-health did not reach safe database configuration validation")
+	}
+}
+
+func TestNormalServiceDiagnosesTelegramOffBeforeMissingCredentials(t *testing.T) {
+	_, _, err := serviceEnvironment(func(key string) string {
+		if key == "TELEGRAM_ENABLED" {
+			return "false"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "TELEGRAM_ENABLED") {
+		t.Fatal("legacy Telegram-off setting was not diagnosed before credentials")
+	}
+}
+
+func TestNormalServiceRejectsLegacyTelegramOffWithCompleteConfiguration(t *testing.T) {
+	values := normalServiceValues()
+	values["TELEGRAM_ENABLED"] = "false"
+	if err := parseNormalService(values); err == nil || !strings.Contains(err.Error(), "TELEGRAM_ENABLED") {
+		t.Fatal("legacy Telegram-off configuration was not diagnosed")
 	}
 }

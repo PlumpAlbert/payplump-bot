@@ -44,6 +44,7 @@ func run(logger *slog.Logger, args []string) error {
 	if len(args) == 1 && args[0] == "healthcheck" {
 		return healthcheck(envOr("HEALTHCHECK_URL", "http://127.0.0.1:8080/readyz"))
 	}
+	healthOnly := len(args) == 1 && args[0] == "serve-health"
 	if len(args) > 0 && args[0] == "recovery-report" {
 		return recoveryReportCommand(args[1:], os.Stdout)
 	}
@@ -69,10 +70,17 @@ func run(logger *slog.Logger, args []string) error {
 		defer stop()
 		return resumeRegistration(ctx, args[1], os.Stdout)
 	}
-	if len(args) != 0 {
-		return errors.New("usage: payplump [healthcheck | check-integrations | resume-registration OPERATION_ID | recovery-report [--operation LOCAL_ID] | import-plan --file PATH | import-stage --file PATH --expected-hash HASH --apply | import-verify --file PATH --expected-hash HASH --read-only [--evidence-file NEW_PRIVATE_PATH] | import-apply --file PRIVATE --expected-hash HASH --admission-revision N --apply [--enable-admission]]")
+	if len(args) != 0 && !healthOnly {
+		return errors.New("usage: payplump [serve-health | healthcheck | check-integrations | resume-registration OPERATION_ID | recovery-report [--operation LOCAL_ID] | import-plan --file PATH | import-stage --file PATH --expected-hash HASH --apply | import-verify --file PATH --expected-hash HASH --read-only [--evidence-file NEW_PRIVATE_PATH] | import-apply --file PRIVATE --expected-hash HASH --admission-revision N --apply [--enable-admission]]")
 	}
-	get, standard, err := serviceEnvironment(os.Getenv)
+	var get func(string) string
+	var standard bool
+	var err error
+	if healthOnly {
+		get, standard = healthEnvironment(os.Getenv), false
+	} else {
+		get, standard, err = serviceEnvironment(os.Getenv)
+	}
 	if err != nil {
 		return err
 	}

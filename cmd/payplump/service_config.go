@@ -15,17 +15,34 @@ var serviceFeatures = []string{
 	"IMPORTED_RUNTIME_ENABLED", "IMPORTED_EFFECTS_ENABLED",
 }
 
-// serviceEnvironment applies product defaults ONLY to the ordinary service.
-// Explicit TELEGRAM_ENABLED=false remains the external-zero health/CI startup.
-// CLI commands are dispatched before this function and retain their own scope.
-func serviceEnvironment(get func(string) string) (func(string) string, bool, error) {
-	if raw := get("TELEGRAM_ENABLED"); raw != "" {
-		enabled, err := strconv.ParseBool(raw)
-		if err != nil {
-			return nil, false, errors.New("TELEGRAM_ENABLED must be a boolean")
+// healthEnvironment explicitly disables every service feature without mutating the
+// process environment. Business settings remain readable, but disabled features
+// must not require their credentials.
+func healthEnvironment(get func(string) string) func(string) string {
+	return func(key string) string {
+		if key == "TELEGRAM_ENABLED" {
+			return "false"
 		}
-		if !enabled {
-			return get, false, nil
+		for _, feature := range serviceFeatures {
+			if key == feature {
+				return "false"
+			}
+		}
+		return get(key)
+	}
+}
+
+// serviceEnvironment applies product defaults only to ordinary startup.
+// Explicit maintenance and read-only commands are dispatched before this call.
+func serviceEnvironment(get func(string) string) (func(string) string, bool, error) {
+	// Diagnose old default-off templates before reporting their missing business
+	// credentials, so migration is explicit rather than mistaken for a mode.
+	for _, key := range append(append([]string{"TELEGRAM_ENABLED"}, serviceFeatures...), "ACTIVATION_EXCLUSIVE_WRITER", "INVOICE_OVERDUE_EXCLUSIVE_WRITER", "INVOICE_RENEWAL_EXCLUSIVE_WRITER") {
+		if raw := get(key); raw != "" {
+			v, err := strconv.ParseBool(raw)
+			if err != nil || !v {
+				return nil, false, fmt.Errorf("legacy setting %s prevents normal service startup; migrate the old configuration by removing feature switches (see docs/configuration.md)", key)
+			}
 		}
 	}
 	for _, key := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_IDS", "TELEGRAM_WEBHOOK_URL", "TELEGRAM_WEBHOOK_SECRET", "INVOICE_NINJA_BASE_URL", "INVOICE_NINJA_API_TOKEN", "INVOICE_NINJA_PRODUCT_ID", "INVOICE_NINJA_INCLUSIVE_TAXES", "INVOICE_NINJA_WEBHOOK_SECRET", "INVOICE_LIFECYCLE_WEBHOOK_SECRET", "PAYMENTS_CURRENCY_ID", "PAYMENTS_CURRENCY_CODE", "SUI_BASE_URL", "SUI_API_TOKEN", "SUI_INBOUND_IDS", "SUI_SUBSCRIPTION_BASE_URL", "PAYMENT_PHONE", "TZ"} {
@@ -56,15 +73,6 @@ func serviceEnvironment(get func(string) string) (func(string) string, bool, err
 	}
 	for _, key := range serviceFeatures {
 		defaults[key] = "true"
-	}
-	// An old default-off template is not consent to silently start source writes.
-	for _, key := range append(append([]string{}, serviceFeatures...), "ACTIVATION_EXCLUSIVE_WRITER", "INVOICE_OVERDUE_EXCLUSIVE_WRITER", "INVOICE_RENEWAL_EXCLUSIVE_WRITER") {
-		if raw := get(key); raw != "" {
-			v, e := strconv.ParseBool(raw)
-			if e != nil || !v {
-				return nil, false, fmt.Errorf("legacy setting %s prevents normal service startup; migrate the old configuration by removing feature switches (see docs/configuration.md)", key)
-			}
-		}
 	}
 	for _, key := range []string{"ACTIVATION_ALLOWED_TELEGRAM_IDS", "INVOICE_LIFECYCLE_ALLOWED_TELEGRAM_IDS", "CONFIGURATION_POLICY_REVISION", "BROADCAST_POLICY_REVISION", "IMPORTED_RUNTIME_REVISION", "IMPORTED_EFFECTS_REVISION", "IMPORT_VERIFY_BOT_ID", "IMPORT_VERIFY_ALLOWED_TELEGRAM_IDS", "IMPORT_VERIFY_EXCLUDED_TELEGRAM_IDS", "IMPORT_VERIFY_CURRENCY_CODE", "IMPORT_VERIFY_PRODUCT_KEY", "IMPORT_VERIFY_MAX_RECORDS", "IMPORT_VERIFY_MAX_INVENTORY_RECORDS", "IMPORT_VERIFY_MAX_HISTORICAL_ANCHORS", "IMPORT_VERIFY_EVIDENCE_TTL"} {
 		if get(key) != "" {

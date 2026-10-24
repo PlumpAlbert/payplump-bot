@@ -1,10 +1,24 @@
-# Legacy import verification (11a.2 core)
+# Legacy import verification (11a.2 core; advanced operator CLI only)
 
-`internal/importverify` is a GET-only reconciliation report. It does not admit
-records, grant access, create database rows, send messages, or authorize a later
-write. A future admission stage must repeat fresh provider reads and independently
-compare source and policy facts; neither a report nor its private evidence is a
-capability.
+Обычный запуск сам выполняет строгий ограниченный auto-import подходящих
+клиентов в собственную БД; он не создаёт клиентов у провайдеров. Администраторы
+исключены только из legacy-import, но могут стать новым OWN-клиентом. Этот
+документ описывает отдельные ручные `import-verify`/`import-apply` инструменты,
+не обычный startup. Обычный auto-import принимает только полностью проверенных
+кандидатов и пишет результат только в БД, без создания объектов у провайдеров.
+О неподходящем кандидате бот пишет `ERROR` в лог и уведомляет администратора
+в приватном чате; повторяющиеся сообщения сохраняют дедупликацию. Проверяется только complete source inventory в пределах bounded
+pagination/cap; это не unlimited inventory и не live API health check. Старый
+legacy-origin policy hash может быть несовместим с normal profile и требует
+отдельной проверенной миграции; автоматического переписывания нет. Подробнее:
+[конфигурация обычного запуска](configuration.md).
+
+`internal/importverify` is the legacy GET-only reconciliation report. It does not
+admit records, grant access, create database rows, send messages, or authorize a
+later write. The report's original contract anticipated a future admission stage;
+normal auto-import is now a separate, current implementation that repeats fresh
+provider reads and independently checks source/policy facts. Neither report nor
+private evidence is an admission capability.
 
 The verifier requires an explicit bot ID and pilot/exclusion sets, pinned version
 claims (Invoice Ninja 5.13.47 and S-UI 1.6.4), a trusted lowercase source-scope
@@ -76,10 +90,10 @@ It never overwrites a file or follows a symlink. Evidence is an audit snapshot,
 not a grant or reusable capability. Limits are bounded (20 records, 1000
 inventory records, 20 historical anchors, 15-minute evidence TTL, three-minute
 overall context). Use synthetic settings for tests only. The operator CLI is
-implemented on this branch, including its real-reader synthetic HTTP CLI workflow
-bridge. Local tests pass; independent review remains pending before PR #25 and
-exact-HEAD required CI. PR #24 merged as `9fe0c2aaec847a4fe2948f09d755a346318e5c4c` from exact code HEAD
+implemented as a legacy advanced tool, including its real-reader synthetic HTTP
+CLI workflow bridge. The following test and merge notes are historical evidence,
+not current readiness or startup instructions. PR #24 merged as `9fe0c2aaec847a4fe2948f09d755a346318e5c4c` from exact code HEAD
 `b24bf849ca4e3f6589c82ef2bebb885b5419702a`; required CI `39989051793` and
 post-merge CI `39989900953` passed, including PG17/smoke/Docker. No live
-verification has been performed; all of 11 remains incomplete and 11b admission
-is still TODO.
+verification has been performed. Current auto-import behavior and legacy-origin
+migration limits are described above and in [configuration.md](configuration.md).

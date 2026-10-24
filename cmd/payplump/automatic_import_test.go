@@ -73,13 +73,15 @@ type automaticImportProviderStubs struct {
 }
 
 type automaticImportTestStore struct {
-	known      map[int64]bool
-	issues     []automaticImportIssue
-	resolved   []string
-	applyCalls int
-	prepared   []importadmission.PreparedPlan
-	issueState map[string]automaticImportIssue
-	notices    []automaticImportIssue
+	known        map[int64]bool
+	issues       []automaticImportIssue
+	resolved     []string
+	applyCalls   int
+	prepared     []importadmission.PreparedPlan
+	issueState   map[string]automaticImportIssue
+	notices      []automaticImportIssue
+	scanStarted  time.Time
+	reconciledAt time.Time
 }
 type automaticImportIssue struct {
 	actor              int64
@@ -88,6 +90,12 @@ type automaticImportIssue struct {
 	updatedAt          time.Time
 }
 
+func (s *automaticImportTestStore) AutomaticImportScanStart(context.Context) (time.Time, error) {
+	if !s.scanStarted.IsZero() {
+		return s.scanStarted, nil
+	}
+	return time.Now().UTC(), nil
+}
 func (s *automaticImportTestStore) AutomaticImportKnownActors(context.Context) (map[int64]bool, error) {
 	return s.known, nil
 }
@@ -127,22 +135,23 @@ func (s *automaticImportTestStore) RecordAutomaticImportIssue(_ context.Context,
 	}
 	return true, nil
 }
-func (s *automaticImportTestStore) ResolveAutomaticImportIssue(_ context.Context, _ int64, key string) error {
+func (s *automaticImportTestStore) ResolveAutomaticImportIssue(_ context.Context, _ int64, key string, started time.Time) error {
 	s.resolved = append(s.resolved, key)
 	issue, ok := s.issueState[key]
-	if ok {
+	if ok && issue.updatedAt.Before(started) {
 		issue.resolved = true
 		s.issueState[key] = issue
 	}
 	return nil
 }
 func (s *automaticImportTestStore) ReconcileAutomaticImportIssues(_ context.Context, _ int64, active []string, started time.Time) error {
+	s.reconciledAt = started
 	keep := make(map[string]bool, len(active))
 	for _, key := range active {
 		keep[key] = true
 	}
 	for key, issue := range s.issueState {
-		if !issue.resolved && !keep[key] && !issue.updatedAt.After(started) {
+		if !issue.resolved && !keep[key] && issue.updatedAt.Before(started) {
 			issue.resolved = true
 			s.issueState[key] = issue
 			s.resolved = append(s.resolved, key)
@@ -282,7 +291,13 @@ func TestAutomaticImporterReconcilesCandidateRemovedFromBothInventories(t *testi
 	}
 	store := &automaticImportTestStore{known: map[int64]bool{}}
 	worker := &automaticImporter{store: store, verifier: verifier, policy: cfg.policy, revision: 7, admins: []int64{9002}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: func() time.Time { return f.now }}
+	// Deliberately skew the application clock ahead of the database. A newer
+	// concurrent issue must survive even when absent from this older snapshot.
+	store.scanStarted = f.now
+	worker.now = func() time.Time { return f.now.Add(time.Hour) }
 	key := worker.key("customer-77")
+	newer := worker.key("customer-78")
+	store.issueState = map[string]automaticImportIssue{newer: {actor: 78, key: newer, reason: importverify.ReasonAmbiguous, updatedAt: f.now.Add(time.Minute)}}
 	if _, err := store.RecordAutomaticImportIssue(context.Background(), cfg.policy.BotID, 77, key, importverify.ReasonAmbiguous, strings.Repeat("f", 64), []int64{9002}); err != nil {
 		t.Fatal(err)
 	}
@@ -292,6 +307,9 @@ func TestAutomaticImporterReconcilesCandidateRemovedFromBothInventories(t *testi
 	issue := store.issueState[key]
 	if !issue.resolved || store.applyCalls != 0 {
 		t.Fatalf("completed empty inventory did not release removed candidate hold: issue=%+v applies=%d", issue, store.applyCalls)
+	}
+	if !store.reconciledAt.Equal(store.scanStarted) || store.issueState[newer].resolved {
+		t.Fatal("application clock skew cleared a newer database issue")
 	}
 }
 
@@ -364,6 +382,43 @@ func TestAutomaticImporterUsesSourceScopedStableIssueKey(t *testing.T) {
 	worker.policy = policy
 	if first == worker.key("customer-42") {
 		t.Fatal("issue key did not change with source scope")
+	}
+}
+
+type cancellingAutomaticImportStore struct {
+	*automaticImportTestStore
+	cancel context.CancelFunc
+}
+
+func (s *cancellingAutomaticImportStore) RecordAutomaticImportIssue(ctx context.Context, bot, actor int64, key, reason, facts string, admins []int64) (bool, error) {
+	changed, err := s.automaticImportTestStore.RecordAutomaticImportIssue(ctx, bot, actor, key, reason, facts, admins)
+	s.cancel()
+	return changed, err
+}
+
+func TestAutomaticImporterRunJoinsCancellationAfterReportingSourceFailure(t *testing.T) {
+	policy := importverify.Policy{Automatic: true, BotID: 9001, SourceScopeHash: strings.Repeat("a", 64), NinjaVersion: "5.13.47", SUIVersion: "1.6.4", NativeCurrencyID: "1", NativeCurrencyCode: "USD", ProductKey: "monthly", PublicSubscriptionBase: "https://subs.invalid/", ExpectedInboundIDs: []int64{1}, MaxRecords: 20, MaxInventoryRecords: 10, MaxPages: 2, MaxHistoricalAnchors: 2, EvidenceTTL: time.Minute}
+	stubs := automaticImportProviderStubs{}
+	verifier, err := importverify.New(policy, importverify.Providers{Customers: automaticImportFailingInventory{}, Recurring: stubs, Invoices: stubs, Payments: stubs, Identities: stubs, Records: stubs, Settings: stubs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &cancellingAutomaticImportStore{automaticImportTestStore: &automaticImportTestStore{known: map[int64]bool{}}, cancel: cancel}
+	worker := &automaticImporter{store: store, verifier: verifier, policy: policy, revision: 1, admins: []int64{9002}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("automatic importer did not join cancellation")
+	}
+	if len(store.notices) != 1 || store.applyCalls != 0 {
+		t.Fatal("shutdown replayed work or lost the source-failure notification")
 	}
 }
 

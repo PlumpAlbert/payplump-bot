@@ -117,7 +117,7 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		if strings.HasPrefix(path, "/ninja/api/v1/") {
 			w.Header().Set("X-APP-VERSION", "5.13.47")
 		}
-		if path == "/ninja/api/v1/clients" && r.URL.Query().Get("id_number") == "42" {
+		if path == "/ninja/api/v1/clients" && (r.URL.Query().Get("id_number") == "42" || r.URL.Query().Get("id_number") == "") {
 			w.Header().Set("X-APP-VERSION", "5.13.47")
 			writeWorkflowPage(w, []any{customer}, 1, 1)
 			return
@@ -414,6 +414,34 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	pausedResult, pausedEvidence, err := svc.Verify(context.Background(), pausedPlan, pausedPlan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
 	if err != nil || pausedResult.Verified != 1 || len(pausedEvidence) != 1 || pausedEvidence[0].CurrentInvoiceID == pausedEvidence[0].PaidAnchorInvoiceID || pausedEvidence[0].PaidAnchorInvoiceID != "invoice-anchor" {
 		t.Fatalf("paused historical-anchor verification failed: result=%+v evidence=%+v err=%v", pausedResult, pausedEvidence, err)
+	}
+	// Automatic discovery must derive the paused period from the distinct paid
+	// anchor, not treat the current unpaid invoice as financial authority.
+	autoPolicy := policy
+	autoPolicy.Automatic, autoPolicy.PilotIDs = true, nil
+	autoProviders := providers
+	inventory, err := invoiceninja.NewCustomerInventoryReader(server.URL+"/ninja", workflowToken, time.Second, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	autoProviders.Customers = inventory
+	autoService, err := New(autoPolicy, autoProviders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	autoNow := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	discovered, err := autoService.Discover(context.Background(), autoNow, nil)
+	if err != nil || len(discovered) != 1 || discovered[0].Reason != "" {
+		t.Fatal("paused automatic discovery failed")
+	}
+	derived := discovered[0].Facts
+	if derived.Lifecycle != "paused" || derived.InvoiceStatus != "sent" || derived.CurrentInvoiceID != workflowInvoice || derived.PeriodStart != "2026-02-01" || derived.PeriodEnd != "2026-03-01" || derived.UnpaidInvoices != 1 {
+		t.Fatal("automatic discovery lost the paused debt/paid-anchor distinction")
+	}
+	derivedPlan := importplan.Analyze(importplan.Manifest{Records: []importplan.Record{derived}})
+	derivedResult, derivedEvidence, err := autoService.Verify(context.Background(), derivedPlan, derivedPlan.Hash, autoNow)
+	if err != nil || derivedResult.Verified != 1 || len(derivedEvidence) != 1 || derivedEvidence[0].PaidAnchorInvoiceID != "invoice-anchor" || derivedEvidence[0].CurrentInvoiceID != workflowInvoice {
+		t.Fatal("automatically derived paused candidate did not pass fresh strict verification")
 	}
 	var privateSnapshot struct {
 		CurrentInvoice invoiceninja.CycleInvoice `json:"current_invoice"`

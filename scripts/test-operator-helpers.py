@@ -33,7 +33,7 @@ def config():
     return {"services": {"payplump": {"image": IMAGE, "user": "65532:65532", "read_only": True,
         "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"], "privileged": False,
         "env_file": [{"path": "/tmp/runtime.env", "required": True}],
-        "environment": {"DATABASE_URL": "", "PGPASSWORD": "", "PGHOST": "db.internal", "PGUSER": "bot",
+        "environment": {**dict.fromkeys(validator.CLEARED_DATABASE_ENV, ""), "PGHOST": "db.internal", "PGUSER": "bot",
           "PGDATABASE": "botdb", "PGSSLMODE": "verify-full", "PGPASSFILE": "/run/secrets/pgpass"},
         "logging": {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}},
         "secrets": ["pgpass"], "healthcheck": {"test": ["CMD", "/payplump", "healthcheck"]}}},
@@ -84,6 +84,10 @@ class Helpers(unittest.TestCase):
         normalized["services"]["payplump"].update(command=None, entrypoint=None)
         normalized["services"]["payplump"]["secrets"] = [{"source": "pgpass", "target": "/run/secrets/pgpass"}]
         self.check(normalized, True)
+        # Actual Compose v5.6.1 omits the default required=true in JSON.
+        default_required = config()
+        default_required["services"]["payplump"]["env_file"][0].pop("required")
+        self.check(default_required, True)
         mutations = [
             lambda c: c["services"]["payplump"].update(image="other:latest"),
             lambda c: c["services"]["payplump"].update(privileged=True),
@@ -96,6 +100,8 @@ class Helpers(unittest.TestCase):
             lambda c: c["services"]["payplump"].update(env_file=[{"path": "/tmp/ambiguous.env", "required": True}]),
             lambda c: c["services"]["payplump"]["env_file"].append({"path": "/tmp/second.env", "required": True}),
             lambda c: c["services"]["payplump"].update(read_only=False),
+            lambda c: c["services"]["payplump"]["env_file"][0].update(required=False),
+            lambda c: c["services"]["payplump"]["env_file"][0].update(format="raw"),
             lambda c: c["services"]["payplump"]["environment"].update(TELEGRAM_BOT_TOKEN="synthetic-token"),
             lambda c: c["services"]["payplump"].update(command=["overridden"]),
             lambda c: c["services"]["payplump"].update(command=[]),
@@ -119,6 +125,9 @@ class Helpers(unittest.TestCase):
             c = config(); mutate(c); self.check(c, False)
         for secret_name in ("TELEGRAM_BOT_TOKEN", "INVOICE_NINJA_API_TOKEN", "SUI_API_TOKEN", "PAYMENT_PHONE"):
             c = config(); c["services"]["payplump"]["environment"][secret_name] = "SYNTHETIC_ONLY"; self.check(c, False)
+        for key in validator.CLEARED_DATABASE_ENV:
+            c = config(); c["services"]["payplump"]["environment"][key] = "SYNTHETIC_OVERRIDE"; self.check(c, False)
+            c = config(); c["services"]["payplump"]["environment"].pop(key); self.check(c, False)
         c = config(); c["services"]["payplump"]["environment"]["DATABASE_URL"] = "postgres://inline-secret"; self.check(c, False)
         c = config(); c["services"]["payplump"]["environment"]["PGPASSWORD"] = "inline-secret"; self.check(c, False)
         c = config(); c["services"]["payplump"]["env_file"][0]["path"] = str(ROOT / ".env.example"); self.check(c, False)
@@ -132,6 +141,35 @@ class Helpers(unittest.TestCase):
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertEqual(dockerfile.count("USER 65532:65532"), 1)
         self.assertLess(dockerfile.index("COPY --from=build /out/payplump /payplump"), dockerfile.index("USER 65532:65532"))
+
+    def test_release_compose_real_json_without_reading_runtime_contents(self):
+        docker = shutil.which("docker")
+        if not docker:
+            self.skipTest("Docker Compose unavailable; no local config renderer")
+        with tempfile.TemporaryDirectory() as d:
+            runtime = Path(d) / "runtime.env"
+            # Rendering metadata must not parse even a malformed secret file.
+            runtime.write_text('UNTERMINATED="SYNTHETIC_SENTINEL_FROM_FILE\\n')
+            runtime.chmod(0o600)
+            pgpass = Path(d) / "pgpass"
+            pgpass.write_text("synthetic.invalid:5432:synthetic:synthetic:SYNTHETIC_ONLY\\n")
+            pgpass.chmod(0o600)
+            env = fake_env(PATH=str(Path(docker).parent) + os.pathsep + os.defpath,
+                HOME=d, DOCKER_CONFIG=str(Path(d) / "docker-config"),
+                DOCKER_HOST="unix://" + str(Path(d) / "nonexistent.sock"),
+                PAYPLUMP_IMAGE=IMAGE, PAYPLUMP_ENV_FILE=str(runtime), PGPASSFILE=str(pgpass),
+                PGHOST="synthetic.invalid", PGPORT="5432", PGUSER="synthetic", PGDATABASE="synthetic", PGSSLMODE="verify-full")
+            result = subprocess.run([docker, "compose", "--env-file", "/dev/null", "-f", "compose.release.yaml",
+                "config", "--no-env-resolution", "--format", "json"], cwd=ROOT, env=env,
+                capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, "synthetic release Compose metadata render failed")
+            self.assertNotIn("SYNTHETIC_SENTINEL_FROM_FILE", result.stdout + result.stderr)
+            resolved = Path(d) / "resolved.json"
+            resolved.write_text(result.stdout)
+            validator.validate(str(resolved), IMAGE)
+            actual = json.loads(result.stdout)["services"]["payplump"]["environment"]
+            for key in validator.CLEARED_DATABASE_ENV:
+                self.assertEqual(actual.get(key), "", "runtime PG override not clamped: " + key)
 
     def test_dev_compose_resolves_lifecycle_settings_without_starting_containers(self):
         docker = shutil.which("docker")
@@ -156,7 +194,9 @@ class Helpers(unittest.TestCase):
                 cwd=ROOT, env=env, capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, "synthetic Compose config render failed")
-            resolved = json.loads(result.stdout)["services"]["app"]["environment"]
+            service = json.loads(result.stdout)["services"]["app"]
+            self.assertEqual(service.get("command"), ["serve-health"])
+            resolved = service["environment"]
             expected = {
                 "INVOICE_LIFECYCLE_ENABLED": "false",
                 "INVOICE_LIFECYCLE_WEBHOOK_SECRET": "",
@@ -220,6 +260,7 @@ class Helpers(unittest.TestCase):
                 ]) as run:
                     with mock.patch.object(smoke.urllib.request, "urlopen", return_value=Response()):
                         smoke.check_cycle()
+        self.assertEqual(popen.call_args.args[0], ["./bin/payplump", "serve-health"])
         captured = popen.call_args.kwargs["env"]
         self.assertIs(popen.call_args.kwargs["stdout"], subprocess.DEVNULL)
         self.assertIs(popen.call_args.kwargs["stderr"], subprocess.DEVNULL)

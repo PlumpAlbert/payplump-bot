@@ -15,7 +15,7 @@ import (
 
 func TestAutomaticImportIssueOutboxDeduplicatesAndRearmsOnChange(t *testing.T) {
 	s, ctx := activationTestStore(t)
-	const bot, actor = int64(9001), int64(42001)
+	const bot, actor = int64(9001), int64(1<<40 + 42001)
 	if _, err := s.pool.Exec(ctx, `INSERT INTO telegram_bots(bot_id) VALUES($1)`, bot); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,11 @@ func TestAutomaticImportIssueOutboxDeduplicatesAndRearmsOnChange(t *testing.T) {
 		t.Fatalf("notification leaked private facts: %q", body)
 	}
 
-	if err := s.ResolveAutomaticImportIssue(ctx, bot, key); err != nil {
+	resolvedAt, err := s.AutomaticImportScanStart(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveAutomaticImportIssue(ctx, bot, key, resolvedAt); err != nil {
 		t.Fatal(err)
 	}
 	assertIssueState(t, s, ctx, bot, key, actor, "payment_unverified", newFacts, 2, true, 4)
@@ -144,15 +148,27 @@ func TestAutomaticImportIssueReconciliationIsBoundedByCompletedScan(t *testing.T
 		t.Fatal(err)
 	}
 	active, absent, newer := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	reobserved := strings.Repeat("e", 64)
+	equal := strings.Repeat("f", 64)
 	facts := strings.Repeat("d", 64)
-	for _, key := range []string{active, absent, newer} {
+	for _, key := range []string{active, absent, newer, reobserved, equal} {
 		if _, err := s.RecordAutomaticImportIssue(ctx, bot, actor, key, "ambiguous_source", facts, []int64{9002}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	started := time.Now().UTC().Add(time.Second)
+	started, err := s.AutomaticImportScanStart(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.pool.Exec(ctx, `UPDATE automatic_import_issues SET updated_at=$3 WHERE bot_id=$1 AND candidate_key=$2`, bot, newer, started.Add(time.Second)); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE automatic_import_issues SET updated_at=$3 WHERE bot_id=$1 AND candidate_key=$2`, bot, equal, started); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := s.RecordAutomaticImportIssue(ctx, bot, actor, reobserved, "ambiguous_source", facts, []int64{9002})
+	if err != nil || changed {
+		t.Fatal("repeated observation changed notification generation")
 	}
 	reconciler, ok := any(s).(interface {
 		ReconcileAutomaticImportIssues(context.Context, int64, []string, time.Time) error
@@ -163,14 +179,23 @@ func TestAutomaticImportIssueReconciliationIsBoundedByCompletedScan(t *testing.T
 	if err := reconciler.ReconcileAutomaticImportIssues(ctx, bot, []string{active}, started); err != nil {
 		t.Fatal(err)
 	}
-	var activeResolved, absentResolved, newerResolved bool
-	for key, target := range map[string]*bool{active: &activeResolved, absent: &absentResolved, newer: &newerResolved} {
+	var activeResolved, absentResolved, newerResolved, reobservedResolved, equalResolved bool
+	for key, target := range map[string]*bool{active: &activeResolved, absent: &absentResolved, newer: &newerResolved, reobserved: &reobservedResolved, equal: &equalResolved} {
 		if err := s.pool.QueryRow(ctx, `SELECT resolved FROM automatic_import_issues WHERE bot_id=$1 AND candidate_key=$2`, bot, key).Scan(target); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if activeResolved || !absentResolved || newerResolved {
-		t.Fatalf("reconciliation crossed active/cutoff boundary: active=%v absent=%v newer=%v", activeResolved, absentResolved, newerResolved)
+	if activeResolved || !absentResolved || newerResolved || reobservedResolved || equalResolved {
+		t.Fatalf("reconciliation crossed active/cutoff boundary: active=%v absent=%v newer=%v reobserved=%v equal=%v", activeResolved, absentResolved, newerResolved, reobservedResolved, equalResolved)
+	}
+	for _, key := range []string{newer, equal, reobserved} {
+		if err := s.ResolveAutomaticImportIssue(ctx, bot, key, started); err != nil {
+			t.Fatal(err)
+		}
+		var resolved bool
+		if err := s.pool.QueryRow(ctx, `SELECT resolved FROM automatic_import_issues WHERE bot_id=$1 AND candidate_key=$2`, bot, key).Scan(&resolved); err != nil || resolved {
+			t.Fatal("old successful scan resolved a newer/equal hold")
+		}
 	}
 }
 
@@ -182,9 +207,6 @@ func TestAutomaticImportRegistrationBlocksGlobalOutageAndOnlyAffectedActor(t *te
 	}
 	facts := strings.Repeat("b", 64)
 	if _, err := s.RecordAutomaticImportIssue(ctx, bot, 77, strings.Repeat("c", 64), "source_failure", facts, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.RecordAutomaticImportIssue(ctx, bot, 0, strings.Repeat("a", 64), "source_failure", facts, []int64{9002}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RecordAutomaticImportIssue(ctx, bot, 88, strings.Repeat("d", 64), "ambiguous_source", facts, []int64{9002}); err != nil {
@@ -210,6 +232,36 @@ func TestAutomaticImportRegistrationBlocksGlobalOutageAndOnlyAffectedActor(t *te
 	}
 	if clients != 1 || has77 || !has78 || has88 || blockedNotices != 2 {
 		t.Fatalf("registration hold scope incorrect: clients=%d actor77=%v actor78=%v actor88=%v notices=%d", clients, has77, has78, has88, blockedNotices)
+	}
+	global := strings.Repeat("a", 64)
+	if _, err := s.RecordAutomaticImportIssue(ctx, bot, 0, global, "source_failure", facts, []int64{9002}); err != nil {
+		t.Fatal(err)
+	}
+	for _, actor := range []int64{78, 79} {
+		update := privateUpdate(actor + 10000)
+		update.Message.From.ID, update.Message.Chat.ID = actor, actor
+		if err := s.ApplyTelegramUpdate(ctx, bot, "PayplumpBot", update); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var newActor, knownDenied bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM clients WHERE telegram_id=79),EXISTS(SELECT 1 FROM outbox WHERE bot_id=$1 AND chat_id=78)`, bot).Scan(&newActor, &knownDenied); err != nil || newActor || knownDenied {
+		t.Fatal("global outage must block unknown registration, not an existing private client")
+	}
+	cutoff, err := s.AutomaticImportScanStart(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveAutomaticImportIssue(ctx, bot, global, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	update := privateUpdate(20079)
+	update.Message.From.ID, update.Message.Chat.ID = 79, 79
+	if err := s.ApplyTelegramUpdate(ctx, bot, "PayplumpBot", update); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM clients WHERE telegram_id=79)`).Scan(&newActor); err != nil || !newActor {
+		t.Fatal("resolved global outage left an unrelated new actor blocked")
 	}
 }
 

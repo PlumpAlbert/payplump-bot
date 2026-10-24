@@ -11,6 +11,16 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// AutomaticImportScanStart uses the same database clock as issue.updated_at.
+// Application clock skew must never release a newer scan's registration hold.
+func (s *Store) AutomaticImportScanStart(ctx context.Context) (time.Time, error) {
+	var started time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&started); err != nil {
+		return time.Time{}, errors.New("automatic import scan clock unavailable")
+	}
+	return started.UTC(), nil
+}
+
 func (s *Store) AutomaticImportKnownActors(ctx context.Context) (map[int64]bool, error) {
 	rows, e := s.pool.Query(ctx, `SELECT telegram_id FROM clients ORDER BY telegram_id LIMIT 10001`)
 	if e != nil {
@@ -31,8 +41,11 @@ func (s *Store) AutomaticImportKnownActors(ctx context.Context) (map[int64]bool,
 	return ids, nil
 }
 
-func (s *Store) ResolveAutomaticImportIssue(ctx context.Context, bot int64, key string) error {
-	_, e := s.pool.Exec(ctx, `UPDATE automatic_import_issues SET resolved=true,updated_at=clock_timestamp() WHERE bot_id=$1 AND candidate_key=$2 AND NOT resolved`, bot, key)
+func (s *Store) ResolveAutomaticImportIssue(ctx context.Context, bot int64, key string, started time.Time) error {
+	if bot <= 0 || started.IsZero() {
+		return errors.New("invalid import issue resolution")
+	}
+	_, e := s.pool.Exec(ctx, `UPDATE automatic_import_issues SET resolved=true,updated_at=clock_timestamp() WHERE bot_id=$1 AND candidate_key=$2 AND NOT resolved AND updated_at<$3`, bot, key, started)
 	if e != nil {
 		return errors.New("could not resolve automatic import diagnostic")
 	}
@@ -54,7 +67,7 @@ func (s *Store) ReconcileAutomaticImportIssues(ctx context.Context, bot int64, a
 		active = []string{}
 	}
 	_, err := s.pool.Exec(ctx, `UPDATE automatic_import_issues SET resolved=true,updated_at=clock_timestamp()
-		WHERE bot_id=$1 AND NOT resolved AND updated_at<=$3 AND NOT (candidate_key=ANY($2::text[]))`, bot, active, started)
+		WHERE bot_id=$1 AND NOT resolved AND updated_at<$3 AND NOT (candidate_key=ANY($2::text[]))`, bot, active, started)
 	if err != nil {
 		return errors.New("could not reconcile automatic import diagnostics")
 	}
@@ -92,6 +105,14 @@ func (s *Store) RecordAutomaticImportIssue(ctx context.Context, bot, actor int64
 	var resolved bool
 	e = tx.QueryRow(ctx, `SELECT reason,facts_hash,generation,resolved FROM automatic_import_issues WHERE bot_id=$1 AND candidate_key=$2 FOR UPDATE`, bot, key).Scan(&oldReason, &oldFacts, &generation, &resolved)
 	if e == nil && !resolved && oldReason == reason && oldFacts == facts {
+		// A repeated observation is not a new notification, but it must protect
+		// this hold from reconciliation by an older concurrent inventory.
+		if _, e = tx.Exec(ctx, `UPDATE automatic_import_issues SET updated_at=clock_timestamp() WHERE bot_id=$1 AND candidate_key=$2`, bot, key); e != nil {
+			return false, errors.New("could not refresh import diagnostic observation")
+		}
+		if _, e = tx.Exec(ctx, `SET LOCAL synchronous_commit=on`); e != nil {
+			return false, e
+		}
 		return false, tx.Commit(ctx)
 	}
 	if e != nil && !errors.Is(e, pgx.ErrNoRows) {
@@ -101,7 +122,7 @@ func (s *Store) RecordAutomaticImportIssue(ctx context.Context, bot, actor int64
 		return false, errors.New("import diagnostic generation exhausted")
 	}
 	generation++
-	_, e = tx.Exec(ctx, `INSERT INTO automatic_import_issues(bot_id,candidate_key,actor_id,reason,facts_hash,generation) VALUES($1,$2,NULLIF($3,0),$4,$5,$6) ON CONFLICT(bot_id,candidate_key) DO UPDATE SET actor_id=excluded.actor_id,reason=excluded.reason,facts_hash=excluded.facts_hash,generation=excluded.generation,resolved=false,updated_at=clock_timestamp()`, bot, key, actor, reason, facts, generation)
+	_, e = tx.Exec(ctx, `INSERT INTO automatic_import_issues(bot_id,candidate_key,actor_id,reason,facts_hash,generation) VALUES($1,$2,NULLIF($3::bigint,0::bigint),$4,$5,$6) ON CONFLICT(bot_id,candidate_key) DO UPDATE SET actor_id=excluded.actor_id,reason=excluded.reason,facts_hash=excluded.facts_hash,generation=excluded.generation,resolved=false,updated_at=clock_timestamp()`, bot, key, actor, reason, facts, generation)
 	if e != nil {
 		return false, errors.New("could not save import diagnostic")
 	}
@@ -143,7 +164,7 @@ var importIssueExplanation = map[string]string{
 
 func rejectAutomaticImportRegistration(ctx context.Context, tx pgx.Tx, bot, actor, updateID int64) (bool, error) {
 	var blocked bool
-	if e := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM automatic_import_issues WHERE bot_id=$1 AND (actor_id=$2 OR (actor_id IS NULL AND reason='source_failure')) AND NOT resolved)`, bot, actor).Scan(&blocked); e != nil {
+	if e := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM clients WHERE telegram_id=$2) AND EXISTS(SELECT 1 FROM automatic_import_issues WHERE bot_id=$1 AND (actor_id=$2 OR (actor_id IS NULL AND reason='source_failure')) AND NOT resolved)`, bot, actor).Scan(&blocked); e != nil {
 		return false, e
 	}
 	if !blocked {

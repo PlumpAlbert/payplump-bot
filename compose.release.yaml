@@ -20,6 +20,23 @@ services:
       # Prevent runtime env_file values from overriding external pgpass credentials.
       DATABASE_URL: ""
       PGPASSWORD: ""
+      PGOPTIONS: ""
+      PGSERVICE: ""
+      PGSERVICEFILE: ""
+      PGSSLKEY: ""
+      PGSSLCERT: ""
+      PGSSLSNI: ""
+      PGSSLROOTCERT: ""
+      PGSSLPASSWORD: ""
+      PGSSLNEGOTIATION: ""
+      PGTARGETSESSIONATTRS: ""
+      PGTZ: ""
+      PGMINPROTOCOLVERSION: ""
+      PGMAXPROTOCOLVERSION: ""
+      PGCHANNELBINDING: ""
+      PGREQUIREAUTH: ""
+      PGAPPNAME: ""
+      PGCONNECT_TIMEOUT: ""
       PGHOST: ${PGHOST:?set externally}
       PGPORT: ${PGPORT:-5432}
       PGUSER: ${PGUSER:?set externally}

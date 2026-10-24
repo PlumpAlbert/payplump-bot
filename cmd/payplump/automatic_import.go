@@ -77,10 +77,11 @@ func serviceVerificationConfig(ctx context.Context, get func(string) string, bot
 }
 
 type automaticImportStore interface {
+	AutomaticImportScanStart(context.Context) (time.Time, error)
 	AutomaticImportKnownActors(context.Context) (map[int64]bool, error)
 	ApplyVerifiedImport(context.Context, importadmission.PreparedPlan) (postgres.ImportAdmissionResult, error)
 	RecordAutomaticImportIssue(context.Context, int64, int64, string, string, string, []int64) (bool, error)
-	ResolveAutomaticImportIssue(context.Context, int64, string) error
+	ResolveAutomaticImportIssue(context.Context, int64, string, time.Time) error
 	ReconcileAutomaticImportIssues(context.Context, int64, []string, time.Time) error
 }
 
@@ -108,15 +109,18 @@ func (w *automaticImporter) recordIssue(ctx context.Context, actor int64, key, r
 		return e
 	}
 	if changed {
-		w.logger.Error("automatic import candidate not admitted", "candidate", key, "telegram_id", actor, "reason", reason)
+		w.logger.Error("automatic import candidate not admitted", "candidate", key, "reason", reason)
 	}
 	return nil
 }
 func (w *automaticImporter) Scan(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	started := w.now().UTC()
 	global := w.key("complete-inventory")
+	started, e := w.store.AutomaticImportScanStart(ctx)
+	if e != nil {
+		return w.report(ctx, 0, global, importverify.ReasonSourceFailure, global)
+	}
 	known, e := w.store.AutomaticImportKnownActors(ctx)
 	if e != nil {
 		return w.report(ctx, 0, global, importverify.ReasonSourceFailure, global)
@@ -169,7 +173,7 @@ func (w *automaticImporter) Scan(ctx context.Context) error {
 			}
 			continue
 		}
-		if e = w.store.ResolveAutomaticImportIssue(ctx, w.policy.BotID, key); e != nil {
+		if e = w.store.ResolveAutomaticImportIssue(ctx, w.policy.BotID, key, started); e != nil {
 			return e
 		}
 	}
@@ -178,7 +182,7 @@ func (w *automaticImporter) Scan(ctx context.Context) error {
 		if e = w.report(ctx, 0, global, importverify.ReasonSourceFailure, global); e != nil {
 			return e
 		}
-	} else if e = w.store.ResolveAutomaticImportIssue(ctx, w.policy.BotID, global); e != nil {
+	} else if e = w.store.ResolveAutomaticImportIssue(ctx, w.policy.BotID, global, started); e != nil {
 		return e
 	}
 	return w.store.ReconcileAutomaticImportIssues(ctx, w.policy.BotID, active, started)
