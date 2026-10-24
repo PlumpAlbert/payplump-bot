@@ -255,7 +255,7 @@ gofmt/diff, and tagged compile-only checks. Full review `164166cb-25b2-465` of
 `/tmp/payplump-import-runtime-review.patch` (850 lines) found zero proven
 behavior/design findings. The PostgreSQL workflow
 `TestImportedRuntimeReadOnlyStartupWorkflowRealPostgres` passed. PR #36 merged
-as `a5fd93b28f0c0fe78e9485ddbe169837af49544`; exact code HEAD
+as `a5fd93b28f0c0fe78e9485ddbe169837af49544b`; exact code HEAD
 `277b37c12433f271ee72d60d486551644749de92` passed required CI `40046909184`
 (fast, race, disposable PostgreSQL 17 and smoke/Docker), and post-merge main CI
 `40047448373` succeeded. Its config adds only
@@ -283,30 +283,31 @@ effects remain disabled at revision 2, admission remains enabled at revision 1,
 origin stays unchanged, and the actual normal payment-confirmation proof is
 preserved. Exact CI, merge and runtime verification are complete; 11b.9 is delivered.
 
-## Imported native effects startup (11b.10 implementation ready; CI pending)
+## Delivered imported native-effects startup (11b.10)
 
-The 11b.10 implementation and tests are complete; all three producers are done
-and no active producers remain. Parent full normal unit/race/vet/CGO0
-build/module verification/gofmt/diff passed (logs
-`/tmp/payplump-import-effects-{unit,race}.log`); tagged command+PostgreSQL
-compile-only passed. Independent full review `e72f63f9-cad9-4ed` of exact 827-line
-patch `/tmp/payplump-import-effects-review.patch` plus durable-effects,
-source-scope and core contracts found zero proven behavior/design findings.
-Parent fixed test assertions: effects-denied bot mismatch retains read
-permission (counts `1,1,0`, not `1,0,0`); effects bad-revision uses read
-revision 7, valid for read, and reaches the effects-revision rejection with no
-source GET. `.env.example` clarifies admission versus read-runtime permission
-terms. The new startup test has not run PostgreSQL SQL runtime; exact-HEAD CI,
-PR #37 and merge remain pending. Stage 11 and owner live gates remain incomplete.
+PR #37 merged at `b33fac67a1e19c8a3da00b2d7d261b170e0f02e8`; exact final code
+HEAD `9d93f649249f491ff70ec7a6c34af959b48fde3a` passed required CI
+`40048848558` (all jobs: fast, race, disposable PostgreSQL 17, full native
+known/unknown workflows and Docker smoke). Post-merge main CI `40049317238`
+also succeeded. `TestImportedEffectsStartupWorkflowRealPostgres` passed in CI.
+Full review `e72f63f9-cad9-4ed` found no proven behavior/design findings.
 
-Flags are `IMPORTED_EFFECTS_ENABLED=false` and `IMPORTED_EFFECTS_REVISION=`;
-revision is canonical positive iff effects are explicitly enabled, and effects
-require read runtime. Source-policy fingerprint is unchanged; admission,
-read-runtime, effects and configuration-secret permissions remain independent.
-The current PR #37 write set is 13 paths: seven implementation/config paths
-(initial staging only; no source fields or secrets) and these six docs. After
-PR #37, preserve sequence 12 synthetic restore CI → 13 manual release
-preparation with publishing off → 14 synthetic measurements/owner live gates;
-do not skip 12. See [operator.md](operator.md) and
-[autonomous-work.md](autonomous-work.md) for fences, provider constraints and
-test scope.
+`IMPORTED_EFFECTS_ENABLED=false` and `IMPORTED_EFFECTS_REVISION=` are explicit,
+independent permissions; revision must be canonical positive iff effects are on,
+and effects require imported read-runtime. Source-policy fingerprint remains
+unchanged. Only a matching actual verified bot gets permission sync after
+successful read sync. Disabled effects are durably fenced; repeated enabled
+restart does not bump revisions; read permission remains independently fenced
+or enabled. Grant does not alter admission, configuration-delivery policy,
+native global guard/epoch or per-chat unknown-send barrier.
+
+Provider construction is pure and makes zero HTTP calls, but constructs guarded
+native billing-mutator clients for ordinary consumers, not GET-only clients.
+`ProtectedRecordReader`, `RecurringReader`, inventory and settings remain
+separate strict GET-only interfaces. Read-enabled/effects-off may finish a known
+original receipt subject to existing authorization; effects-off denies new or
+incomplete writes. Actor/pilot/source scope and normal consumer configuration
+are unchanged. The startup workflow verified permission transitions, no covert
+GET/write on grant, unchanged admission/origin/current invoice/proof/
+first_invoice_id and guard epoch/owner. No live provider, Telegram, payment,
+working DB, publish or deployment was used.

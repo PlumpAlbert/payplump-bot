@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     services:
-      configuration-postgres:
+      postgres:
         image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         env:
           POSTGRES_USER: workflow_test
@@ -114,6 +114,10 @@ jobs:
             exit 1
           fi
           python3 scripts/smoke.py
+      - name: PostgreSQL restore rehearsal on disposable service
+        env:
+          RESTORE_REHEARSAL_CONTAINER: ${{ job.services.postgres.id }}
+        run: sh scripts/restore-rehearsal-ci.sh
       - name: Build and start development containers
         env:
           # Compose uses its own local PostgreSQL without TLS, not Neon.
