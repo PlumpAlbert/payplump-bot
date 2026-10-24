@@ -20,8 +20,11 @@ release workflow. Manual workflow не запускался; release image эт�
 задаёт `USER 65532:65532`; сервис запускается с обычным full-service профилем.
 Release validator рендерит Compose с `config --no-env-resolution` и `/dev/null`
 как interpolation source, проверяет private file paths и не читает/не печатает
-runtime-файл. Версии Compose без этого флага не поддерживаются. Compose v5.6.1
-проверен offline без daemon на синтетических приватных файлах; опущенный
+runtime-файл. Helper до этого проверяет opaque-поведение renderer на собственном
+некорректном синтетическом файле. Compose v2.38.2 имеет флаг, но всё ещё разбирает
+содержимое env-файла и отклоняется до runtime-конфигурации. CI использует
+закреплённый Compose v5.6.1 с проверкой SHA-256. Он проверен offline без daemon
+на синтетических приватных файлах; опущенный
 `required` в его JSON означает стандартное `true`, явное `false` запрещено.
 Release-шаблон принудительно обнуляет неиспользуемые PG-настройки, включая
 `PGOPTIONS`, `PGSERVICE*` и SSL/auth overrides: runtime-файл не переопределяет

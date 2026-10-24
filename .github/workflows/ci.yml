@@ -29,6 +29,20 @@ jobs:
       - run: go vet ./...
       - name: Unit tests with race detector
         run: go test -race ./...
+      - name: Install verified offline Compose renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          tools=$(mktemp -d "$RUNNER_TEMP/payplump-compose-tools.XXXXXX")
+          docker_cli=$(command -v docker)
+          curl --fail --location --silent --show-error --connect-timeout 10 --max-time 90 \
+            --output "$tools/docker-compose" https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-linux-x86_64
+          printf '47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0  %s/docker-compose\n' "$tools" | sha256sum --check -
+          chmod 700 "$tools/docker-compose"
+          printf '#!/bin/sh\nif [ "${1:-}" = compose ]; then shift; exec "%s" "$@"; fi\nexec "%s" "$@"\n' "$tools/docker-compose" "$docker_cli" > "$tools/docker"
+          chmod 700 "$tools/docker"
+          printf '%s\n' "$tools" >> "$GITHUB_PATH"
       - name: Operator helper tests without external services
         run: |
           sh -n scripts/restore-check.sh scripts/validate-release-config.sh

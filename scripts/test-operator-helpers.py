@@ -291,7 +291,7 @@ class Helpers(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             bindir = Path(d) / "bin"; bindir.mkdir()
             fake = bindir / "docker"
-            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >"$FAKE_LOG"\ncat "$FAKE_CONFIG"\n')
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >>"$FAKE_LOG"\ncat "$FAKE_CONFIG"\n')
             fake.chmod(0o700)
             c = Path(d) / "config.json"
             runtime = Path(d) / "runtime.env"; runtime.write_text("SYNTHETIC_SECRET=value\\n"); runtime.chmod(0o600)
@@ -305,7 +305,23 @@ class Helpers(unittest.TestCase):
             args = log.read_text()
             self.assertIn("--env-file /dev/null", args)
             self.assertIn("config --no-env-resolution --format json", args)
+            self.assertEqual(len(args.splitlines()), 2)
+            self.assertIn("probe.yaml", args.splitlines()[0])
+            self.assertIn("compose.release.yaml", args.splitlines()[1])
             self.assertNotIn("secret-value", result.stdout + result.stderr)
+
+    def test_release_renderer_rejects_unsafe_compose_before_runtime_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            bindir = Path(d) / "bin"; bindir.mkdir()
+            fake = bindir / "docker"
+            marker = Path(d) / "actual-runtime-rendered"
+            fake.write_text('#!/bin/sh\ncase "$*" in *probe.yaml*) exit 1;; esac\ntouch "$ACTUAL_RENDER_MARKER"\n')
+            fake.chmod(0o700)
+            env = fake_env(PATH=str(bindir) + os.pathsep + os.environ["PATH"], ACTUAL_RENDER_MARKER=str(marker))
+            result = subprocess.run([str(ROOT / "scripts/validate-release-config.sh"), IMAGE], cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists(), "unsafe Compose reached runtime configuration")
+            self.assertIn("opaque env_file", result.stderr)
 
     def test_restore_dryrun_fake_tools_never_connects(self):
         with tempfile.TemporaryDirectory() as d:
