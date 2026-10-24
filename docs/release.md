@@ -15,12 +15,23 @@ release workflow. Manual workflow не запускался; release image эт�
 развёртывание или доступ к VPS.
 
 [Release Compose](../compose.release.yaml) — шаблон отдельного будущего
-развёртывания. Он требует immutable image digest и внешние настройки PostgreSQL;
-Флаги `IMPORTED_RUNTIME_ENABLED=false` и `IMPORTED_EFFECTS_ENABLED=false` заданы
-в Compose явно; Dockerfile задаёт `USER 65532:65532`. Образ и runtime на VPS не
-проверялись, sample resource limits не измерены. Валидатор
-synthetic Compose проверяет структуру разрешённой конфигурации, не состояние
-VPS, владение секретами или пригодность production.
+развёртывания. Он требует immutable image digest, private runtime env-file
+`PAYPLUMP_ENV_FILE` вне checkout и внешние настройки PostgreSQL. Dockerfile
+задаёт `USER 65532:65532`; сервис запускается с обычным full-service профилем.
+Release validator рендерит Compose с `config --no-env-resolution` и `/dev/null`
+как interpolation source, проверяет private file paths и не читает/не печатает
+runtime-файл. Helper до этого проверяет opaque-поведение renderer на собственном
+некорректном синтетическом файле. Compose v2.38.2 имеет флаг, но всё ещё разбирает
+содержимое env-файла и отклоняется до runtime-конфигурации. CI использует
+закреплённый Compose v5.6.1 с проверкой SHA-256. Он проверен offline без daemon
+на синтетических приватных файлах; опущенный
+`required` в его JSON означает стандартное `true`, явное `false` запрещено.
+Release-шаблон принудительно обнуляет неиспользуемые PG-настройки, включая
+`PGOPTIONS`, `PGSERVICE*` и SSL/auth overrides: runtime-файл не переопределяет
+отдельно заданное подключение и его TLS-политику. Это не запуск контейнера. Образ и runtime
+на VPS не проверялись, sample resource limits не измерены. Synthetic Compose
+validation не доказывает состояние VPS, владение секретами или production readiness;
+см. [configuration.md](configuration.md).
 
 ## Предусмотренный workflow
 

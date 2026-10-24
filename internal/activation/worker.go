@@ -12,6 +12,7 @@ import (
 
 	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
+	"github.com/PlumpAlbert/payplump-bot/internal/managedscope"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
@@ -92,15 +93,12 @@ func New(store Store, providers Providers, botID int64, admins []int64, cfg Conf
 func (w *Worker) Run(service context.Context) error {
 	ctx, cancel := context.WithCancel(service)
 	defer cancel()
-	allowed := make([]int64, 0, len(w.cfg.AllowedTelegramIDs))
-	for _, id := range w.cfg.AllowedTelegramIDs {
-		if !slices.Contains(w.cfg.ExcludedTelegramIDs, id) {
-			allowed = append(allowed, id)
-		}
-	}
 	for ctx.Err() == nil {
 		dbCtx, dbCancel := context.WithTimeout(ctx, databaseTimeout)
-		_, err := w.store.SeedActivations(dbCtx, w.botID, slices.Clone(allowed), w.cfg.PolicyHash())
+		allowed, err := managedscope.Load(dbCtx, w.store, w.botID, w.cfg.ManagedClients, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs)
+		if err == nil {
+			_, err = w.store.SeedActivations(dbCtx, w.botID, allowed, w.cfg.PolicyHash())
+		}
 		dbCancel()
 		if err != nil && ctx.Err() == nil {
 			w.logger.Warn("activation seed deferred")
@@ -224,7 +222,7 @@ func (a *activationAttempt) confirm(step Step, result postResult) error {
 
 func (w *Worker) validate(s Snapshot, op queue.Operation) (Step, error) {
 	// Scope/review fences precede EVERY provider read, not just writes.
-	if slices.Contains(w.cfg.ExcludedTelegramIDs, s.Account.TelegramID) || !slices.Contains(w.cfg.AllowedTelegramIDs, s.Account.TelegramID) {
+	if !managedscope.Allows(s.Account.TelegramID, w.cfg.ManagedClients, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs) {
 		return "", review(ReviewExcluded)
 	}
 	if s.PaymentReview {

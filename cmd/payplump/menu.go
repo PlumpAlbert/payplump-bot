@@ -56,7 +56,7 @@ func newMenuGatewayWithConfiguration(store menuStore, delivery configdelivery.Co
 	}
 	policy := delivery.Policy()
 	cfg := clientmenu.Config{PaymentPhone: os.Getenv("PAYMENT_PHONE"), PaymentBank: os.Getenv("PAYMENT_BANK"), PaymentRecipient: os.Getenv("PAYMENT_RECIPIENT"),
-		ConfigurationEnabled: delivery.Enabled, ConfigurationPolicyRevision: policy.Revision, ConfigurationPolicyHash: policy.Hash,
+		ConfigurationEnabled: delivery.Enabled, ConfigurationManagedClients: delivery.ManagedClients, ConfigurationPolicyRevision: policy.Revision, ConfigurationPolicyHash: policy.Hash,
 		ConfigurationAllowedTelegramIDs: append([]int64(nil), delivery.AllowedTelegramIDs...)}
 	if raw := strings.TrimSpace(os.Getenv("REGISTRATION_EXCLUDED_TELEGRAM_IDS")); raw != "" {
 		for _, part := range strings.Split(raw, ",") {

@@ -20,8 +20,13 @@ type Config struct {
 // ConfigFromEnv keeps Telegram opt-in so development and CI do not reconfigure
 // a real bot merely because its token was injected into the environment.
 func ConfigFromEnv() (Config, error) {
+	return ConfigFromEnvironment(os.Getenv)
+}
+
+// ConfigFromEnvironment reads an explicit environment without mutating process globals.
+func ConfigFromEnvironment(getenv func(string) string) (Config, error) {
 	cfg := Config{AdminIDs: make(map[int64]struct{})}
-	if value := os.Getenv("TELEGRAM_ENABLED"); value != "" {
+	if value := getenv("TELEGRAM_ENABLED"); value != "" {
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
 			return Config{}, errors.New("TELEGRAM_ENABLED must be a boolean")
@@ -31,22 +36,22 @@ func ConfigFromEnv() (Config, error) {
 	if !cfg.Enabled {
 		return cfg, nil
 	}
-	cfg.Token = os.Getenv("TELEGRAM_BOT_TOKEN")
+	cfg.Token = getenv("TELEGRAM_BOT_TOKEN")
 	if cfg.Token == "" || strings.TrimSpace(cfg.Token) != cfg.Token {
 		return Config{}, errors.New("TELEGRAM_BOT_TOKEN must be set without surrounding whitespace")
 	}
-	for _, value := range strings.Split(os.Getenv("TELEGRAM_ADMIN_IDS"), ",") {
+	for _, value := range strings.Split(getenv("TELEGRAM_ADMIN_IDS"), ",") {
 		id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 		if err != nil || id <= 0 {
 			return Config{}, errors.New("TELEGRAM_ADMIN_IDS must be a comma-separated list of positive Telegram IDs")
 		}
 		cfg.AdminIDs[id] = struct{}{}
 	}
-	cfg.WebhookURL = os.Getenv("TELEGRAM_WEBHOOK_URL")
+	cfg.WebhookURL = getenv("TELEGRAM_WEBHOOK_URL")
 	if !validWebhookURL(cfg.WebhookURL) {
 		return Config{}, errors.New("TELEGRAM_WEBHOOK_URL must be an HTTPS URL with path /telegram/webhook without userinfo, query or fragment")
 	}
-	cfg.WebhookSecret = os.Getenv("TELEGRAM_WEBHOOK_SECRET")
+	cfg.WebhookSecret = getenv("TELEGRAM_WEBHOOK_SECRET")
 	if !validWebhookSecret(cfg.WebhookSecret) {
 		return Config{}, errors.New("TELEGRAM_WEBHOOK_SECRET must contain 1-256 ASCII letters, digits, underscores or hyphens")
 	}

@@ -25,6 +25,7 @@ services:
         max-file: "3"
   app:
     image: payplump:dev
+    command: ["serve-health"]
     build:
       context: .
       args:

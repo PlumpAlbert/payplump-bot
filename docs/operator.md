@@ -1,5 +1,27 @@
 # Operator-only tools and release preparation
 
+For the current normal runtime configuration and automatic import behavior, see
+[configuration.md](configuration.md). Historical sections below describe the
+operator tools as they were introduced; they are not a recipe for normal startup.
+
+## Local health-only startup
+
+Use `payplump serve-health` only for local CI/development readiness checks that
+need migrations and HTTP health endpoints but no Telegram or business workers.
+It explicitly disables Telegram and every service feature; it does not infer
+health-only mode from environment flags. Ordinary no-argument startup enables
+the full runtime and rejects legacy false feature switches, including
+`TELEGRAM_ENABLED=false`.
+
+`serve-health` still opens the database, runs migrations and applies startup
+fences. Those fences can revoke existing permissions. Use only an operator-owned
+disposable database; never use this command against production. The existing
+`payplump healthcheck` command remains an HTTP client for `/readyz`, not a server
+mode.
+Do not set old `IMPORTED_*_ENABLED`, revision, allowlist, or EXCLUSIVE_WRITER
+values in the normal environment. Legacy origins whose trusted policy hash does
+not match the normal policy require an explicit verified migration.
+
 For backup and isolated restore, see [backup-restore.md](backup-restore.md), an owner-gated runbook template.
 
 These tools do not make the production Invoice Ninja or S-UI API calls. Never use

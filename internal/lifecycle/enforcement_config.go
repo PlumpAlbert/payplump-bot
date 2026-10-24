@@ -15,6 +15,8 @@ import (
 // EnforcementConfig is a separate gate from Stage 1 invoice observations.
 // Enabling notices can never authorize writes to Invoice Ninja or S-UI.
 type EnforcementConfig struct {
+	// ManagedClients selects only actors with bot-owned database provenance.
+	ManagedClients            bool
 	Enabled, ExclusiveWriter  bool
 	BaseURL, Token            string
 	InvoiceNinjaVersion       string
@@ -34,24 +36,30 @@ func (EnforcementConfig) GoString() string {
 }
 
 func EnforcementConfigFromEnv(stageOneEnabled, telegramEnabled, paymentsEnabled bool) (EnforcementConfig, error) {
+	return EnforcementConfigFromEnvironment(os.Getenv, stageOneEnabled, telegramEnabled, paymentsEnabled, false)
+}
+
+// EnforcementConfigFromEnvironment reads an explicit environment without mutating process globals.
+func EnforcementConfigFromEnvironment(getenv func(string) string, stageOneEnabled, telegramEnabled, paymentsEnabled bool, managed bool) (EnforcementConfig, error) {
 	cfg := EnforcementConfig{Workers: 1, MaxAccounts: 1000, PollInterval: time.Second, HTTPTimeout: 5 * time.Second}
-	if raw := os.Getenv("INVOICE_OVERDUE_ENFORCEMENT_ENABLED"); raw != "" {
+	if raw := getenv("INVOICE_OVERDUE_ENFORCEMENT_ENABLED"); raw != "" {
 		enabled, err := strconv.ParseBool(raw)
 		if err != nil {
 			return EnforcementConfig{}, errors.New("INVOICE_OVERDUE_ENFORCEMENT_ENABLED must be a boolean")
 		}
 		cfg.Enabled = enabled
 	}
+	cfg.ManagedClients = managed
 	if !cfg.Enabled {
 		return cfg, nil
 	}
 	if !stageOneEnabled || !telegramEnabled || !paymentsEnabled {
 		return EnforcementConfig{}, errors.New("invoice overdue enforcement requires Stage 1, Telegram and payment verification")
 	}
-	cfg.BaseURL, cfg.Token = os.Getenv("INVOICE_NINJA_BASE_URL"), os.Getenv("INVOICE_NINJA_API_TOKEN")
-	cfg.InvoiceNinjaVersion = os.Getenv("INVOICE_NINJA_VERSION")
-	cfg.SUIBaseURL, cfg.SUIToken, cfg.SUIVersion = os.Getenv("SUI_BASE_URL"), os.Getenv("SUI_API_TOKEN"), os.Getenv("SUI_VERSION")
-	if raw := os.Getenv("INVOICE_OVERDUE_EXCLUSIVE_WRITER"); raw != "" {
+	cfg.BaseURL, cfg.Token = getenv("INVOICE_NINJA_BASE_URL"), getenv("INVOICE_NINJA_API_TOKEN")
+	cfg.InvoiceNinjaVersion = getenv("INVOICE_NINJA_VERSION")
+	cfg.SUIBaseURL, cfg.SUIToken, cfg.SUIVersion = getenv("SUI_BASE_URL"), getenv("SUI_API_TOKEN"), getenv("SUI_VERSION")
+	if raw := getenv("INVOICE_OVERDUE_EXCLUSIVE_WRITER"); raw != "" {
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
 			return EnforcementConfig{}, errors.New("INVOICE_OVERDUE_EXCLUSIVE_WRITER must be a boolean")
@@ -61,14 +69,14 @@ func EnforcementConfigFromEnv(stageOneEnabled, telegramEnabled, paymentsEnabled 
 	if !cfg.ExclusiveWriter {
 		return EnforcementConfig{}, errors.New("invoice overdue enforcement requires INVOICE_OVERDUE_EXCLUSIVE_WRITER=true acknowledgement")
 	}
-	if raw := strings.TrimSpace(os.Getenv("INVOICE_LIFECYCLE_ALLOWED_TELEGRAM_IDS")); raw != "" {
+	if raw := strings.TrimSpace(getenv("INVOICE_LIFECYCLE_ALLOWED_TELEGRAM_IDS")); raw != "" {
 		var err error
 		cfg.AllowedTelegramIDs, err = parseIDs(raw, 20)
 		if err != nil {
 			return EnforcementConfig{}, errors.New("invalid invoice overdue pilot allowlist")
 		}
 	}
-	if raw := strings.TrimSpace(os.Getenv("REGISTRATION_EXCLUDED_TELEGRAM_IDS")); raw != "" {
+	if raw := strings.TrimSpace(getenv("REGISTRATION_EXCLUDED_TELEGRAM_IDS")); raw != "" {
 		var err error
 		cfg.ExcludedTelegramIDs, err = parseIDs(raw, 1000)
 		if err != nil {
@@ -79,7 +87,7 @@ func EnforcementConfigFromEnv(stageOneEnabled, telegramEnabled, paymentsEnabled 
 		key    string
 		target *int
 	}{{"INVOICE_OVERDUE_WORKERS", &cfg.Workers}, {"INVOICE_OVERDUE_MAX_ACCOUNTS", &cfg.MaxAccounts}} {
-		if raw := os.Getenv(item.key); raw != "" {
+		if raw := getenv(item.key); raw != "" {
 			value, err := strconv.Atoi(raw)
 			if err != nil {
 				return EnforcementConfig{}, errors.New(item.key + " must be an integer")
@@ -91,7 +99,7 @@ func EnforcementConfigFromEnv(stageOneEnabled, telegramEnabled, paymentsEnabled 
 		key    string
 		target *time.Duration
 	}{{"INVOICE_OVERDUE_POLL_INTERVAL", &cfg.PollInterval}, {"INVOICE_OVERDUE_HTTP_TIMEOUT", &cfg.HTTPTimeout}} {
-		if raw := os.Getenv(item.key); raw != "" {
+		if raw := getenv(item.key); raw != "" {
 			value, err := time.ParseDuration(raw)
 			if err != nil {
 				return EnforcementConfig{}, errors.New(item.key + " must be a duration")
@@ -125,7 +133,7 @@ func (c EnforcementConfig) validateSettings() error {
 	if c.InvoiceNinjaVersion != "" && strings.TrimPrefix(c.InvoiceNinjaVersion, "v") != invoiceninja.SupportedRecurringVersion {
 		return errors.New("invoice overdue enforcement supports Invoice Ninja 5.13.47 only")
 	}
-	if !validIDs(c.AllowedTelegramIDs, 1, 20) || !validIDs(c.ExcludedTelegramIDs, 0, 1000) || len(enforcementEffectiveIDs(c.AllowedTelegramIDs, c.ExcludedTelegramIDs)) == 0 {
+	if (!c.ManagedClients && (!validIDs(c.AllowedTelegramIDs, 1, 20) || len(enforcementEffectiveIDs(c.AllowedTelegramIDs, c.ExcludedTelegramIDs)) == 0)) || !validIDs(c.ExcludedTelegramIDs, 0, 1000) {
 		return errors.New("invoice overdue enforcement requires an effective pilot allowlist")
 	}
 	if c.Workers < 1 || c.Workers > 4 || c.MaxAccounts < 1 || c.MaxAccounts > 1000 || c.PollInterval < 100*time.Millisecond || c.PollInterval > time.Minute || c.HTTPTimeout < time.Second || c.HTTPTimeout > 10*time.Second {

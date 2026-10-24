@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import builtins
 import importlib.util
 import json
 import os
@@ -31,7 +32,8 @@ def fake_env(**extra):
 def config():
     return {"services": {"payplump": {"image": IMAGE, "user": "65532:65532", "read_only": True,
         "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"], "privileged": False,
-        "environment": {**{x: "false" for x in validator.FLAGS}, "PGHOST": "db.internal", "PGUSER": "bot",
+        "env_file": [{"path": "/tmp/runtime.env", "required": True}],
+        "environment": {**dict.fromkeys(validator.CLEARED_DATABASE_ENV, ""), "PGHOST": "db.internal", "PGUSER": "bot",
           "PGDATABASE": "botdb", "PGSSLMODE": "verify-full", "PGPASSFILE": "/run/secrets/pgpass"},
         "logging": {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}},
         "secrets": ["pgpass"], "healthcheck": {"test": ["CMD", "/payplump", "healthcheck"]}}},
@@ -42,6 +44,17 @@ class Helpers(unittest.TestCase):
     def check(self, value, valid):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "resolved.json"
+            runtime = Path(d) / "runtime.env"
+            runtime.write_text("SYNTHETIC_SECRET=value\\n")
+            runtime.chmod(0o600)
+            pgpass = Path(d) / "pgpass"
+            pgpass.write_text("synthetic pgpass\\n")
+            pgpass.chmod(0o600)
+            env_files = value["services"]["payplump"].get("env_file", [])
+            if env_files and env_files[0].get("path") == "/tmp/runtime.env":
+                env_files[0]["path"] = str(runtime)
+            if value["secrets"]["pgpass"]["file"] == "/private/pgpass":
+                value["secrets"]["pgpass"]["file"] = str(pgpass)
             p.write_text(json.dumps(value))
             if valid:
                 validator.validate(str(p), IMAGE)
@@ -49,12 +62,32 @@ class Helpers(unittest.TestCase):
                 with self.assertRaises(Exception):
                     validator.validate(str(p), IMAGE)
 
+    def test_validator_never_reads_runtime_env_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            runtime = Path(d) / "runtime.env"; runtime.write_text("SYNTHETIC_SENTINEL_DO_NOT_READ=value\\n"); runtime.chmod(0o600)
+            pgpass = Path(d) / "pgpass"; pgpass.write_text("synthetic\\n"); pgpass.chmod(0o600)
+            value = config()
+            value["services"]["payplump"]["env_file"][0]["path"] = str(runtime)
+            value["secrets"]["pgpass"]["file"] = str(pgpass)
+            resolved = Path(d) / "resolved.json"; resolved.write_text(json.dumps(value))
+            real_open = builtins.open
+            def guarded_open(path, *args, **kwargs):
+                if Path(path) == runtime:
+                    raise AssertionError("validator attempted to read runtime env contents")
+                return real_open(path, *args, **kwargs)
+            with mock.patch("builtins.open", side_effect=guarded_open):
+                validator.validate(str(resolved), IMAGE)
+
     def test_resolved_compose_cases(self):
         self.check(config(), True)
         normalized = config()
         normalized["services"]["payplump"].update(command=None, entrypoint=None)
         normalized["services"]["payplump"]["secrets"] = [{"source": "pgpass", "target": "/run/secrets/pgpass"}]
         self.check(normalized, True)
+        # Actual Compose v5.6.1 omits the default required=true in JSON.
+        default_required = config()
+        default_required["services"]["payplump"]["env_file"][0].pop("required")
+        self.check(default_required, True)
         mutations = [
             lambda c: c["services"]["payplump"].update(image="other:latest"),
             lambda c: c["services"]["payplump"].update(privileged=True),
@@ -64,8 +97,12 @@ class Helpers(unittest.TestCase):
             lambda c: c["services"]["payplump"].update(build={"context": "."}),
             lambda c: c["services"]["payplump"].update(post_start=[{"command": "unsafe"}]),
             lambda c: c["services"]["payplump"]["environment"].update(UNREVIEWED_SETTING="true"),
+            lambda c: c["services"]["payplump"].update(env_file=[{"path": "/tmp/ambiguous.env", "required": True}]),
+            lambda c: c["services"]["payplump"]["env_file"].append({"path": "/tmp/second.env", "required": True}),
             lambda c: c["services"]["payplump"].update(read_only=False),
-            lambda c: c["services"]["payplump"]["environment"].update(TELEGRAM_ENABLED="true"),
+            lambda c: c["services"]["payplump"]["env_file"][0].update(required=False),
+            lambda c: c["services"]["payplump"]["env_file"][0].update(format="raw"),
+            lambda c: c["services"]["payplump"]["environment"].update(TELEGRAM_BOT_TOKEN="synthetic-token"),
             lambda c: c["services"]["payplump"].update(command=["overridden"]),
             lambda c: c["services"]["payplump"].update(command=[]),
             lambda c: c["services"]["payplump"].update(entrypoint=[]),
@@ -86,22 +123,53 @@ class Helpers(unittest.TestCase):
         ]
         for mutate in mutations:
             c = config(); mutate(c); self.check(c, False)
-        c = config(); c["services"]["payplump"]["environment"]["LIFECYCLE_ENABLED"] = "false"; self.check(c, False)
-        for gate in ("INVOICE_LIFECYCLE_ENABLED", "INVOICE_OVERDUE_ENFORCEMENT_ENABLED", "INVOICE_RENEWAL_ENABLED"):
-            c = config(); c["services"]["payplump"]["environment"].pop(gate); self.check(c, False)
-        for gate in validator.FLAGS:
-            c = config(); c["services"]["payplump"]["environment"][gate] = "true"; self.check(c, False)
-        for unexpected in ("REVISION", "SOURCE_TOKEN"):
-            c = config(); c["services"]["payplump"]["environment"][unexpected] = "synthetic"; self.check(c, False)
-        c = config(); c["services"]["payplump"]["environment"].pop("TELEGRAM_ENABLED"); c["services"]["payplump"]["environment"]["COMMENT"] = "TELEGRAM_ENABLED: false"; self.check(c, False)
+        for secret_name in ("TELEGRAM_BOT_TOKEN", "INVOICE_NINJA_API_TOKEN", "SUI_API_TOKEN", "PAYMENT_PHONE"):
+            c = config(); c["services"]["payplump"]["environment"][secret_name] = "SYNTHETIC_ONLY"; self.check(c, False)
+        for key in validator.CLEARED_DATABASE_ENV:
+            c = config(); c["services"]["payplump"]["environment"][key] = "SYNTHETIC_OVERRIDE"; self.check(c, False)
+            c = config(); c["services"]["payplump"]["environment"].pop(key); self.check(c, False)
+        c = config(); c["services"]["payplump"]["environment"]["DATABASE_URL"] = "postgres://inline-secret"; self.check(c, False)
+        c = config(); c["services"]["payplump"]["environment"]["PGPASSWORD"] = "inline-secret"; self.check(c, False)
+        c = config(); c["services"]["payplump"]["env_file"][0]["path"] = str(ROOT / ".env.example"); self.check(c, False)
+        c = config(); c["services"]["payplump"].pop("env_file"); self.check(c, False)
 
     def test_release_template_declares_imported_gates_and_image_user(self):
         compose = (ROOT / "compose.release.yaml").read_text()
-        for gate in ("IMPORTED_RUNTIME_ENABLED", "IMPORTED_EFFECTS_ENABLED"):
-            self.assertIn(f'{gate}: "false"', compose)
+        self.assertIn("PAYPLUMP_ENV_FILE", compose)
+        self.assertIn("path:", compose)
+        self.assertNotIn("ENABLED: \"false\"", compose)
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertEqual(dockerfile.count("USER 65532:65532"), 1)
         self.assertLess(dockerfile.index("COPY --from=build /out/payplump /payplump"), dockerfile.index("USER 65532:65532"))
+
+    def test_release_compose_real_json_without_reading_runtime_contents(self):
+        docker = shutil.which("docker")
+        if not docker:
+            self.skipTest("Docker Compose unavailable; no local config renderer")
+        with tempfile.TemporaryDirectory() as d:
+            runtime = Path(d) / "runtime.env"
+            # Rendering metadata must not parse even a malformed secret file.
+            runtime.write_text('UNTERMINATED="SYNTHETIC_SENTINEL_FROM_FILE\\n')
+            runtime.chmod(0o600)
+            pgpass = Path(d) / "pgpass"
+            pgpass.write_text("synthetic.invalid:5432:synthetic:synthetic:SYNTHETIC_ONLY\\n")
+            pgpass.chmod(0o600)
+            env = fake_env(PATH=str(Path(docker).parent) + os.pathsep + os.defpath,
+                HOME=d, DOCKER_CONFIG=str(Path(d) / "docker-config"),
+                DOCKER_HOST="unix://" + str(Path(d) / "nonexistent.sock"),
+                PAYPLUMP_IMAGE=IMAGE, PAYPLUMP_ENV_FILE=str(runtime), PGPASSFILE=str(pgpass),
+                PGHOST="synthetic.invalid", PGPORT="5432", PGUSER="synthetic", PGDATABASE="synthetic", PGSSLMODE="verify-full")
+            result = subprocess.run([docker, "compose", "--env-file", "/dev/null", "-f", "compose.release.yaml",
+                "config", "--no-env-resolution", "--format", "json"], cwd=ROOT, env=env,
+                capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, "synthetic release Compose metadata render failed")
+            self.assertNotIn("SYNTHETIC_SENTINEL_FROM_FILE", result.stdout + result.stderr)
+            resolved = Path(d) / "resolved.json"
+            resolved.write_text(result.stdout)
+            validator.validate(str(resolved), IMAGE)
+            actual = json.loads(result.stdout)["services"]["payplump"]["environment"]
+            for key in validator.CLEARED_DATABASE_ENV:
+                self.assertEqual(actual.get(key), "", "runtime PG override not clamped: " + key)
 
     def test_dev_compose_resolves_lifecycle_settings_without_starting_containers(self):
         docker = shutil.which("docker")
@@ -126,7 +194,9 @@ class Helpers(unittest.TestCase):
                 cwd=ROOT, env=env, capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, "synthetic Compose config render failed")
-            resolved = json.loads(result.stdout)["services"]["app"]["environment"]
+            service = json.loads(result.stdout)["services"]["app"]
+            self.assertEqual(service.get("command"), ["serve-health"])
+            resolved = service["environment"]
             expected = {
                 "INVOICE_LIFECYCLE_ENABLED": "false",
                 "INVOICE_LIFECYCLE_WEBHOOK_SECRET": "",
@@ -190,6 +260,7 @@ class Helpers(unittest.TestCase):
                 ]) as run:
                     with mock.patch.object(smoke.urllib.request, "urlopen", return_value=Response()):
                         smoke.check_cycle()
+        self.assertEqual(popen.call_args.args[0], ["./bin/payplump", "serve-health"])
         captured = popen.call_args.kwargs["env"]
         self.assertIs(popen.call_args.kwargs["stdout"], subprocess.DEVNULL)
         self.assertIs(popen.call_args.kwargs["stderr"], subprocess.DEVNULL)
@@ -220,17 +291,37 @@ class Helpers(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             bindir = Path(d) / "bin"; bindir.mkdir()
             fake = bindir / "docker"
-            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >"$FAKE_LOG"\ncat "$FAKE_CONFIG"\n')
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >>"$FAKE_LOG"\ncat "$FAKE_CONFIG"\n')
             fake.chmod(0o700)
-            c = Path(d) / "config.json"; c.write_text(json.dumps(config()))
+            c = Path(d) / "config.json"
+            runtime = Path(d) / "runtime.env"; runtime.write_text("SYNTHETIC_SECRET=value\\n"); runtime.chmod(0o600)
+            pgpass = Path(d) / "pgpass"; pgpass.write_text("synthetic pgpass\\n"); pgpass.chmod(0o600)
+            fixture = config(); fixture["services"]["payplump"]["env_file"][0]["path"] = str(runtime); fixture["secrets"]["pgpass"]["file"] = str(pgpass)
+            c.write_text(json.dumps(fixture))
             log = Path(d) / "args"
             env = fake_env(PATH=str(bindir) + os.pathsep + os.environ["PATH"], FAKE_LOG=str(log), FAKE_CONFIG=str(c))
             result = subprocess.run([str(ROOT / "scripts/validate-release-config.sh"), IMAGE], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             args = log.read_text()
             self.assertIn("--env-file /dev/null", args)
-            self.assertIn("config --format json", args)
+            self.assertIn("config --no-env-resolution --format json", args)
+            self.assertEqual(len(args.splitlines()), 2)
+            self.assertIn("probe.yaml", args.splitlines()[0])
+            self.assertIn("compose.release.yaml", args.splitlines()[1])
             self.assertNotIn("secret-value", result.stdout + result.stderr)
+
+    def test_release_renderer_rejects_unsafe_compose_before_runtime_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            bindir = Path(d) / "bin"; bindir.mkdir()
+            fake = bindir / "docker"
+            marker = Path(d) / "actual-runtime-rendered"
+            fake.write_text('#!/bin/sh\ncase "$*" in *probe.yaml*) exit 1;; esac\ntouch "$ACTUAL_RENDER_MARKER"\n')
+            fake.chmod(0o700)
+            env = fake_env(PATH=str(bindir) + os.pathsep + os.environ["PATH"], ACTUAL_RENDER_MARKER=str(marker))
+            result = subprocess.run([str(ROOT / "scripts/validate-release-config.sh"), IMAGE], cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists(), "unsafe Compose reached runtime configuration")
+            self.assertIn("opaque env_file", result.stderr)
 
     def test_restore_dryrun_fake_tools_never_connects(self):
         with tempfile.TemporaryDirectory() as d:

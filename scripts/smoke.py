@@ -41,7 +41,7 @@ def check_cycle():
     settings = smoke_environment(port)
     binary = os.environ.get("PAYPLUMP_BINARY", "./bin/payplump")
     process = subprocess.Popen(
-        [binary], env=settings, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        [binary, "serve-health"], env=settings, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
         deadline = time.monotonic() + 20

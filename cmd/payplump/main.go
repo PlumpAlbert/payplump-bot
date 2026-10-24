@@ -17,6 +17,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/broadcast"
 	"github.com/PlumpAlbert/payplump-bot/internal/configdelivery"
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
+	"github.com/PlumpAlbert/payplump-bot/internal/importverify"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/lifecycle"
 	"github.com/PlumpAlbert/payplump-bot/internal/outbox"
@@ -43,6 +44,7 @@ func run(logger *slog.Logger, args []string) error {
 	if len(args) == 1 && args[0] == "healthcheck" {
 		return healthcheck(envOr("HEALTHCHECK_URL", "http://127.0.0.1:8080/readyz"))
 	}
+	healthOnly := len(args) == 1 && args[0] == "serve-health"
 	if len(args) > 0 && args[0] == "recovery-report" {
 		return recoveryReportCommand(args[1:], os.Stdout)
 	}
@@ -68,18 +70,29 @@ func run(logger *slog.Logger, args []string) error {
 		defer stop()
 		return resumeRegistration(ctx, args[1], os.Stdout)
 	}
-	if len(args) != 0 {
-		return errors.New("usage: payplump [healthcheck | check-integrations | resume-registration OPERATION_ID | recovery-report [--operation LOCAL_ID] | import-plan --file PATH | import-stage --file PATH --expected-hash HASH --apply | import-verify --file PATH --expected-hash HASH --read-only [--evidence-file NEW_PRIVATE_PATH] | import-apply --file PRIVATE --expected-hash HASH --admission-revision N --apply [--enable-admission]]")
+	if len(args) != 0 && !healthOnly {
+		return errors.New("usage: payplump [serve-health | healthcheck | check-integrations | resume-registration OPERATION_ID | recovery-report [--operation LOCAL_ID] | import-plan --file PATH | import-stage --file PATH --expected-hash HASH --apply | import-verify --file PATH --expected-hash HASH --read-only [--evidence-file NEW_PRIVATE_PATH] | import-apply --file PRIVATE --expected-hash HASH --admission-revision N --apply [--enable-admission]]")
 	}
-	telegramConfig, err := telegram.ConfigFromEnv()
+	var get func(string) string
+	var standard bool
+	var err error
+	if healthOnly {
+		get, standard = healthEnvironment(os.Getenv), false
+	} else {
+		get, standard, err = serviceEnvironment(os.Getenv)
+	}
 	if err != nil {
 		return err
 	}
-	broadcastConfig, err := broadcast.ConfigFromEnv(telegramConfig.Enabled, telegramConfig.AdminIDs)
+	telegramConfig, err := telegram.ConfigFromEnvironment(get)
 	if err != nil {
 		return err
 	}
-	registrationConfig, err := registration.ConfigFromEnv(telegramConfig.Enabled)
+	broadcastConfig, err := broadcast.ConfigFromEnvironment(get, telegramConfig.Enabled, telegramConfig.AdminIDs)
+	if err != nil {
+		return err
+	}
+	registrationConfig, err := registration.ConfigFromEnvironment(get, telegramConfig.Enabled)
 	if err != nil {
 		return err
 	}
@@ -93,7 +106,7 @@ func run(logger *slog.Logger, args []string) error {
 			return errors.New("invalid registration API configuration")
 		}
 	}
-	paymentConfig, err := payments.ConfigFromEnv(telegramConfig.Enabled)
+	paymentConfig, err := payments.ConfigFromEnvironment(get, telegramConfig.Enabled)
 	if err != nil {
 		return err
 	}
@@ -107,7 +120,7 @@ func run(logger *slog.Logger, args []string) error {
 			return errors.New("invalid payment verification API configuration")
 		}
 	}
-	lifecycleConfig, err := lifecycle.ConfigFromEnv(telegramConfig.Enabled, paymentConfig.Enabled, paymentConfig.WebhookSecret, telegramConfig.WebhookSecret, telegramConfig.Token)
+	lifecycleConfig, err := lifecycle.ConfigFromEnvironment(get, telegramConfig.Enabled, paymentConfig.Enabled, paymentConfig.WebhookSecret, telegramConfig.WebhookSecret, telegramConfig.Token, standard)
 	if err != nil {
 		return err
 	}
@@ -118,11 +131,11 @@ func run(logger *slog.Logger, args []string) error {
 			return errors.New("invalid invoice lifecycle API configuration")
 		}
 	}
-	enforcementConfig, err := lifecycle.EnforcementConfigFromEnv(lifecycleConfig.Enabled, telegramConfig.Enabled, paymentConfig.Enabled)
+	enforcementConfig, err := lifecycle.EnforcementConfigFromEnvironment(get, lifecycleConfig.Enabled, telegramConfig.Enabled, paymentConfig.Enabled, standard)
 	if err != nil {
 		return err
 	}
-	renewalConfig, err := lifecycle.RenewalConfigFromEnv(lifecycleConfig.Enabled, telegramConfig.Enabled, paymentConfig.Enabled)
+	renewalConfig, err := lifecycle.RenewalConfigFromEnvironment(get, lifecycleConfig.Enabled, telegramConfig.Enabled, paymentConfig.Enabled, standard)
 	if err != nil {
 		return err
 	}
@@ -151,7 +164,7 @@ func run(logger *slog.Logger, args []string) error {
 			return errors.New("invalid invoice overdue S-UI writer configuration")
 		}
 	}
-	activationConfig, err := activation.ConfigFromEnv(telegramConfig.Enabled, paymentConfig.Enabled)
+	activationConfig, err := activation.ConfigFromEnvironment(get, telegramConfig.Enabled, paymentConfig.Enabled, standard)
 	if err != nil {
 		return err
 	}
@@ -165,7 +178,7 @@ func run(logger *slog.Logger, args []string) error {
 			return err
 		}
 	}
-	configurationConfig, err := configdelivery.ConfigFromEnv(telegramConfig.Enabled, paymentConfig.Enabled)
+	configurationConfig, err := configdelivery.ConfigFromEnvironment(get, telegramConfig.Enabled, paymentConfig.Enabled, standard)
 	if err != nil {
 		return err
 	}
@@ -173,7 +186,12 @@ func run(logger *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	importedRuntimeConfig, err := loadImportedRuntimeConfig(os.Getenv, telegramConfig.Enabled, paymentConfig.Enabled)
+	var importedRuntimeConfig importedRuntimeConfig
+	if standard {
+		importedRuntimeConfig, err = serviceImportedRuntimeConfig(enforcementConfig)
+	} else {
+		importedRuntimeConfig, err = loadImportedRuntimeConfig(get, telegramConfig.Enabled, paymentConfig.Enabled)
+	}
 	if err != nil {
 		return err
 	}
@@ -212,8 +230,10 @@ func run(logger *slog.Logger, args []string) error {
 	if err := fenceConfigurationStartup(startupCtx, store, configurationConfig); err != nil {
 		return err
 	}
-	if err := fenceImportedRuntimeStartup(startupCtx, store, importedRuntimeConfig); err != nil {
-		return err
+	if !standard {
+		if err := fenceImportedRuntimeStartup(startupCtx, store, importedRuntimeConfig); err != nil {
+			return err
+		}
 	}
 	cancelStartup()
 	var paymentEndpoint *payments.WebhookHandler
@@ -239,11 +259,7 @@ func run(logger *slog.Logger, args []string) error {
 	var initialize func(context.Context) error
 	var background func(context.Context) error
 	if telegramConfig.Enabled {
-		menu, err := newMenuGatewayWithConfiguration(store, configurationConfig)
-		if err != nil {
-			return err
-		}
-		gateway := newBroadcastGateway(menu, store, broadcastConfig)
+		gateway := &startupGateway{}
 		endpoint, err = telegram.NewWebhookHandler(telegramConfig.WebhookSecret, gateway)
 		if err != nil {
 			return err
@@ -251,26 +267,83 @@ func run(logger *slog.Logger, args []string) error {
 		handler = endpoint
 		client := telegram.NewClient(telegramConfig.Token)
 		var botID int64
+		var importer *automaticImporter
 		initialize = func(ctx context.Context) error {
 			bot, err := telegram.ConfigureWebhook(ctx, client, telegramConfig, logger)
 			if err != nil {
 				return err
 			}
 			botID = bot.ID
-			if broadcastConfig.Enabled {
-				if err := store.InstallBroadcastPolicy(ctx, botID, broadcastConfig.Policy()); err != nil {
+			if standard {
+				bp, cp := broadcastConfig.Policy(), configurationConfig.Policy()
+				if err := store.InstallServiceBroadcastPolicy(ctx, botID, &bp); err != nil {
+					return err
+				}
+				if err := store.InstallServiceConfigurationPolicy(ctx, botID, &cp); err != nil {
+					return err
+				}
+				broadcastConfig.Revision, configurationConfig.Revision = bp.Revision, cp.Revision
+				readCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+				verification, err := serviceVerificationConfig(readCtx, get, botID, activationConfig)
+				stop()
+				if err != nil {
+					return err
+				}
+				providers, err := newVerifyProviders(verification)
+				if err != nil {
+					return err
+				}
+				inventory, err := invoiceninja.NewCustomerInventoryReader(verification.ninjaBase, verification.ninjaToken, verification.timeout, verification.pageSize, verification.maxPages)
+				if err != nil {
+					return err
+				}
+				providers.Customers = inventory
+				verifier, err := importverify.New(verification.policy, providers)
+				if err != nil {
+					return err
+				}
+				policyHash, err := verification.policy.Fingerprint()
+				if err != nil {
+					return err
+				}
+				admission, read, effects, err := store.InstallServiceImportPolicies(ctx, botID, policyHash, verification.policy.SourceScopeHash)
+				if err != nil {
+					return err
+				}
+				importedRuntimeConfig.BotID, importedRuntimeConfig.PolicyHash = botID, policyHash
+				importedRuntimeConfig.Revision, importedRuntimeConfig.EffectsRevision = read, effects
+				admins := make([]int64, 0, len(telegramConfig.AdminIDs))
+				for id := range telegramConfig.AdminIDs {
+					admins = append(admins, id)
+				}
+				importer = &automaticImporter{store: store, verifier: verifier, policy: verification.policy, revision: admission, admins: admins, logger: logger, now: time.Now}
+				scanCtx, stop := context.WithTimeout(ctx, 3*time.Minute)
+				err = importer.Scan(scanCtx)
+				stop()
+				if err != nil {
+					return err
+				}
+			} else {
+				if broadcastConfig.Enabled {
+					if err := store.InstallBroadcastPolicy(ctx, botID, broadcastConfig.Policy()); err != nil {
+						return err
+					}
+				}
+				if err := store.InstallConfigurationPolicy(ctx, botID, configurationConfig.Policy()); err != nil {
+					return err
+				}
+				if err := installImportedRuntimePermission(ctx, store, botID, importedRuntimeConfig); err != nil {
+					return err
+				}
+				if err := installImportedEffectPermission(ctx, store, botID, importedRuntimeConfig); err != nil {
 					return err
 				}
 			}
-			if err := store.InstallConfigurationPolicy(ctx, botID, configurationConfig.Policy()); err != nil {
+			menu, err := newMenuGatewayWithConfiguration(store, configurationConfig)
+			if err != nil {
 				return err
 			}
-			if err := installImportedRuntimePermission(ctx, store, botID, importedRuntimeConfig); err != nil {
-				return err
-			}
-			if err := installImportedEffectPermission(ctx, store, botID, importedRuntimeConfig); err != nil {
-				return err
-			}
+			gateway.install(newBroadcastGateway(menu, store, broadcastConfig))
 			if paymentEndpoint != nil {
 				if err := paymentEndpoint.Activate(botID); err != nil {
 					return err
@@ -298,6 +371,9 @@ func run(logger *slog.Logger, args []string) error {
 				return err
 			}
 			workers := []func(context.Context) error{worker.Run}
+			if importer != nil {
+				workers = append(workers, importer.Run)
+			}
 			if broadcastConfig.Enabled {
 				broadcastWorker, err := broadcast.New(store, botID, broadcastConfig, logger)
 				if err != nil {

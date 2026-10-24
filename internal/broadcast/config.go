@@ -27,8 +27,13 @@ func (Config) LogValue() slog.Value         { return slog.StringValue("[private 
 func (Config) MarshalJSON() ([]byte, error) { return json.Marshal("[private broadcast policy]") }
 
 func ConfigFromEnv(telegramEnabled bool, telegramAdmins map[int64]struct{}) (Config, error) {
+	return ConfigFromEnvironment(os.Getenv, telegramEnabled, telegramAdmins)
+}
+
+// ConfigFromEnvironment reads an explicit environment without mutating process globals.
+func ConfigFromEnvironment(getenv func(string) string, telegramEnabled bool, telegramAdmins map[int64]struct{}) (Config, error) {
 	c := Config{AdminIDs: cloneAdmins(telegramAdmins), MaxRecipients: 1000, BatchSize: 50, Workers: 1, PollInterval: time.Second}
-	if v := os.Getenv("BROADCAST_ENABLED"); v != "" {
+	if v := getenv("BROADCAST_ENABLED"); v != "" {
 		enabled, err := strconv.ParseBool(v)
 		if err != nil {
 			return Config{}, errors.New("BROADCAST_ENABLED must be a boolean")
@@ -41,32 +46,32 @@ func ConfigFromEnv(telegramEnabled bool, telegramAdmins map[int64]struct{}) (Con
 	if !telegramEnabled {
 		return Config{}, errors.New("broadcast requires Telegram")
 	}
-	raw := os.Getenv("BROADCAST_POLICY_REVISION")
+	raw := getenv("BROADCAST_POLICY_REVISION")
 	rev, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || rev < 1 || strconv.FormatInt(rev, 10) != raw {
 		return Config{}, errors.New("BROADCAST_POLICY_REVISION must be an explicit positive canonical integer")
 	}
 	c.Revision = rev
-	if raw := os.Getenv("BROADCAST_POLL_INTERVAL"); raw != "" {
+	if raw := getenv("BROADCAST_POLL_INTERVAL"); raw != "" {
 		d, parseErr := time.ParseDuration(raw)
 		if parseErr != nil || d < 100*time.Millisecond || d > time.Minute {
 			return Config{}, errors.New("invalid broadcast poll interval")
 		}
 		c.PollInterval = d
 	}
-	if raw := os.Getenv("BROADCAST_WORKERS"); raw != "" {
+	if raw := getenv("BROADCAST_WORKERS"); raw != "" {
 		c.Workers, err = strconv.Atoi(raw)
 		if err != nil {
 			return Config{}, errors.New("invalid broadcast worker count")
 		}
 	}
-	if raw := os.Getenv("BROADCAST_BATCH_SIZE"); raw != "" {
+	if raw := getenv("BROADCAST_BATCH_SIZE"); raw != "" {
 		c.BatchSize, err = strconv.Atoi(raw)
 		if err != nil {
 			return Config{}, errors.New("invalid broadcast batch size")
 		}
 	}
-	if raw := os.Getenv("BROADCAST_MAX_RECIPIENTS"); raw != "" {
+	if raw := getenv("BROADCAST_MAX_RECIPIENTS"); raw != "" {
 		c.MaxRecipients, err = strconv.Atoi(raw)
 		if err != nil {
 			return Config{}, errors.New("invalid broadcast recipient limit")

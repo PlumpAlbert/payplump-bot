@@ -107,6 +107,13 @@ func (s *Store) ApplyMenuUpdate(ctx context.Context, botID int64, botUsername st
 	}
 	if action == clientmenu.Start {
 		if !actual.Known {
+			blocked, err := rejectAutomaticImportRegistration(ctx, tx, botID, identity.TelegramID, update.ID)
+			if err != nil {
+				return menuStageError("check import registration hold", err)
+			}
+			if blocked {
+				return menuStageError("commit import registration hold", tx.Commit(ctx))
+			}
 			registered, err := registerPrivateClient(ctx, tx, TelegramIdentity{
 				TelegramID: identity.TelegramID, ChatID: identity.ChatID, DisplayName: identity.DisplayName,
 			})

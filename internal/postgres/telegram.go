@@ -38,7 +38,14 @@ func (s *Store) ApplyTelegramUpdate(ctx context.Context, botID int64, botUsernam
 		return tx.Commit(ctx)
 	}
 	if identity, ok := update.PrivateStart(botUsername); ok {
-		_, err := registerPrivateClient(ctx, tx, TelegramIdentity{TelegramID: identity.TelegramID, ChatID: identity.ChatID, DisplayName: identity.DisplayName})
+		blocked, err := rejectAutomaticImportRegistration(ctx, tx, botID, identity.TelegramID, update.ID)
+		if err != nil {
+			return err
+		}
+		if blocked {
+			return tx.Commit(ctx)
+		}
+		_, err = registerPrivateClient(ctx, tx, TelegramIdentity{TelegramID: identity.TelegramID, ChatID: identity.ChatID, DisplayName: identity.DisplayName})
 		if err != nil {
 			return fmt.Errorf("register Telegram client: %w", err)
 		}

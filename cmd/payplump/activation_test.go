@@ -33,9 +33,9 @@ func TestActivationCapabilitiesConstructOnlyForValidatedPilot(t *testing.T) {
 }
 
 func TestInvalidActivationFlagFailsBeforeDatabaseOrTelegram(t *testing.T) {
-	t.Setenv("TELEGRAM_ENABLED", "false")
-	t.Setenv("REGISTRATION_ENABLED", "false")
-	t.Setenv("PAYMENTS_ENABLED", "false")
+	t.Setenv("TELEGRAM_ENABLED", "true")
+	t.Setenv("REGISTRATION_ENABLED", "")
+	t.Setenv("PAYMENTS_ENABLED", "")
 	t.Setenv("ACTIVATION_ENABLED", "invalid")
 	t.Setenv("DATABASE_URL", "invalid-database-config")
 	e := run(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
@@ -44,7 +44,7 @@ func TestInvalidActivationFlagFailsBeforeDatabaseOrTelegram(t *testing.T) {
 	}
 }
 
-func TestActivationRequiresPaymentVerificationBeforeDatabase(t *testing.T) {
+func TestLegacyActivationLoaderRequiresPaymentVerification(t *testing.T) {
 	t.Setenv("TELEGRAM_ENABLED", "false")
 	t.Setenv("REGISTRATION_ENABLED", "false")
 	t.Setenv("PAYMENTS_ENABLED", "false")
@@ -54,7 +54,9 @@ func TestActivationRequiresPaymentVerificationBeforeDatabase(t *testing.T) {
 	for k, v := range map[string]string{"ACTIVATION_EXCLUSIVE_WRITER": "true", "ACTIVATION_ALLOWED_TELEGRAM_IDS": "101", "INVOICE_NINJA_BASE_URL": "https://billing.invalid", "INVOICE_NINJA_API_TOKEN": "synthetic-ninja-token", "INVOICE_NINJA_PRODUCT_ID": "product-A", "INVOICE_NINJA_TELEGRAM_ID_FIELD": "id_number", "INVOICE_NINJA_VERSION": "5.13.47", "INVOICE_NINJA_INCLUSIVE_TAXES": "false", "PAYMENTS_CURRENCY_ID": "1", "SUI_BASE_URL": "http://panel.invalid", "SUI_API_TOKEN": "synthetic-panel-token", "SUI_VERSION": "1.6.4", "SUI_INBOUND_IDS": "7", "REGISTRATION_EXCLUDED_TELEGRAM_IDS": ""} {
 		t.Setenv(k, v)
 	}
-	e := run(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	// The legacy loader remains independently safe; normal service startup
+	// rejects partial off-gates earlier as a configuration-migration error.
+	_, e := activation.ConfigFromEnv(false, false)
 	if e == nil || !strings.Contains(e.Error(), "requires Telegram and payment verification") {
 		t.Fatal("activation did not enforce dependencies")
 	}

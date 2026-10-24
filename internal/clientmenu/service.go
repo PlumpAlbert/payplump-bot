@@ -23,6 +23,7 @@ type Config struct {
 	PaymentPhone, PaymentBank, PaymentRecipient string
 	ExcludedTelegramIDs                         []int64
 	ConfigurationEnabled                        bool
+	ConfigurationManagedClients                 bool
 	ConfigurationPolicyRevision                 int64
 	ConfigurationPolicyHash                     [32]byte
 	ConfigurationAllowedTelegramIDs             []int64
@@ -48,7 +49,7 @@ func (c Config) Validate() error {
 		seen[id] = true
 	}
 	if c.ConfigurationEnabled {
-		if c.ConfigurationPolicyRevision < 1 || c.ConfigurationPolicyHash == ([32]byte{}) || len(c.ConfigurationAllowedTelegramIDs) < 1 || len(c.ConfigurationAllowedTelegramIDs) > 20 {
+		if c.ConfigurationPolicyRevision < 1 || c.ConfigurationPolicyHash == ([32]byte{}) || (!c.ConfigurationManagedClients && (len(c.ConfigurationAllowedTelegramIDs) < 1 || len(c.ConfigurationAllowedTelegramIDs) > 20)) {
 			return errors.New("invalid client menu configuration policy")
 		}
 		allowed := map[int64]bool{}
@@ -123,7 +124,7 @@ func (s *Service) Prepare(ctx context.Context, r Request, snapshot Snapshot) (Pr
 	case Configuration:
 		result.Text = ConfigurationUnavailableText
 		if s.cfg.ConfigurationEnabled {
-			if slices.Contains(s.cfg.ConfigurationAllowedTelegramIDs, r.TelegramID) && snapshot.Known && snapshot.State == "active" && snapshot.DesiredAccess && !snapshot.PaymentReview && snapshot.SUIID != "" && snapshot.RecurringID != "" {
+			if (s.cfg.ConfigurationManagedClients || slices.Contains(s.cfg.ConfigurationAllowedTelegramIDs, r.TelegramID)) && snapshot.Known && snapshot.State == "active" && snapshot.DesiredAccess && !snapshot.PaymentReview && snapshot.SUIID != "" && snapshot.RecurringID != "" {
 				result.ProtectedConfiguration = true
 				result.ConfigurationPolicyRevision = s.cfg.ConfigurationPolicyRevision
 				result.ConfigurationPolicyHash = s.cfg.ConfigurationPolicyHash

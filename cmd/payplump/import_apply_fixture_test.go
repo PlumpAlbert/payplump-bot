@@ -23,6 +23,7 @@ type importApplyFixture struct {
 	manifestPath, planHash string
 	now                    time.Time
 	GETs                   atomic.Int64
+	automatic              atomic.Bool
 	fault                  atomic.Int32 // 1: payment GET unavailable, 2: current invoice unpaid
 	server                 *httptest.Server
 }
@@ -106,8 +107,9 @@ func newImportApplyFixture(t *testing.T) *importApplyFixture {
 			write := func(v any) { w.Header().Set("Content-Type", "application/json"); _ = json.NewEncoder(w).Encode(v) }
 			switch r.URL.Path {
 			case "/ninja/api/v1/clients":
-				if r.URL.Query().Get("id_number") != "42" {
-					t.Errorf("unbounded customer query: %s", r.URL.RawQuery)
+				idNumber := r.URL.Query().Get("id_number")
+				if idNumber != "42" && !(f.automatic.Load() && idNumber == "") {
+					t.Errorf("unexpected customer query: %s", r.URL.RawQuery)
 				}
 				write(ninjaPage([]any{customer}))
 			case "/ninja/api/v1/recurring_invoices":
@@ -124,7 +126,7 @@ func newImportApplyFixture(t *testing.T) *importApplyFixture {
 					}
 					unpaid["status_id"], unpaid["balance"], unpaid["paid_to_date"] = "2", 100, 0
 					write(map[string]any{"data": unpaid})
-				} else if invoiceGets.Add(1)%3 == 1 {
+				} else if f.automatic.Load() || invoiceGets.Add(1)%3 == 1 {
 					write(map[string]any{"data": invoice})
 				} else {
 					write(map[string]any{"data": settlementInvoice})

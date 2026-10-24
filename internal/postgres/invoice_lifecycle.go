@@ -600,7 +600,7 @@ func invoiceLifecycleStageError(stage string, err error) error {
 }
 
 func lifecycleIDs(ids []int64) bool {
-	if len(ids) > 20 {
+	if len(ids) > 1000 {
 		return false
 	}
 	seen := make(map[int64]bool, len(ids))

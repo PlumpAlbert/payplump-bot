@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
@@ -59,6 +60,70 @@ func (r *ImportReader) FindCustomers(ctx context.Context, telegramID int64) ([]C
 			return Customer{}, "", ErrLookupIncomplete
 		}
 		return customer, customer.ID, nil
+	})
+}
+
+// ListCustomers returns the complete bounded customer inventory before any
+// actor filtering, so duplicate/archived bindings cannot be hidden by discovery.
+type CustomerInventoryReader struct{ *ImportReader }
+
+func NewCustomerInventoryReader(base, token string, timeout time.Duration, pageSize, maxPages int) (*CustomerInventoryReader, error) {
+	r, err := NewImportReader(base, token, timeout, pageSize, maxPages)
+	if err != nil {
+		return nil, err
+	}
+	return &CustomerInventoryReader{ImportReader: r}, nil
+}
+
+// ProductKey reads only the exact configured active product, using the same
+// unique, version-pinned JSON boundary as import inventories.
+func (r *CustomerInventoryReader) ProductKey(ctx context.Context, id string) (string, error) {
+	if !billingID(id) {
+		return "", ErrLookupIncomplete
+	}
+	var raw json.RawMessage
+	if err := getUniqueNinjaJSON(ctx, r.transport, []string{"api", "v1", "products", id}, nil, SupportedRecurringVersion, ErrWriteVersion, &raw); err != nil {
+		return "", err
+	}
+	var shape map[string]json.RawMessage
+	if json.Unmarshal(raw, &shape) != nil || len(shape["data"]) == 0 {
+		return "", ErrLookupIncomplete
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(shape["data"], &fields) != nil {
+		return "", ErrLookupIncomplete
+	}
+	for _, key := range []string{"id", "product_key", "is_deleted", "archived_at"} {
+		if len(fields[key]) == 0 || string(fields[key]) == "null" {
+			return "", ErrLookupIncomplete
+		}
+	}
+	var envelope struct {
+		Data *struct {
+			ID       string `json:"id"`
+			Key      string `json:"product_key"`
+			Deleted  *bool  `json:"is_deleted"`
+			Archived *int64 `json:"archived_at"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Data == nil {
+		return "", ErrLookupIncomplete
+	}
+	p := envelope.Data
+	if p.ID != id || p.Deleted == nil || *p.Deleted || p.Archived == nil || *p.Archived != 0 || p.Key == "" || !billingText(p.Key, 256) || strings.TrimSpace(p.Key) != p.Key || strings.ContainsAny(p.Key, "\r\n\t") {
+		return "", ErrLookupIncomplete
+	}
+	return p.Key, nil
+}
+
+func (r *CustomerInventoryReader) ListCustomers(ctx context.Context) ([]Customer, error) {
+	query := url.Values{"status": {billingStatuses}, "per_page": {strconv.Itoa(r.pageSize)}, "sort": {"id|asc"}}
+	return importInventoryPages(ctx, r.ImportReader, "clients", query, 1000, func(raw []byte) (Customer, string, error) {
+		var c Customer
+		if !uniqueNinjaJSON(raw) || !billingCustomerFields(raw) || json.Unmarshal(raw, &c) != nil || !billingID(c.ID) {
+			return Customer{}, "", ErrLookupIncomplete
+		}
+		return c, c.ID, nil
 	})
 }
 
