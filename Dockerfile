@@ -17,6 +17,7 @@ ARG VCS_REF=unknown
 LABEL org.opencontainers.image.source="https://github.com/PlumpAlbert/payplump-bot" \
       org.opencontainers.image.revision=$VCS_REF
 COPY --from=build /out/payplump /payplump
+USER 65532:65532
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
     CMD ["/payplump", "healthcheck"]

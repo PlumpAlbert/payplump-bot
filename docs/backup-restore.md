@@ -25,14 +25,26 @@ image digest, версии миграций и PG, hash архива, checkpoint
 
 ## Изолированная rehearsal
 
+В required CI PR #38 synthetic rehearsal завершилась успешно на disposable
+PostgreSQL 17: source preparation, default dry-run, явный restore в отдельную
+пустую loopback target DB, затем target verification. Report указал
+`synthetic=true`, `recovery_verified=true`, 41 таблицу и 5 sequences; read-only
+target report/snapshot после проверки не изменились. Приложение не запускалось,
+провайдеры/Telegram/рабочая БД не затрагивались; приватные archive/manifest не
+публиковались. Это проверяет синтетический путь инструмента, но не реальные
+backup или восстановление. Архитектурные детали и CI history см. в
+[autonomous-work.md](autonomous-work.md).
+
 Использовать только доверенный, owner-produced PostgreSQL custom-format архив.
 Ни `pg_restore --list`, ни фильтрация объектов не делают произвольный архив
 безопасным: DDL и функции могут выполнять код. Не восстанавливать неизвестные
 или пользовательские SQL-архивы.
 
 `scripts/restore-check.sh` сначала запускать в dry-run (по умолчанию), затем
-только с явным `--apply` и разрешением владельца. Для apply нужен отдельный
-пустой target с loopback-доступом, отличающийся от source; не подключать
+только с явным `--apply` и разрешением владельца. CI rehearsal выполнила apply
+только в созданную job собственную пустую disposable target DB; это не разрешает
+локальный SQL runtime или применение к реальной базе. Для owner-run apply нужен
+отдельный пустой target с loopback-доступом, отличающийся от source; не подключать
 production source как target. Проверить режим файла, отсутствие symlink и
 private passfile. Не использовать обычную рабочую базу. В CI rehearsal
 использует отдельные source/target disposable PostgreSQL 17 DBs, создаваемые
@@ -75,7 +87,11 @@ durable-revoke effect/read permissions и продвинуть ревизию, �
 Пока не подтверждены владельцем: реальные внешние backup/export, доступность
 архивов/ключей, восстановление S-UI и Invoice Ninja, изолированный запуск
 реального приложения и проверка связей. Эти работы не выполнены и не должны
-отмечаться завершёнными по результатам синтетического CI. Смежные этапы идут
-строго в порядке: synthetic restore CI (12), release preparation без публикации
-(13), synthetic resource preparation и owner inputs (14). Никаких SSH, чтения
-real env, production GET/DB, публикации или deployment в рамках этого runbook.
+отмечаться завершёнными по результатам синтетического CI. Release preparation
+(13) реализована и независимо проверена; финальный re-review
+`43d6862f-9f7a-477` не нашёл доказуемых замечаний. Exact-HEAD required CI и PR
+#39 остаются pending; workflow не запускали, образ не собирали и не
+публиковали. Смежные этапы идут строго в порядке: synthetic restore CI (12),
+release preparation без публикации (13), synthetic resource preparation и
+owner inputs (14). Никаких SSH, чтения real env, production GET/DB, публикации
+или deployment в рамках этого runbook.

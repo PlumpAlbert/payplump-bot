@@ -362,33 +362,33 @@ Live-проверки и реальные импорты не выполняют
 
 ## 12. Резервное копирование и восстановление
 
-Read-only recovery report, `restore-check.sh` и runbook подготовлены. Stage 12
-CI-only rehearsal code/local checks/full review завершены; SQL runtime, exact
-CI/PR #38 и реальные backup/restore ещё не выполнены. Внешний recovery остаётся
-отдельным owner gate.
+Read-only recovery report, `restore-check.sh` и runbook подготовлены. CI-only
+rehearsal выполнена на disposable PostgreSQL 17; реальные backup/restore и
+внешний экспорт остаются отдельным owner gate.
 
-- [x] Добавить read-only recovery report, guarded restore helper и документацию; скрипты проверяются безопасно.
-- [x] Подготовить owner-gated runbook; он не подтверждает наличие backup/restore.
-- [ ] Проверить SQL/Docker rehearsal runtime в required CI на disposable PostgreSQL 17; локально запрещено. Код готов; full review `9b8a652d-7b32-488` проверил финальный patch `/tmp/payplump-restore-rehearsal-review-fixed.patch` (925 строк), подтвердил исправления и завершился с нулём итоговых findings. В review исправлен P2: schema digest теперь включает trigger enabled state и column `attgenerated`/`attidentity`; source-only rollback probe в source-only read-write транзакции временно отключает триггер `verified_import_origin_immutable` (не удаляет и не сбрасывает его); затем откат подтверждается полным baseline hash/snapshot. Parent normal/race/vet/CGO0 build/module/gofmt/diff/sh -n/operator checks и PG compile-only прошли. Operator-helper log: 13 tests total, 12 passed и один существующий Docker-dependent test skipped; два новых negative-test functions прошли с fake-Docker marker, но сам fake Docker никогда не вызывался. PR #38 открыт на HEAD `3c1390d95bc85d142264fe8313cb3aa10b8fb692`, CI запускается; exact result и SQL/Docker restore runtime пока не подтверждены.
+- [x] Добавить read-only recovery report, guarded restore helper и owner-gated runbook; наличие реальных backup этим не подтверждается.
+- [x] Проверить restore rehearsal в required CI на disposable PostgreSQL 17. PR #38 влит в base `15210d3ceac191dc467046a8be0d2cd6807265d7`; exact final HEAD `fec675eecfbf6367c2ab0c4722955058b4799ce6` прошёл третий required CI `40052967054` со всеми тремя jobs: fast, full PG17/race/smoke/Docker и отдельный фактический restore rehearsal. Restore прошёл `TestRestoreRehearsalPrepareSource`, `restore-check.sh` default dry-run, явный `--apply` в собственную пустую loopback target DB и `TestRestoreRehearsalVerifyTarget`; safe report synthetic/recovery_verified, 41 tables, 5 sequences. Report и read-only target snapshot после проверки не изменились. Приложение после restore не запускалось; source/working DB, providers и Telegram не затрагивались. Архивы/manifest не загружались; в CI log попали только safe hash/counts, приватные файлы и созданная тестовая DB очищены, job завершился 0. Предыдущие CI runs: `40051659078` остановился до dump из-за некорректного overdue fixture; `40052328493` прошёл HoldOverdue setup/journal, но `TestRestoreRehearsalPrepareSource` завершился FAIL на assertion `UnresolvedKnownReceipts`: фактическое значение для completed operation было 0. До dump/restore в этом CI run не дошло. Исправили ожидание теста; финальный run сохранил проверки guards, source hash и данных.
 - [ ] Уточнить у владельца внешний механизм экспорта/резервирования Invoice Ninja; установленный механизм неизвестен и не предполагается.
 - [ ] Реальные backup/restore, запуск восстановленного приложения и live-сверка остаются отдельным owner gate.
-- [ ] Восстановить данные в отдельном окружении, безопасно настроить секреты и запустить приложение.
 - [ ] Сверить клиентов, ссылки подписок, оплаченные периоды и незавершённые операции; проверить отсутствие повторных счетов и продлений.
 - [ ] Сохранить проверенные инструкции восстановления и совместимого отката схемы / приложения.
 
 ## 13. Финальный образ, CI и выпуск
 
-Базовый Dockerfile уже существует. Release Compose template по digest и
-validator для конфигурации подготовлены и проверяются без pull/publish/deploy.
-Release manifest и ручной publish workflow ещё не реализованы.
+Release tooling и workflow подготовлены в текущей ветке; независимый review
+завершён без доказуемых замечаний. Exact-HEAD required CI и PR #39 ещё pending.
+Подробный контракт и owner gates описаны в [docs/release.md](docs/release.md).
+Это подготовка к будущему ручному выпуску, не подтверждение registry-артефакта,
+разрешение на публикацию или рабочего deployment.
 
-- [x] Подготовить release Compose template по digest и валидатор разрешённой конфигурации; проверить synthetic config без публикации или запуска.
-- [ ] Проверить образ с миграциями, сообщениями и инструкциями на архитектуре целевого VPS: nonroot, PostgreSQL, HTTPS, локальная таймзона / UTC, healthcheck.
-- [ ] Проверить SIGTERM при работе фоновых задач и рассылки, сохранение операций в БД и продолжение после запуска.
-- [ ] Дополнить CI контрактными и сквозными проверками всего платёжного цикла и сбоев; подтвердить успешные запуски.
-- [ ] Добавить release manifest и ручной opt-in build/publish workflow с привязкой к Git commit, неизменяемым тегом и сохранением digest / предыдущего рабочего образа; реальную публикацию не выполнять.
-- [ ] Подготовить Compose для Komodo: готовый образ по digest и подключение к отдельной базе существующего PostgreSQL на другом сервере.
-- [ ] Проверить совместимость схемы и приложения при обновлении и откате, документировать процедуры и параметры окружения.
+- [x] Подготовить digest-based release Compose template и валидатор synthetic config; публикация и запуск не выполнялись.
+- [x] Реализовать и независимо проверить release tooling: schema-only Environment gates плюс проверка фактического owner approval текущего run перед Docker и повторно перед registry credentials/push; publish разрешать только при `GITHUB_RUN_ATTEMPT=1` до Git/API-вызовов, retry требует нового run и нового review. Review A завершён с нулём доказуемых замечаний; review B обнаружил P2 о привязке workflow/job, исправление повторно проверено review `43d6862f-9f7a-477` с нулём замечаний. Публичный REST/GraphQL не раскрывает `can_admins_bypass`; нельзя выдавать UI-настройку за API-проверку.
+- [ ] Дождаться required CI на точном HEAD и открытия PR #39 родителем; до этого этап 13 не завершён.
+- [ ] Проверить образ и сигналы на целевой VPS: architecture, ресурсы, PostgreSQL, HTTPS, timezone, healthcheck и SIGTERM. Архитектура/лимиты VPS неизвестны и требуют владельца.
+- [ ] Проверить интеграционные контракты и сквозные сценарии приложения в штатном CI; это не доказывает release workflow.
+- [ ] После review/CI и отдельного разрешения владельца выполнить только выбранный ручной workflow. Publish gate должен требовать точный reviewed main ancestor, exact green required CI, явное подтверждение, same-repo owner-provided previous digest, проверенную конфигурацию Environment и одобрение из actual current-run approval history; реальная публикация не выполнялась.
+- [ ] Подготовить и проверить deployment для Komodo после отдельного owner gate; никаких deployment/SSH в текущей работе.
+- [ ] Проверить совместимость схемы и приложения при обновлении/rollback, не предполагать наличие down migrations.
 
 ## 14. Измерение ресурсов и запуск
 

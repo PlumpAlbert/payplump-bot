@@ -1,7 +1,10 @@
 # payplump-bot
 
 Go-сервис для Telegram, Invoice Ninja и S-UI. Бизнес-правила и критерии
-приёмки находятся в [spec.md](spec.md).
+приёмки находятся в [spec.md](spec.md). Операторские инструкции: [резервное
+копирование и восстановление](docs/backup-restore.md), [подготовка выпуска](docs/release.md)
+(инструменты готовы и прошли review; exact-HEAD CI pending, выпуск не запускался)
+и [operator tools](docs/operator.md).
 
 Сейчас реализованы HTTP healthcheck, корректная остановка, PostgreSQL с
 встроенными миграциями, календарные правила и приём личного Telegram `/start`

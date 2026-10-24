@@ -198,25 +198,21 @@ edit migrations 001–009 or assume a newer binary can be rolled back across a
 schema migration. Compatibility and app rollback need an isolated rehearsal.
 No real backup, restore, or DB operation was run by the implementation agent.
 
-## Release template
+## Release preparation
 
-`compose.release.yaml` is a template only: supply `PAYPLUMP_IMAGE` as a
-registry-qualified immutable `@sha256:` digest, and remote PostgreSQL variables
-and a private PGPASSFILE via the deployment owner's secret mechanism. It does
-not create a PostgreSQL server, host networking, publish ports, or deploy.
-All feature flags, including future broadcast/lifecycle placeholders, are false.
-The image runs nonroot, read-only with dropped capabilities, no-new-privileges,
-log rotation, and sample memory/CPU values explicitly marked unmeasured.
-Run `scripts/validate-release-config.sh REGISTRY/IMAGE@sha256:DIGEST` to resolve
-Compose configuration with an explicit empty env file and validate its JSON
-structure. This checks the supplied resolved config, not remote secret ownership
-or host state. Compose file-backed secrets may ignore configured UID/mode: the
-host pgpass file must be readable by container UID 65532 (for example, mode 0600
-owned by that UID), or mapped through an owner-approved secret mechanism. The
-helper never changes ownership or permissions. No registry login, build
-publication, deployment, or workflow run is part of this change. A future release
-workflow must be workflow_dispatch only, with publication default-off,
-digest-pinned actions, and protected approval.
+`compose.release.yaml` remains a template: supply `PAYPLUMP_IMAGE` as an
+immutable `@sha256:` digest, remote PostgreSQL settings and a private PGPASSFILE
+through the deployment owner's secret mechanism. It does not create PostgreSQL,
+publish ports, or deploy. Flags are false; sample resource limits are unmeasured.
+The validator checks resolved Compose structure, not remote secrets or host state.
+File-backed Compose secrets may ignore UID/mode: pgpass must be readable by
+container UID 65532 or use an owner-approved secret mechanism. The helper does
+not change permissions. See [release.md](release.md) for the separate manual
+release workflow contract. Implementation and independent review are complete
+(A zero findings; B P2 fixed and confirmed by final re-review `43d6862f-9f7a-477`,
+zero findings); exact-HEAD required CI and PR #39 remain pending. No release
+workflow has been dispatched (including dry-run), no image has been built or
+published, and no deployment has occurred. Dispatch is forbidden in this task.
 
 ## Latest imported-effects and restore status
 
@@ -245,10 +241,11 @@ change, rolls back and verifies the full baseline snapshot. Target remains
 read-only. Parent normal/race/vet/CGO0/module/build/sh-n/operator checks and PG
 compile-only passed. Operator-helper log reports 13 tests total: 12 passed and
 one existing Docker-dependent test skipped. Both new negative-test functions
-passed using a fake-Docker marker; the fake Docker was never invoked. SQL/restore
-runtime remains unverified. PR #38 is open at HEAD
-`3c1390d95bc85d142264fe8313cb3aa10b8fb692`, CI is starting; exact result is
-pending. Real backup/export/restore and live validation remain owner-gated.
+passed using a fake-Docker marker; the fake Docker was never invoked. PR #38
+merged at base `15210d3ceac191dc467046a8be0d2cd6807265d7`; required CI
+`40052967054` and post-merge CI `40053518866` passed. The synthetic restore
+rehearsal ran in CI on disposable PostgreSQL 17. Real backup/export/restore and
+live validation remain owner-gated.
 
 ## Safe resource measurements
 
