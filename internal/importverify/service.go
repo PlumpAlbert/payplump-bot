@@ -51,6 +51,19 @@ type Policy struct {
 	EvidenceTTL                          time.Duration
 }
 
+// Fingerprint returns the stable hash of a validated policy's existing JSON encoding.
+func (p Policy) Fingerprint() (string, error) {
+	if err := p.Validate(); err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		return "", errors.New("could not encode import verification policy")
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func (p Policy) Validate() error {
 	if p.BotID <= 0 || p.PublicSubscriptionBase == "" || !validDigest(p.SourceScopeHash) || p.MaxInventoryRecords < 1 || p.MaxInventoryRecords > 1000 || p.NinjaVersion != invoiceninja.SupportedRecurringVersion || (p.SUIVersion != "1.6.4" && p.SUIVersion != "v1.6.4") || p.NativeCurrencyID == "" || p.NativeCurrencyCode == "" || p.ProductKey == "" || p.MaxRecords < 1 || p.MaxRecords > importplan.MaxRecords || p.MaxPages < 1 || p.MaxPages > 100 || p.MaxHistoricalAnchors < 1 || p.MaxHistoricalAnchors > 20 || p.EvidenceTTL <= 0 || p.EvidenceTTL > 15*time.Minute {
 		return errors.New("invalid import verification policy")
@@ -241,9 +254,10 @@ func (s *Service) Verify(ctx context.Context, plan importplan.Plan, expectedHash
 	calendarToday := localCalendarDate(now)
 	verifiedAt := now.UTC()
 	reportEvidence := make([]PrivateEvidence, 0)
-	policyBytes, _ := json.Marshal(s.policy)
-	ph := sha256.Sum256(policyBytes)
-	policyHash := hex.EncodeToString(ph[:])
+	policyHash, err := s.policy.Fingerprint()
+	if err != nil {
+		return result, nil, err
+	}
 	for _, candidate := range plan.Candidates {
 		if err := ctx.Err(); err != nil {
 			return Result{}, nil, err

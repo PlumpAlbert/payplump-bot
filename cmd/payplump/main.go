@@ -173,6 +173,10 @@ func run(logger *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	importedRuntimeConfig, err := loadImportedRuntimeConfig(os.Getenv, telegramConfig.Enabled, paymentConfig.Enabled)
+	if err != nil {
+		return err
+	}
 	var deliveryConfig outbox.Config
 	if telegramConfig.Enabled {
 		deliveryConfig, err = outbox.ConfigFromEnv()
@@ -202,6 +206,9 @@ func run(logger *slog.Logger, args []string) error {
 		}
 	}
 	if err := fenceConfigurationStartup(startupCtx, store, configurationConfig); err != nil {
+		return err
+	}
+	if err := fenceImportedRuntimeStartup(startupCtx, store, importedRuntimeConfig); err != nil {
 		return err
 	}
 	cancelStartup()
@@ -252,6 +259,9 @@ func run(logger *slog.Logger, args []string) error {
 				}
 			}
 			if err := store.InstallConfigurationPolicy(ctx, botID, configurationConfig.Policy()); err != nil {
+				return err
+			}
+			if err := installImportedRuntimePermission(ctx, store, botID, importedRuntimeConfig); err != nil {
 				return err
 			}
 			if paymentEndpoint != nil {

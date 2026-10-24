@@ -172,7 +172,7 @@ rollout остаётся закрыт до отключений/просрочк
 
 ## Imported-origin delivery status
 
-11b.7.1 original-active-baseline protected delivery merged as PR #33 at `4a6522d1b881ef031ef580c67486406237ecf004`. Exact final HEAD `e2ca6863aa785681433932f3a9caf82a0d46319b` passed required CI `40035675235` (all three jobs, including PG17 integration/race and smoke/Docker); post-merge main CI `40036327450` succeeded. All three imported-configuration SQL workflows passed runtime. Scope is only the ORIGINAL ACTIVE imported baseline: current invoice equals immutable origin current invoice and paid anchor; require current normal proof, strictly future UTC date, static binding/inbounds, legacy price/notes, source-scope/public-base GET fences, legitimate immutable origin FK/mode and current configuration/admission/runtime revisions. `first_invoice_id` remains SQL NULL; no fake OWN history; OWN first/renewal paths stay unchanged. GET-only provider reads do not require billing-effects permission; configuration policy separately gates secret Telegram delivery. No auto-enable; preserve final checks, in-memory URL assembly and per-chat unknown-send barrier.
+11b.7.1 original-active-baseline protected delivery merged as PR #33 at `4a6522d1b881ef031ef580c67486406237ecf004`. Exact final HEAD `e2ca6863aa785681433932f3a9caf82a0d46319b` passed required CI `40035675235` (all three jobs, including PG17 integration/race and smoke/Docker); post-merge main CI `40036327450` succeeded. All three imported-configuration SQL workflows passed runtime. Scope is only the ORIGINAL ACTIVE imported baseline: current invoice equals immutable origin current invoice and paid anchor; require current normal proof, strictly future UTC date, static binding/inbounds, legacy price/notes, source-scope/public-base GET fences, legitimate immutable origin FK/mode and current configuration/admission/runtime revisions. `first_invoice_id` remains SQL NULL; no fake OWN history; OWN first/renewal paths stay unchanged. GET-only provider reads do not require billing-effects permission; configuration policy separately gates secret Telegram delivery. No auto-enable; preserve final checks, in-memory URL assembly and per-chat unknown-send barrier. The separate imported read-runtime permission implemented in 11b.9 does not grant this configuration-delivery policy or release its per-chat barrier. Runtime enablement alone is never authorization to send a secret URL.
 
 Independent review `34c46fce-9abc-42a` fixed two P2 findings (currency-policy drift and test-worker bot scope); final P1/P2/P3 findings were zero. The CI SQL workflows passed runtime for GET-to-protected delivery/guard release, public-base denial before GET, changed-current proof sticky review 2007 after GET, runtime permission ABA denial, and unknown-send 503 with durable permanent chat barrier across revocation/new request/restart. This is synthetic CI evidence, not live consumer readiness.
 
@@ -190,8 +190,12 @@ passed runtime: `TestCompletedImportedRenewalAllowsProtectedConfiguration`,
 `TestCompletedImportedRenewalStaleConfigurationRevisionDenied`. Current proof
 and audit remain separate from immutable origin history. This synthetic CI result
 does not enable or authorize live protected delivery. Apply CLI production,
-unit and isolated PG test code is complete; parent local checks and independent
-review `67ca1346-a4f9-49c` (zero proven behavior/design findings) passed. SQL
-runtime, exact-HEAD CI and PR #35 remain pending; later default-off startup/runtime
-wiring also remains pending. No live provider, Telegram, payment, working
-database, publish or deployment result is claimed.
+unit and isolated PG test code is delivered in PR #35; exact-head required CI
+`40044946187` and post-merge CI `40045550655` passed, including both real CLI
+PostgreSQL workflows. This does not authorize live protected delivery. Separate
+11b.9 startup/runtime-permission implementation and tests are complete and
+passed local checks plus independent exact-patch review `164166cb-25b2-465`
+(zero proven behavior/design findings). Its PostgreSQL SQL runtime, exact-head
+CI, PR #36 and merge remain pending; runtime enablement still does not enable
+protected configuration delivery. No live provider, Telegram, payment, working database,
+publish or deployment result is claimed.
