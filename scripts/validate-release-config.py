@@ -1,19 +1,33 @@
 #!/usr/bin/env python3
-"""Conservative checks over Docker Compose's resolved JSON configuration."""
+"""Conservative checks over Docker Compose's no-env-resolution JSON output."""
 import json
+import os
+from pathlib import Path
 import re
 import sys
 
 SAFE = "release compose configuration rejected"
-FLAGS = ("TELEGRAM_ENABLED", "REGISTRATION_ENABLED", "PAYMENTS_ENABLED", "ACTIVATION_ENABLED",
-         "CONFIGURATION_DELIVERY_ENABLED", "BROADCAST_ENABLED", "INVOICE_LIFECYCLE_ENABLED",
-         "INVOICE_OVERDUE_ENFORCEMENT_ENABLED", "INVOICE_RENEWAL_ENABLED",
-         "IMPORTED_RUNTIME_ENABLED", "IMPORTED_EFFECTS_ENABLED")
-FORBIDDEN_ENV = re.compile(r"(TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL|PGPASSWORD)", re.I)
+FORBIDDEN_ENV = re.compile(r"(TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL)", re.I)
+EMPTY_SECRET_ENV = {"DATABASE_URL", "PGPASSWORD"}
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def reject():
     raise ValueError(SAFE)
+
+
+def private_external_file(path, *, check_mode=False):
+    if not isinstance(path, str) or not os.path.isabs(path):
+        reject()
+    candidate = Path(path)
+    if candidate.is_symlink():
+        reject()
+    resolved = candidate.resolve(strict=True)
+    if resolved == ROOT or ROOT in resolved.parents or not resolved.is_file():
+        reject()
+    if check_mode and (resolved.stat().st_mode & 0o777) != 0o600:
+        reject()
+    return str(resolved)
 
 
 def validate(path, expected):
@@ -37,16 +51,21 @@ def validate(path, expected):
             reject()
         if s.get("cap_drop") != ["ALL"] or s.get("cap_add"):
             reject()
-        sec = s.get("security_opt", [])
-        if sec != ["no-new-privileges:true"]:
+        if s.get("security_opt") != ["no-new-privileges:true"]:
             reject()
-        if any(s.get(k) for k in ("ports", "devices", "device_cgroup_rules", "env_file", "volumes_from", "sysctls")) or any(s.get(k) is not None for k in ("entrypoint", "command", "build", "post_start", "pre_stop")) or s.get("userns_mode") == "host":
+        if any(s.get(k) for k in ("ports", "devices", "device_cgroup_rules", "volumes_from", "sysctls")) or any(s.get(k) is not None for k in ("entrypoint", "command", "build", "post_start", "pre_stop")) or s.get("userns_mode") == "host":
             reject()
+        files = s.get("env_file")
+        if not isinstance(files, list) or len(files) != 1 or not isinstance(files[0], dict) or files[0].get("required") is not True:
+            reject()
+        private_external_file(files[0].get("path"), check_mode=True)
         env = s.get("environment")
-        if not isinstance(env, dict) or any(env.get(k) != "false" for k in FLAGS):
+        if not isinstance(env, dict):
             reject()
-        allowed_env = set(FLAGS) | {"HTTP_ADDR", "DB_MAX_CONNS", "PGHOST", "PGPORT", "PGUSER", "PGDATABASE", "PGSSLMODE", "PGPASSFILE"}
-        if set(env) - allowed_env or any(FORBIDDEN_ENV.search(str(k)) for k in env):
+        allowed_env = {"HTTP_ADDR", "DB_MAX_CONNS", "PGHOST", "PGPORT", "PGUSER", "PGDATABASE", "PGSSLMODE", "PGPASSFILE"} | EMPTY_SECRET_ENV
+        if set(env) - allowed_env or any(FORBIDDEN_ENV.search(str(k)) and k not in EMPTY_SECRET_ENV for k in env):
+            reject()
+        if any(env.get(k) != "" for k in EMPTY_SECRET_ENV):
             reject()
         if not all(isinstance(env.get(k), str) and env[k] for k in ("PGHOST", "PGUSER", "PGDATABASE")):
             reject()
@@ -55,17 +74,16 @@ def validate(path, expected):
         if s.get("logging", {}).get("driver") != "json-file" or s["logging"].get("options", {}).get("max-size") != "10m" or s["logging"].get("options", {}).get("max-file") != "3":
             reject()
         healthcheck = s.get("healthcheck")
-        if (not isinstance(healthcheck, dict)
-                or healthcheck.get("test") != ["CMD", "/payplump", "healthcheck"]
-                or healthcheck.get("disable", False) is not False):
+        if not isinstance(healthcheck, dict) or healthcheck.get("test") != ["CMD", "/payplump", "healthcheck"] or healthcheck.get("disable", False) is not False:
             reject()
         if s.get("volumes") or cfg.get("volumes"):
             reject()
         secrets = s.get("secrets")
         if not isinstance(secrets, list) or len(secrets) != 1 or not (secrets[0] == "pgpass" or isinstance(secrets[0], dict) and secrets[0].get("source") == "pgpass" and secrets[0].get("target", "pgpass") in ("pgpass", "/run/secrets/pgpass")):
             reject()
-        if set(cfg.get("secrets", {})) != {"pgpass"} or not isinstance(cfg["secrets"]["pgpass"], dict) or not isinstance(cfg["secrets"]["pgpass"].get("file"), str):
+        if set(cfg.get("secrets", {})) != {"pgpass"} or not isinstance(cfg["secrets"]["pgpass"], dict):
             reject()
+        private_external_file(cfg["secrets"]["pgpass"].get("file"), check_mode=True)
     except Exception:
         reject()
 

@@ -1,5 +1,12 @@
 # Operator-only tools and release preparation
 
+For the current normal runtime configuration and automatic import behavior, see
+[configuration.md](configuration.md). Historical sections below describe the
+operator tools as they were introduced; they are not a recipe for normal startup.
+Do not set old `IMPORTED_*_ENABLED`, revision, allowlist, or EXCLUSIVE_WRITER
+values in the normal environment. Legacy origins whose trusted policy hash does
+not match the normal policy require an explicit verified migration.
+
 For backup and isolated restore, see [backup-restore.md](backup-restore.md), an owner-gated runbook template.
 
 These tools do not make the production Invoice Ninja or S-UI API calls. Never use

@@ -18,6 +18,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/billing"
 	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
+	"github.com/PlumpAlbert/payplump-bot/internal/managedscope"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 )
@@ -81,10 +82,12 @@ func newEnforcementWorker(store EnforcementStore, invoices EnforcementInvoiceRea
 }
 
 func (w *EnforcementWorker) Run(ctx context.Context) error {
-	allowed := enforcementEffectiveIDs(w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs)
 	for ctx.Err() == nil {
 		db, cancel := context.WithTimeout(ctx, enforcementDBTimeout)
-		_, err := w.store.SeedOverdueOperations(db, w.botID, allowed, w.now().In(time.Local).Format(time.DateOnly), w.cfg.MaxAccounts)
+		allowed, err := managedscope.Load(db, w.store, w.botID, w.cfg.ManagedClients, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs)
+		if err == nil {
+			_, err = w.store.SeedOverdueOperations(db, w.botID, allowed, w.now().In(time.Local).Format(time.DateOnly), w.cfg.MaxAccounts)
+		}
 		cancel()
 		if err != nil && ctx.Err() == nil {
 			w.logger.Warn("invoice overdue seed deferred")
@@ -156,7 +159,7 @@ func (w *EnforcementWorker) handle(service context.Context, claim queue.Operatio
 			w.hold(claim, s, ReviewOverdueUnknownWrite)
 			return
 		}
-		if code := validateEnforcementSnapshot(s, w.botID, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs, w.now()); code != 0 {
+		if code := validateEnforcementSnapshot(s, w.botID, managedscope.ForActor(s.TelegramID, w.cfg.ManagedClients, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs), w.cfg.ExcludedTelegramIDs, w.now()); code != 0 {
 			w.hold(claim, s, code)
 			return
 		}
@@ -519,7 +522,7 @@ func (w *EnforcementWorker) authorize(ctx context.Context, claim queue.Operation
 	}
 	db, cancel := context.WithTimeout(ctx, enforcementDBTimeout)
 	defer cancel()
-	ok, err := w.store.AuthorizeOverdueWrite(db, claim, w.botID, s, step, raw, w.now().In(time.Local).Format(time.DateOnly), enforcementEffectiveIDs(w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs))
+	ok, err := w.store.AuthorizeOverdueWrite(db, claim, w.botID, s, step, raw, w.now().In(time.Local).Format(time.DateOnly), managedscope.ForActor(s.TelegramID, w.cfg.ManagedClients, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs))
 	if err != nil {
 		return err
 	}

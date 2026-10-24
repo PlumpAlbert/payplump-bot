@@ -1,5 +1,10 @@
 # Verified import admission foundation (11b.1)
 
+Historical implementation contract. Normal startup now uses bounded automatic
+import; manual admission tooling is not required for ordinary service. See
+[current configuration](configuration.md) for the shared policy and the
+explicit migration limitation for legacy origins.
+
 This slice adds a fresh-verification preparation type and a PostgreSQL-only
 admission store API. It is not wired to a CLI, source-provider constructor, or
 runtime consumer. The policy table is default-disabled. Callers must configure

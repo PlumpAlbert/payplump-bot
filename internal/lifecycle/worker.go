@@ -19,6 +19,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
+	"github.com/PlumpAlbert/payplump-bot/internal/managedscope"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 )
 
@@ -61,15 +62,12 @@ func New(store Store, reader Reader, botID int64, admins []int64, cfg Config, lo
 }
 
 func (w *Worker) Run(ctx context.Context) error {
-	allowed := make([]int64, 0, len(w.cfg.AllowedTelegramIDs))
-	for _, id := range w.cfg.AllowedTelegramIDs {
-		if !slices.Contains(w.cfg.ExcludedTelegramIDs, id) {
-			allowed = append(allowed, id)
-		}
-	}
 	for ctx.Err() == nil {
 		db, cancel := context.WithTimeout(ctx, databaseTimeout)
-		_, err := w.store.SeedInvoiceLifecycleChecks(db, w.botID, allowed, w.cfg.MaxAccounts)
+		allowed, err := managedscope.Load(db, w.store, w.botID, w.cfg.ManagedClients, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs)
+		if err == nil {
+			_, err = w.store.SeedInvoiceLifecycleChecks(db, w.botID, allowed, w.cfg.MaxAccounts)
+		}
 		cancel()
 		if err != nil && ctx.Err() == nil {
 			w.logger.Warn("invoice lifecycle seed deferred")
@@ -214,7 +212,7 @@ func (w *Worker) validateSnapshot(s Snapshot) int {
 	if s.CurrentInvoiceID != s.FirstInvoiceID && !slices.Contains(s.SeenInvoiceIDs, s.CurrentInvoiceID) {
 		return ReviewAssociation
 	}
-	if !slices.Contains(w.cfg.AllowedTelegramIDs, s.TelegramID) || slices.Contains(w.cfg.ExcludedTelegramIDs, s.TelegramID) {
+	if !managedscope.Allows(s.TelegramID, w.cfg.ManagedClients, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs) {
 		return ReviewExcluded
 	}
 	return 0

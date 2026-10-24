@@ -22,6 +22,18 @@ var (
 const broadcastPolicyLock = `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':payplump-broadcast-policy',0))`
 
 func (s *Store) InstallBroadcastPolicy(ctx context.Context, botID int64, p broadcast.Policy) error {
+	return s.installBroadcastPolicy(ctx, botID, &p, false)
+}
+
+func (s *Store) InstallServiceBroadcastPolicy(ctx context.Context, botID int64, policy *broadcast.Policy) error {
+	return s.installBroadcastPolicy(ctx, botID, policy, true)
+}
+
+func (s *Store) installBroadcastPolicy(ctx context.Context, botID int64, target *broadcast.Policy, automatic bool) error {
+	if target == nil {
+		return ErrStalePolicy
+	}
+	p := *target
 	if botID <= 0 || p.Validate() != nil {
 		return ErrStalePolicy
 	}
@@ -42,6 +54,13 @@ func (s *Store) InstallBroadcastPolicy(ctx context.Context, botID int64, p broad
 	old, found, e := loadBroadcastPolicy(ctx, tx, botID)
 	if e != nil {
 		return errors.New("broadcast policy storage unavailable")
+	}
+	if automatic {
+		p.Revision, e = servicePolicyRevision(found, old.Enabled, old.Revision, p.Hash == old.Hash)
+		if e != nil {
+			return e
+		}
+		*target = p
 	}
 	if found && !p.Enabled {
 		if !old.Enabled {

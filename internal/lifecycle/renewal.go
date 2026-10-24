@@ -18,6 +18,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/billing"
 	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
+	"github.com/PlumpAlbert/payplump-bot/internal/managedscope"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
@@ -99,10 +100,12 @@ func validPaymentCurrency(s string) bool {
 }
 
 func (w *RenewalWorker) Run(ctx context.Context) error {
-	allowed := enforcementEffectiveIDs(w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs)
 	for ctx.Err() == nil {
 		db, cancel := context.WithTimeout(ctx, renewalDBTimeout)
-		_, err := w.store.SeedRenewalOperations(db, w.botID, allowed, w.cfg.MaxAccounts)
+		allowed, err := managedscope.Load(db, w.store, w.botID, w.cfg.ManagedClients, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs)
+		if err == nil {
+			_, err = w.store.SeedRenewalOperations(db, w.botID, allowed, w.cfg.MaxAccounts)
+		}
 		cancel()
 		if err != nil && ctx.Err() == nil {
 			w.logger.Warn("paid renewal seed deferred")
@@ -155,7 +158,7 @@ func (w *RenewalWorker) handle(service context.Context, claim queue.Operation) {
 			}
 			return
 		}
-		if s.ClientID != claim.ClientID || s.BotID != w.botID || !validRenewalAssociation(s, w.botID, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs) {
+		if s.ClientID != claim.ClientID || s.BotID != w.botID || !validRenewalAssociation(s, w.botID, managedscope.ForActor(s.TelegramID, w.cfg.ManagedClients, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs), w.cfg.ExcludedTelegramIDs) {
 			w.review(claim, s, ReviewRenewalAssociation)
 			return
 		}
@@ -250,7 +253,7 @@ func (w *RenewalWorker) handle(service context.Context, claim queue.Operation) {
 				return
 			}
 			db, stop = context.WithTimeout(ctx, renewalDBTimeout)
-			err = w.store.FreezeRenewalPlan(db, claim, w.botID, s, plan, baseline, enforcementEffectiveIDs(w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs))
+			err = w.store.FreezeRenewalPlan(db, claim, w.botID, s, plan, baseline, managedscope.ForActor(s.TelegramID, w.cfg.ManagedClients, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs))
 			stop()
 			if err != nil {
 				if errors.Is(err, queue.ErrConflict) {
@@ -626,7 +629,7 @@ func (w *RenewalWorker) dispatch(ctx context.Context, claim queue.Operation, s R
 		}
 		db, cancel := context.WithTimeout(authCtx, renewalDBTimeout)
 		defer cancel()
-		ok, e := w.store.AuthorizeRenewalWrite(db, claim, w.botID, s, step, raw, w.now().In(time.Local).Format(time.DateOnly), enforcementEffectiveIDs(w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs))
+		ok, e := w.store.AuthorizeRenewalWrite(db, claim, w.botID, s, step, raw, w.now().In(time.Local).Format(time.DateOnly), managedscope.ForActor(s.TelegramID, w.cfg.ManagedClients, w.cfg.AllowedTelegramIDs, w.cfg.ExcludedTelegramIDs))
 		if e != nil {
 			return e
 		}

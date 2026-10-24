@@ -29,7 +29,7 @@ func configurationError(err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, sentinel := range []error{queue.ErrLeaseLost, queue.ErrConflict, configdelivery.ErrDenied, configdelivery.ErrAlreadyDispatched, configdelivery.ErrStalePolicy, context.Canceled, context.DeadlineExceeded} {
+	for _, sentinel := range []error{queue.ErrLeaseLost, queue.ErrConflict, configdelivery.ErrDenied, configdelivery.ErrAlreadyDispatched, configdelivery.ErrStalePolicy, ErrServicePolicyRevoked, context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, sentinel) {
 			return fmt.Errorf("protected configuration storage: %w", sentinel)
 		}
@@ -86,8 +86,20 @@ func (s *Store) DisableConfigurationPolicies(ctx context.Context) (err error) {
 	return tx.Commit(ctx)
 }
 
-func (s *Store) InstallConfigurationPolicy(ctx context.Context, botID int64, policy configdelivery.Policy) (err error) {
+func (s *Store) InstallConfigurationPolicy(ctx context.Context, botID int64, policy configdelivery.Policy) error {
+	return s.installConfigurationPolicy(ctx, botID, &policy, false)
+}
+
+func (s *Store) InstallServiceConfigurationPolicy(ctx context.Context, botID int64, policy *configdelivery.Policy) error {
+	return s.installConfigurationPolicy(ctx, botID, policy, true)
+}
+
+func (s *Store) installConfigurationPolicy(ctx context.Context, botID int64, target *configdelivery.Policy, automatic bool) (err error) {
 	defer func() { err = configurationError(err) }()
+	if target == nil {
+		return configdelivery.ErrStalePolicy
+	}
+	policy := *target
 	if botID <= 0 || (policy.Enabled && (policy.Revision < 1 || policy.Hash == ([32]byte{}))) ||
 		(!policy.Enabled && (policy.Revision != 0 || policy.Hash != ([32]byte{}))) {
 		return configdelivery.ErrStalePolicy
@@ -109,6 +121,13 @@ func (s *Store) InstallConfigurationPolicy(ctx context.Context, botID int64, pol
 	stored, found, err := readConfigurationPolicy(ctx, tx, botID, true)
 	if err != nil {
 		return err
+	}
+	if automatic {
+		policy.Revision, err = servicePolicyRevision(found, stored.Enabled, stored.Revision, stored.Hash == policy.Hash)
+		if err != nil {
+			return err
+		}
+		*target = policy
 	}
 	next := policy
 	if found {

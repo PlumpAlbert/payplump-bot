@@ -38,6 +38,9 @@ const (
 )
 
 type Policy struct {
+	// Automatic discovery uses verified identities instead of a pilot allowlist.
+	// Omitted false preserves the historical manual-policy hash encoding.
+	Automatic                            bool `json:",omitempty"`
 	BotID                                int64
 	SourceScopeHash                      string
 	PilotIDs, ExcludedIDs                []string
@@ -263,7 +266,7 @@ func (s *Service) Verify(ctx context.Context, plan importplan.Plan, expectedHash
 			return Result{}, nil, err
 		}
 		r := candidate.Facts
-		if r.Excluded || slices.Contains(s.policy.ExcludedIDs, r.TelegramID) || !slices.Contains(s.policy.PilotIDs, r.TelegramID) {
+		if r.Excluded || r.TelegramID == strconv.FormatInt(s.policy.BotID, 10) || slices.Contains(s.policy.ExcludedIDs, r.TelegramID) || (!s.policy.Automatic && !slices.Contains(s.policy.PilotIDs, r.TelegramID)) {
 			result.Reasons[ReasonExcluded]++
 			continue
 		}

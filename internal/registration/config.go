@@ -29,8 +29,13 @@ type Config struct {
 }
 
 func ConfigFromEnv(telegramEnabled bool) (Config, error) {
+	return ConfigFromEnvironment(os.Getenv, telegramEnabled)
+}
+
+// ConfigFromEnvironment reads an explicit environment without mutating process globals.
+func ConfigFromEnvironment(getenv func(string) string, telegramEnabled bool) (Config, error) {
 	cfg := Config{TelegramEnabled: telegramEnabled, Workers: 1, PollInterval: time.Second, HTTPTimeout: 5 * time.Second, PageSize: 50, MaxPages: 20}
-	if raw := os.Getenv("REGISTRATION_ENABLED"); raw != "" {
+	if raw := getenv("REGISTRATION_ENABLED"); raw != "" {
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
 			return Config{}, errors.New("REGISTRATION_ENABLED must be a boolean")
@@ -40,22 +45,22 @@ func ConfigFromEnv(telegramEnabled bool) (Config, error) {
 	if !cfg.Enabled {
 		return cfg, nil
 	}
-	cfg.BaseURL, cfg.Token, cfg.ProductID = os.Getenv("INVOICE_NINJA_BASE_URL"), os.Getenv("INVOICE_NINJA_API_TOKEN"), os.Getenv("INVOICE_NINJA_PRODUCT_ID")
-	cfg.PaymentPhone, cfg.PaymentBank, cfg.PaymentRecipient = os.Getenv("PAYMENT_PHONE"), os.Getenv("PAYMENT_BANK"), os.Getenv("PAYMENT_RECIPIENT")
-	if os.Getenv("INVOICE_NINJA_TELEGRAM_ID_FIELD") != "id_number" {
+	cfg.BaseURL, cfg.Token, cfg.ProductID = getenv("INVOICE_NINJA_BASE_URL"), getenv("INVOICE_NINJA_API_TOKEN"), getenv("INVOICE_NINJA_PRODUCT_ID")
+	cfg.PaymentPhone, cfg.PaymentBank, cfg.PaymentRecipient = getenv("PAYMENT_PHONE"), getenv("PAYMENT_BANK"), getenv("PAYMENT_RECIPIENT")
+	if getenv("INVOICE_NINJA_TELEGRAM_ID_FIELD") != "id_number" {
 		return Config{}, errors.New("registration writes require INVOICE_NINJA_TELEGRAM_ID_FIELD=id_number")
 	}
-	if version := os.Getenv("INVOICE_NINJA_VERSION"); version != "" && strings.TrimPrefix(version, "v") != "5.13.47" {
+	if version := getenv("INVOICE_NINJA_VERSION"); version != "" && strings.TrimPrefix(version, "v") != "5.13.47" {
 		return Config{}, errors.New("registration writes support Invoice Ninja 5.13.47 only")
 	}
-	if raw := os.Getenv("INVOICE_NINJA_INCLUSIVE_TAXES"); raw != "" {
+	if raw := getenv("INVOICE_NINJA_INCLUSIVE_TAXES"); raw != "" {
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
 			return Config{}, errors.New("INVOICE_NINJA_INCLUSIVE_TAXES must be an explicitly chosen boolean")
 		}
 		cfg.InclusiveTaxes, cfg.TaxModeConfirmed = value, true
 	}
-	if raw := strings.TrimSpace(os.Getenv("REGISTRATION_EXCLUDED_TELEGRAM_IDS")); raw != "" {
+	if raw := strings.TrimSpace(getenv("REGISTRATION_EXCLUDED_TELEGRAM_IDS")); raw != "" {
 		for _, part := range strings.Split(raw, ",") {
 			id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
 			if err != nil || id <= 0 || strconv.FormatInt(id, 10) != strings.TrimSpace(part) {
@@ -70,7 +75,7 @@ func ConfigFromEnv(telegramEnabled bool) (Config, error) {
 	}{
 		{"REGISTRATION_WORKERS", &cfg.Workers}, {"INTEGRATION_PAGE_SIZE", &cfg.PageSize}, {"INTEGRATION_MAX_PAGES", &cfg.MaxPages},
 	} {
-		if raw := os.Getenv(item.name); raw != "" {
+		if raw := getenv(item.name); raw != "" {
 			value, err := strconv.Atoi(raw)
 			if err != nil {
 				return Config{}, errors.New(item.name + " must be an integer")
@@ -84,7 +89,7 @@ func ConfigFromEnv(telegramEnabled bool) (Config, error) {
 	}{
 		{"REGISTRATION_POLL_INTERVAL", &cfg.PollInterval}, {"REGISTRATION_HTTP_TIMEOUT", &cfg.HTTPTimeout},
 	} {
-		if raw := os.Getenv(item.name); raw != "" {
+		if raw := getenv(item.name); raw != "" {
 			value, err := time.ParseDuration(raw)
 			if err != nil {
 				return Config{}, errors.New(item.name + " must be a duration")

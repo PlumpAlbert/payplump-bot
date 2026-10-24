@@ -17,6 +17,8 @@ import (
 )
 
 type Config struct {
+	// ManagedClients selects only actors with bot-owned database provenance.
+	ManagedClients                                         bool
 	Enabled, TelegramEnabled, PaymentsEnabled              bool
 	ExclusiveWriter, InclusiveTaxes, TaxModeConfirmed      bool
 	BaseURL, Token, ProductID, CurrencyID, TelegramIDField string
@@ -30,28 +32,34 @@ func (Config) String() string   { return "[sensitive activation configuration]" 
 func (Config) GoString() string { return "[sensitive activation configuration]" }
 
 func ConfigFromEnv(telegramEnabled, paymentsEnabled bool) (Config, error) {
+	return ConfigFromEnvironment(os.Getenv, telegramEnabled, paymentsEnabled, false)
+}
+
+// ConfigFromEnvironment reads an explicit environment without mutating process globals.
+func ConfigFromEnvironment(getenv func(string) string, telegramEnabled, paymentsEnabled bool, managed bool) (Config, error) {
 	c := Config{TelegramEnabled: telegramEnabled, PaymentsEnabled: paymentsEnabled, Workers: 1, PageSize: 50, MaxPages: 20, MaxAccounts: 1000, PollInterval: time.Second, HTTPTimeout: 5 * time.Second}
-	if raw := os.Getenv("ACTIVATION_ENABLED"); raw != "" {
+	if raw := getenv("ACTIVATION_ENABLED"); raw != "" {
 		v, e := strconv.ParseBool(raw)
 		if e != nil {
 			return Config{}, errors.New("ACTIVATION_ENABLED must be a boolean")
 		}
 		c.Enabled = v
 	}
+	c.ManagedClients = managed
 	if !c.Enabled {
 		return c, nil
 	}
-	c.BaseURL, c.Token, c.ProductID = os.Getenv("INVOICE_NINJA_BASE_URL"), os.Getenv("INVOICE_NINJA_API_TOKEN"), os.Getenv("INVOICE_NINJA_PRODUCT_ID")
-	c.CurrencyID, c.TelegramIDField = os.Getenv("PAYMENTS_CURRENCY_ID"), os.Getenv("INVOICE_NINJA_TELEGRAM_ID_FIELD")
-	c.SUIBaseURL, c.SUIToken, c.SUIVersion = os.Getenv("SUI_BASE_URL"), os.Getenv("SUI_API_TOKEN"), os.Getenv("SUI_VERSION")
-	if version := os.Getenv("INVOICE_NINJA_VERSION"); version != "" && strings.TrimPrefix(version, "v") != invoiceninja.SupportedRecurringVersion {
+	c.BaseURL, c.Token, c.ProductID = getenv("INVOICE_NINJA_BASE_URL"), getenv("INVOICE_NINJA_API_TOKEN"), getenv("INVOICE_NINJA_PRODUCT_ID")
+	c.CurrencyID, c.TelegramIDField = getenv("PAYMENTS_CURRENCY_ID"), getenv("INVOICE_NINJA_TELEGRAM_ID_FIELD")
+	c.SUIBaseURL, c.SUIToken, c.SUIVersion = getenv("SUI_BASE_URL"), getenv("SUI_API_TOKEN"), getenv("SUI_VERSION")
+	if version := getenv("INVOICE_NINJA_VERSION"); version != "" && strings.TrimPrefix(version, "v") != invoiceninja.SupportedRecurringVersion {
 		return Config{}, errors.New("activation supports Invoice Ninja 5.13.47 only")
 	}
 	for _, item := range []struct {
 		key    string
 		target *bool
 	}{{"ACTIVATION_EXCLUSIVE_WRITER", &c.ExclusiveWriter}, {"INVOICE_NINJA_INCLUSIVE_TAXES", &c.InclusiveTaxes}} {
-		if raw := os.Getenv(item.key); raw != "" {
+		if raw := getenv(item.key); raw != "" {
 			v, e := strconv.ParseBool(raw)
 			if e != nil {
 				return Config{}, errors.New(item.key + " must be an explicitly chosen boolean")
@@ -66,7 +74,7 @@ func ConfigFromEnv(telegramEnabled, paymentsEnabled bool) (Config, error) {
 		key    string
 		target *int
 	}{{"ACTIVATION_WORKERS", &c.Workers}, {"INTEGRATION_PAGE_SIZE", &c.PageSize}, {"INTEGRATION_MAX_PAGES", &c.MaxPages}, {"ACTIVATION_MAX_SUI_ACCOUNTS", &c.MaxAccounts}} {
-		if raw := os.Getenv(item.key); raw != "" {
+		if raw := getenv(item.key); raw != "" {
 			v, e := strconv.Atoi(raw)
 			if e != nil {
 				return Config{}, errors.New(item.key + " must be an integer")
@@ -78,7 +86,7 @@ func ConfigFromEnv(telegramEnabled, paymentsEnabled bool) (Config, error) {
 		key    string
 		target *time.Duration
 	}{{"ACTIVATION_POLL_INTERVAL", &c.PollInterval}, {"ACTIVATION_HTTP_TIMEOUT", &c.HTTPTimeout}} {
-		if raw := os.Getenv(item.key); raw != "" {
+		if raw := getenv(item.key); raw != "" {
 			v, e := time.ParseDuration(raw)
 			if e != nil {
 				return Config{}, errors.New(item.key + " must be a duration")
@@ -90,8 +98,8 @@ func ConfigFromEnv(telegramEnabled, paymentsEnabled bool) (Config, error) {
 		key      string
 		target   *[]int64
 		required bool
-	}{{"SUI_INBOUND_IDS", &c.InboundIDs, true}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", &c.AllowedTelegramIDs, true}, {"REGISTRATION_EXCLUDED_TELEGRAM_IDS", &c.ExcludedTelegramIDs, false}} {
-		raw := strings.TrimSpace(os.Getenv(item.key))
+	}{{"SUI_INBOUND_IDS", &c.InboundIDs, true}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", &c.AllowedTelegramIDs, !managed}, {"REGISTRATION_EXCLUDED_TELEGRAM_IDS", &c.ExcludedTelegramIDs, false}} {
+		raw := strings.TrimSpace(getenv(item.key))
 		if raw == "" {
 			if item.required {
 				return Config{}, errors.New(item.key + " must explicitly list positive IDs")
@@ -133,7 +141,7 @@ func (c Config) Validate() error {
 	if c.PollInterval < 100*time.Millisecond || c.PollInterval > time.Minute || c.HTTPTimeout < time.Second || c.HTTPTimeout > 10*time.Second {
 		return errors.New("invalid activation timeouts")
 	}
-	if !idList(c.InboundIDs, 1, 100) || !idList(c.AllowedTelegramIDs, 1, 20) || !idList(c.ExcludedTelegramIDs, 0, 1000) {
+	if !idList(c.InboundIDs, 1, 100) || (!c.ManagedClients && !idList(c.AllowedTelegramIDs, 1, 20)) || !idList(c.ExcludedTelegramIDs, 0, 1000) {
 		return errors.New("invalid activation inbound, pilot allowlist or exclusion IDs")
 	}
 	if _, e := invoiceninja.NewRecurringClient(c.BaseURL, c.Token, c.HTTPTimeout, c.PageSize, c.MaxPages); e != nil {
@@ -179,6 +187,13 @@ func (c Config) PolicyHash() [32]byte {
 		BaseURL, SUIBaseURL, SUIVersion, CurrencyID, ProductID, Identity string
 		InclusiveTaxes                                                   bool
 		Inbounds, Allowed, Excluded                                      []int64
-	}{1, c.BaseURL, c.SUIBaseURL, c.SUIVersion, c.CurrencyID, c.ProductID, c.TelegramIDField, c.InclusiveTaxes, slices.Clone(c.InboundIDs), sorted(c.AllowedTelegramIDs), sorted(c.ExcludedTelegramIDs)})
+	}{policyVersion(c.ManagedClients), c.BaseURL, c.SUIBaseURL, c.SUIVersion, c.CurrencyID, c.ProductID, c.TelegramIDField, c.InclusiveTaxes, slices.Clone(c.InboundIDs), sorted(c.AllowedTelegramIDs), sorted(c.ExcludedTelegramIDs)})
 	return sha256.Sum256(raw)
+}
+
+func policyVersion(managed bool) int {
+	if managed {
+		return 2
+	}
+	return 1
 }

@@ -42,7 +42,7 @@ func prepareActivationBot(ctx context.Context, tx pgx.Tx, botID int64) error {
 
 func (s *Store) SeedActivations(ctx context.Context, botID int64, allowed []int64, policyHash [32]byte) (count int, err error) {
 	defer func() { err = activationStageError("seed activations", err) }()
-	if botID <= 0 || len(allowed) > 20 || policyHash == ([32]byte{}) {
+	if botID <= 0 || len(allowed) > 1000 || policyHash == ([32]byte{}) {
 		return 0, errors.New("invalid activation seed policy")
 	}
 	for _, id := range allowed {

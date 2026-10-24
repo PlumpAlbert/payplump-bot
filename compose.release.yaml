@@ -11,20 +11,15 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
+    env_file:
+      - path: ${PAYPLUMP_ENV_FILE:?set path to private runtime environment file outside the repository}
+        required: true
     environment:
       HTTP_ADDR: ":8080"
       DB_MAX_CONNS: "4"
-      TELEGRAM_ENABLED: "false"
-      REGISTRATION_ENABLED: "false"
-      PAYMENTS_ENABLED: "false"
-      ACTIVATION_ENABLED: "false"
-      CONFIGURATION_DELIVERY_ENABLED: "false"
-      BROADCAST_ENABLED: "false"
-      INVOICE_LIFECYCLE_ENABLED: "false"
-      INVOICE_OVERDUE_ENFORCEMENT_ENABLED: "false"
-      INVOICE_RENEWAL_ENABLED: "false"
-      IMPORTED_RUNTIME_ENABLED: "false"
-      IMPORTED_EFFECTS_ENABLED: "false"
+      # Prevent runtime env_file values from overriding external pgpass credentials.
+      DATABASE_URL: ""
+      PGPASSWORD: ""
       PGHOST: ${PGHOST:?set externally}
       PGPORT: ${PGPORT:-5432}
       PGUSER: ${PGUSER:?set externally}

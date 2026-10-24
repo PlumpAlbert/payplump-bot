@@ -19,6 +19,8 @@ import (
 )
 
 type Config struct {
+	// ManagedClients selects only actors with bot-owned database provenance.
+	ManagedClients                                        bool
 	Enabled, TelegramEnabled, PaymentsEnabled             bool
 	Revision                                              int64
 	BaseURL, Token, CurrencyID, TelegramIDField           string
@@ -31,33 +33,39 @@ type Config struct {
 func (Config) String() string   { return "[private configuration delivery policy]" }
 func (Config) GoString() string { return "[private configuration delivery policy]" }
 func ConfigFromEnv(telegramEnabled, paymentsEnabled bool) (Config, error) {
+	return ConfigFromEnvironment(os.Getenv, telegramEnabled, paymentsEnabled, false)
+}
+
+// ConfigFromEnvironment reads an explicit environment without mutating process globals.
+func ConfigFromEnvironment(getenv func(string) string, telegramEnabled, paymentsEnabled bool, managed bool) (Config, error) {
 	c := Config{TelegramEnabled: telegramEnabled, PaymentsEnabled: paymentsEnabled, HTTPTimeout: 3 * time.Second, PageSize: 50, MaxPages: 20}
-	if raw := os.Getenv("CONFIGURATION_DELIVERY_ENABLED"); raw != "" {
+	if raw := getenv("CONFIGURATION_DELIVERY_ENABLED"); raw != "" {
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
 			return Config{}, errors.New("CONFIGURATION_DELIVERY_ENABLED must be a boolean")
 		}
 		c.Enabled = value
 	}
+	c.ManagedClients = managed
 	if !c.Enabled {
 		return c, nil
 	}
-	raw := os.Getenv("CONFIGURATION_POLICY_REVISION")
+	raw := getenv("CONFIGURATION_POLICY_REVISION")
 	revision, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || revision < 1 || strconv.FormatInt(revision, 10) != raw {
 		return Config{}, errors.New("CONFIGURATION_POLICY_REVISION must explicitly be a positive canonical integer")
 	}
 	c.Revision = revision
-	c.BaseURL, c.Token, c.CurrencyID, c.TelegramIDField = os.Getenv("INVOICE_NINJA_BASE_URL"), os.Getenv("INVOICE_NINJA_API_TOKEN"), os.Getenv("PAYMENTS_CURRENCY_ID"), os.Getenv("INVOICE_NINJA_TELEGRAM_ID_FIELD")
-	c.SUIBaseURL, c.SUIToken, c.SUIVersion, c.SubscriptionBaseURL = os.Getenv("SUI_BASE_URL"), os.Getenv("SUI_API_TOKEN"), os.Getenv("SUI_VERSION"), os.Getenv("SUI_SUBSCRIPTION_BASE_URL")
-	if version := os.Getenv("INVOICE_NINJA_VERSION"); version != "" && strings.TrimPrefix(version, "v") != invoiceninja.SupportedSettlementVersion {
+	c.BaseURL, c.Token, c.CurrencyID, c.TelegramIDField = getenv("INVOICE_NINJA_BASE_URL"), getenv("INVOICE_NINJA_API_TOKEN"), getenv("PAYMENTS_CURRENCY_ID"), getenv("INVOICE_NINJA_TELEGRAM_ID_FIELD")
+	c.SUIBaseURL, c.SUIToken, c.SUIVersion, c.SubscriptionBaseURL = getenv("SUI_BASE_URL"), getenv("SUI_API_TOKEN"), getenv("SUI_VERSION"), getenv("SUI_SUBSCRIPTION_BASE_URL")
+	if version := getenv("INVOICE_NINJA_VERSION"); version != "" && strings.TrimPrefix(version, "v") != invoiceninja.SupportedSettlementVersion {
 		return Config{}, errors.New("configuration delivery supports Invoice Ninja 5.13.47 only")
 	}
 	for _, item := range []struct {
 		key    string
 		target *int
 	}{{"INTEGRATION_PAGE_SIZE", &c.PageSize}, {"INTEGRATION_MAX_PAGES", &c.MaxPages}} {
-		if raw := os.Getenv(item.key); raw != "" {
+		if raw := getenv(item.key); raw != "" {
 			v, e := strconv.Atoi(raw)
 			if e != nil {
 				return Config{}, errors.New(item.key + " must be an integer")
@@ -65,7 +73,7 @@ func ConfigFromEnv(telegramEnabled, paymentsEnabled bool) (Config, error) {
 			*item.target = v
 		}
 	}
-	if raw := os.Getenv("CONFIGURATION_HTTP_TIMEOUT"); raw != "" {
+	if raw := getenv("CONFIGURATION_HTTP_TIMEOUT"); raw != "" {
 		v, e := time.ParseDuration(raw)
 		if e != nil {
 			return Config{}, errors.New("CONFIGURATION_HTTP_TIMEOUT must be a duration")
@@ -76,8 +84,8 @@ func ConfigFromEnv(telegramEnabled, paymentsEnabled bool) (Config, error) {
 		key      string
 		target   *[]int64
 		required bool
-	}{{"ACTIVATION_ALLOWED_TELEGRAM_IDS", &c.AllowedTelegramIDs, true}, {"REGISTRATION_EXCLUDED_TELEGRAM_IDS", &c.ExcludedTelegramIDs, false}} {
-		raw := strings.TrimSpace(os.Getenv(item.key))
+	}{{"ACTIVATION_ALLOWED_TELEGRAM_IDS", &c.AllowedTelegramIDs, !managed}, {"REGISTRATION_EXCLUDED_TELEGRAM_IDS", &c.ExcludedTelegramIDs, false}} {
+		raw := strings.TrimSpace(getenv(item.key))
 		if raw == "" {
 			if item.required {
 				return Config{}, errors.New("configuration delivery requires a private pilot allowlist")
@@ -102,7 +110,7 @@ func (c Config) Validate() error {
 	if !c.TelegramEnabled || !c.PaymentsEnabled {
 		return errors.New("configuration delivery requires Telegram and payment verification")
 	}
-	if c.Revision < 1 || c.TelegramIDField != "id_number" || !nativeCurrency(c.CurrencyID) || !ids(c.AllowedTelegramIDs, 1, 20) || !ids(c.ExcludedTelegramIDs, 0, 1000) {
+	if c.Revision < 1 || c.TelegramIDField != "id_number" || !nativeCurrency(c.CurrencyID) || (!c.ManagedClients && !ids(c.AllowedTelegramIDs, 1, 20)) || !ids(c.ExcludedTelegramIDs, 0, 1000) {
 		return errors.New("invalid configuration delivery policy, currency or actor scope")
 	}
 	for _, token := range []string{c.Token, c.SUIToken} {
@@ -167,11 +175,18 @@ func (c Config) Policy() Policy {
 		Version                                                                int
 		Ninja, SUI, VersionClaim, PublicBase, Currency, Identity, CalendarZone string
 		Allowed, Excluded                                                      []int64
-	}{2, c.BaseURL, c.SUIBaseURL, c.SUIVersion, c.SubscriptionBaseURL, c.CurrencyID, c.TelegramIDField, time.Local.String(), sorted(c.AllowedTelegramIDs), sorted(c.ExcludedTelegramIDs)})
+	}{policyVersion(c.ManagedClients), c.BaseURL, c.SUIBaseURL, c.SUIVersion, c.SubscriptionBaseURL, c.CurrencyID, c.TelegramIDField, time.Local.String(), sorted(c.AllowedTelegramIDs), sorted(c.ExcludedTelegramIDs)})
 	return Policy{Enabled: true, Revision: c.Revision, Hash: sha256.Sum256(raw)}
+}
+
+func policyVersion(managed bool) int {
+	if managed {
+		return 3
+	}
+	return 2
 }
 
 // Allows is a local scope check, not entitlement or dispatch authorization.
 func (c Config) Allows(actor int64) bool {
-	return c.Enabled && actor > 0 && slices.Contains(c.AllowedTelegramIDs, actor) && !slices.Contains(c.ExcludedTelegramIDs, actor)
+	return c.Enabled && actor > 0 && (c.ManagedClients || slices.Contains(c.AllowedTelegramIDs, actor)) && !slices.Contains(c.ExcludedTelegramIDs, actor)
 }

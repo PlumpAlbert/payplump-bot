@@ -65,10 +65,11 @@ jobs:
           set -euo pipefail
           unset PGPASSWORD
           private_file="$RUNNER_TEMP/payplump-release-synthetic.pgpass"
-          trap 'rm -f "$private_file"' EXIT
-          (umask 077; printf 'synthetic.invalid:5432:synthetic:synthetic:SYNTHETIC_ONLY\n' > "$private_file")
+          runtime_file="$RUNNER_TEMP/payplump-release-synthetic.env"
+          trap 'rm -f "$private_file" "$runtime_file"' EXIT
+          (umask 077; printf 'synthetic.invalid:5432:synthetic:synthetic:SYNTHETIC_ONLY\n' > "$private_file"; printf 'TELEGRAM_BOT_TOKEN=SYNTHETIC_ONLY\n' > "$runtime_file")
           digest=$(printf 'a%.0s' {1..64})
-          PGHOST=synthetic.invalid PGPORT=5432 PGUSER=synthetic PGDATABASE=synthetic PGSSLMODE=verify-full PGPASSFILE="$private_file" \
+          PGHOST=synthetic.invalid PGPORT=5432 PGUSER=synthetic PGDATABASE=synthetic PGSSLMODE=verify-full PGPASSFILE="$private_file" PAYPLUMP_ENV_FILE="$runtime_file" \
             scripts/validate-release-config.sh "ghcr.io/example/payplump@sha256:$digest"
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/payplump ./cmd/payplump
       - run: git diff --exit-code -- go.mod go.sum

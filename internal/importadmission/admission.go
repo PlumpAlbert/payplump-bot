@@ -154,6 +154,14 @@ func clonePlan(plan importplan.Plan) importplan.Plan {
 	return out
 }
 
+// VerificationFailure exposes only bounded static reason codes, never source
+// payloads or credentials. Callers can explain a rejected automatic candidate.
+type VerificationFailure struct{ Reasons map[string]int }
+
+func (VerificationFailure) Error() string {
+	return "fresh import verification did not verify the complete plan"
+}
+
 // Prepare performs fresh GET-only verification itself. No report or evidence
 // artifact is accepted as authority. Every plan record must verify atomically.
 func Prepare(ctx context.Context, service *importverify.Service, plan importplan.Plan, expectedHash string, revision int64, now time.Time) (PreparedPlan, error) {
@@ -165,7 +173,7 @@ func Prepare(ctx context.Context, service *importverify.Service, plan importplan
 	}
 	result, evidence, err := service.Verify(ctx, plan, expectedHash, now)
 	if err != nil || result.Verified != plan.Total || result.Manual != 0 || len(evidence) != plan.Total {
-		return PreparedPlan{}, errors.New("fresh import verification did not verify the complete plan")
+		return PreparedPlan{}, VerificationFailure{Reasons: result.Reasons}
 	}
 	p := PreparedPlan{planHash: plan.Hash, revision: revision, plan: clonePlan(plan), rows: make([]AdmissionRow, 0, len(evidence))}
 	for i, e := range evidence {
