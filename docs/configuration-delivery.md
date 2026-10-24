@@ -194,24 +194,24 @@ unit and isolated PG test code is delivered in PR #35; exact-head required CI
 `40044946187` and post-merge CI `40045550655` passed, including both real CLI
 PostgreSQL workflows. This does not authorize live protected delivery. Separate
 11b.9 read-runtime startup merged in PR #36 at
-`a5fd93b28f0c0fe78e9485ddbe169837af49544`; exact HEAD
+`a5fd93b28f0c0fe78e9485ddbe169837af49544b`; exact HEAD
 `277b37c12433f271ee72d60d486551644749de92` passed required CI `40046909184`
 and post-merge main CI `40047448373`. Its real PostgreSQL startup workflow
 passed; full review `164166cb-25b2-465` had zero proven behavior/design
 findings. Runtime enablement still does not enable protected configuration
 delivery or clear its per-chat barrier.
 
-11b.10 implementation and tests are ready; all three producers are done. Parent
-full normal unit/race/vet/CGO0 build/module verification/gofmt/diff passed
-(`/tmp/payplump-import-effects-{unit,race}.log`); tagged command+PostgreSQL
-compile-only passed. Independent full review `e72f63f9-cad9-4ed` covered the
-exact 827-line patch `/tmp/payplump-import-effects-review.patch` and related
-contracts with zero proven behavior/design findings. The new SQL workflow has
-not run; exact-HEAD CI, PR #37 and merge remain pending. Startup effects are a
-separate explicit permission from read runtime and configuration delivery; read
-enablement still does not authorize protected URL delivery or clear its chat
-barrier. Current PR #37 covers 13 paths (seven implementation/config paths for
-initial staging, no source fields/secrets, and these six docs). No live provider,
-Telegram, payment, working database, publish or deployment result is claimed.
-After PR #37, retain sequence 12 synthetic restore CI → 13 manual release
-preparation with publishing off → 14 synthetic measurements/owner live gates.
+11b.10 imported native-effects startup is delivered: PR #37 merged at
+`b33fac67a1e19c8a3da00b2d7d261b170e0f02e8`; exact final HEAD
+`9d93f649249f491ff70ec7a6c34af959b48fde3a` passed required CI `40048848558`,
+and post-merge main CI `40049317238` succeeded. The new
+`TestImportedEffectsStartupWorkflowRealPostgres` passed on disposable PostgreSQL
+17. This does not change this document's separate configuration-delivery gate:
+imported runtime/effects permission never authorizes protected URL delivery and
+never clears `configuration_chat_guards`. Provider construction makes no HTTP
+request but returns guarded native billing-mutator clients to ordinary
+consumers; separate protected-record/recurring/inventory/settings readers remain
+strict GET-only interfaces. No live provider, Telegram, payment, working
+ database, publish or deployment result is claimed. Next stages remain ordered:
+12 synthetic restore CI, 13 release preparation with publishing off, 14
+synthetic measurements and owner live gates.

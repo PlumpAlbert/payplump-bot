@@ -108,7 +108,7 @@ change Stage 1/2 default-off status, authorize live use, or mean imported runtim
 is wired at startup. The `import-apply` CLI is delivered in PR #35 and passed
 exact-head required CI `40044946187` and post-merge CI `40045550655`, including
 both PostgreSQL CLI workflows. The separate 11b.9 startup/read-runtime implementation merged in PR #36 at
-`a5fd93b28f0c0fe78e9485ddbe169837af49544`; exact code HEAD
+`a5fd93b28f0c0fe78e9485ddbe169837af49544b`; exact code HEAD
 `277b37c12433f271ee72d60d486551644749de92` passed required CI `40046909184`
 and post-merge main CI `40047448373`. Its PostgreSQL startup workflow passed;
 full review `164166cb-25b2-465` had zero proven behavior/design findings. No live
@@ -138,26 +138,27 @@ count stopping after completion, revision-1 read denial and explicit revision-3
 success, effects disabled at revision 2, admission enabled at revision 1,
 unchanged origin, and the full normal payment-confirmation proof. These assertions passed in the exact required CI run recorded above.
 
-## Current next slice: imported native effects startup (11b.10)
+## Imported effects startup delivered (11b.10)
 
-Implementation and tests are ready on `feat/import-runtime-effects`; all three
-producers are done. Parent full normal unit/race/vet/CGO0 build/module
-gofmt/diff passed (`/tmp/payplump-import-effects-{unit,race}.log`), and tagged
-command+PostgreSQL compile-only passed. Independent exact-patch review
-`e72f63f9-cad9-4ed` (`/tmp/payplump-import-effects-review.patch`, 827 lines)
-found zero proven behavior/design findings. New startup SQL runtime has not run;
-exact-HEAD CI and PR #37 remain pending. Effects require explicit current
-permission and read runtime; source-policy fingerprint is unchanged. The
-provider constructor is pure and requires exact source scope. With read runtime
-on and effects off, fresh-GET finalization of a known original receipt may still
-occur subject to existing authorization; new/incomplete native writes remain
-disabled. No new native mutation algorithm/workflow was added; previously
-verified native known/unknown workflows are not new startup-workflow evidence.
-Configuration delivery remains independently gated. PR #37 covers 13 paths
-(seven implementation/config paths for initial staging, no source fields or
-secrets, plus these six docs). After PR #37, retain order 12 synthetic restore
-CI → 13 manual release preparation (publish off) → 14 synthetic measurements
-and owner live gates.
+PR #37 merged at `b33fac67a1e19c8a3da00b2d7d261b170e0f02e8`; exact final HEAD
+`9d93f649249f491ff70ec7a6c34af959b48fde3a` passed required CI
+`40048848558`, including fast/race, disposable PostgreSQL 17, full native
+known/unknown workflows and Docker smoke. Post-merge main CI `40049317238`
+succeeded. `TestImportedEffectsStartupWorkflowRealPostgres` passed in CI.
+
+Effects use separate default-off `IMPORTED_EFFECTS_ENABLED` and explicit
+canonical `IMPORTED_EFFECTS_REVISION`; effects require matching enabled
+read-runtime. Permission grant makes no source GET or provider write and does
+not alter admission, source policy, immutable origin/current invoice/proof,
+first_invoice_id, global guard epoch/owner or configuration-delivery barriers.
+Provider construction is pure/no-HTTP but returns guarded native billing
+mutators to ordinary consumers, not GET-only clients. `ProtectedRecordReader`,
+`RecurringReader`, inventory and settings remain strict GET-only interfaces.
+Effects-off may allow authorized fresh-GET finalization of known original
+receipts, but denies new or incomplete native writes. Live rollout and owner
+verification/admission remain unperformed. Next stages: 12 synthetic isolated
+restore CI, then 13 release preparation (publish off), then 14 synthetic
+measurements and owner gates.
 
 ## Verification
 

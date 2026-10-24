@@ -1,5 +1,7 @@
 # Operator-only tools and release preparation
 
+For backup and isolated restore, see [backup-restore.md](backup-restore.md), an owner-gated runbook template.
+
 These tools do not make the production Invoice Ninja or S-UI API calls. Never use
 production data as an import manifest or restore target. All examples and tests
 must use synthetic identifiers. Live reconciliation, import admission, and
@@ -115,7 +117,7 @@ production guards. No live execution is authorized or claimed.
 build/module/gofmt/diff checks and tagged command+PostgreSQL compile-only passed.
 Independent review `164166cb-25b2-465` examined exact patch
 `/tmp/payplump-import-runtime-review.patch` (850 lines) plus related contracts;
-zero proven behavior/design findings. PR #36 merged at `a5fd93b28f0c0fe78e9485ddbe169837af49544`; exact code HEAD
+zero proven behavior/design findings. PR #36 merged at `a5fd93b28f0c0fe78e9485ddbe169837af49544b`; exact code HEAD
 `277b37c12433f271ee72d60d486551644749de92` passed required CI `40046909184`
 (all three jobs: fast, race, disposable PostgreSQL 17 and smoke/Docker), and
 post-merge main CI `40047448373` succeeded. `TestImportedRuntimeReadOnlyStartupWorkflowRealPostgres`
@@ -215,6 +217,35 @@ helper never changes ownership or permissions. No registry login, build
 publication, deployment, or workflow run is part of this change. A future release
 workflow must be workflow_dispatch only, with publication default-off,
 digest-pinned actions, and protected approval.
+
+## Latest imported-effects and restore status
+
+11b.10 merged in PR #37 at `b33fac67a1e19c8a3da00b2d7d261b170e0f02e8`;
+exact final HEAD `9d93f649249f491ff70ec7a6c34af959b48fde3a` passed required CI
+`40048848558`, and post-merge main CI `40049317238` succeeded. The disposable
+PostgreSQL 17 workflow `TestImportedEffectsStartupWorkflowRealPostgres` passed.
+This is synthetic CI evidence, not live readiness. Effects remain default-off;
+explicit canonical revision and enabled imported read-runtime are required.
+
+Provider construction is zero-HTTP but returns guarded native billing mutators
+to ordinary consumers, not GET-only clients. ProtectedRecordReader,
+RecurringReader, inventory and settings remain strict GET-only interfaces.
+Never reset/rearm native global guard/epoch or per-chat secret-delivery barrier.
+Real backup/export/restore and live application validation remain owner gates;
+Invoice Ninja export mechanics are unknown until owner confirmation. Stage 12
+synthetic restore CI does not satisfy them. Stage 12 code and local checks are
+complete. Full independent review `9b8a652d-7b32-488` checked final 925-line
+patch `/tmp/payplump-restore-rehearsal-review-fixed.patch`, verified the fix and
+source rollback probe, and reported zero final findings. Initial P2: schema
+digest omitted trigger enabled state and `attgenerated`/`attidentity`; test-only
+hashing was corrected, retaining logical active-column ordinals. The source-only
+probe transactionally removes `verified_import_origin_immutable`, confirms hash
+change, rolls back and verifies the full baseline snapshot. Target remains
+read-only. Parent normal/race/vet/CGO0/module/build/sh-n/operator checks and PG
+compile-only passed; 13 helper negative tests passed, one fake-Docker test
+skipped, Docker not invoked. SQL/restore runtime remains unverified; PR #38 and
+exact CI are pending. Real backup/export/restore and live validation remain
+owner-gated.
 
 ## Safe resource measurements
 

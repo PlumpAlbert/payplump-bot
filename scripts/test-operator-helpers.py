@@ -331,6 +331,73 @@ class Helpers(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(marker.exists(), "noncustom archive reached pg_restore")
 
+    def test_restore_rehearsal_requires_github_actions_before_docker(self):
+        with tempfile.TemporaryDirectory() as d:
+            bindir = Path(d) / "bin"; bindir.mkdir()
+            marker = Path(d) / "docker-called"
+            docker = bindir / "docker"
+            docker.write_text('#!/bin/sh\nprintf called >"$CALL_MARKER"\nexit 99\n')
+            docker.chmod(0o700)
+            script = str(ROOT / "scripts/restore-rehearsal-ci.sh")
+            for value in (None, "false"):
+                env = fake_env(PATH=str(bindir) + os.pathsep + os.defpath, CALL_MARKER=str(marker))
+                if value is not None:
+                    env["GITHUB_ACTIONS"] = value
+                result = subprocess.run(["sh", script], cwd=ROOT, env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(marker.exists(), "Docker was reached without GitHub Actions")
+                self.assertNotIn("synthetic-local-password", result.stdout + result.stderr)
+
+    def test_restore_rehearsal_rejects_invalid_preflight_metadata_before_docker(self):
+        with tempfile.TemporaryDirectory() as d:
+            bindir = Path(d) / "bin"; bindir.mkdir()
+            marker = Path(d) / "docker-called"
+            docker = bindir / "docker"
+            docker.write_text('#!/bin/sh\nprintf called >"$CALL_MARKER"\nexit 99\n')
+            docker.chmod(0o700)
+            base = {
+                "PATH": str(bindir) + os.pathsep + os.defpath,
+                "CALL_MARKER": str(marker),
+                "GITHUB_ACTIONS": "true",
+                "RESTORE_REHEARSAL_CONTAINER": "0123456789abcdef",
+                "GITHUB_RUN_ID": "12345",
+                "GITHUB_RUN_ATTEMPT": "1",
+                "PGHOST": "127.0.0.1",
+                "PGPORT": "15433",
+                "PGDATABASE": "workflow_test",
+                "PGUSER": "workflow_test",
+                "PGPASSWORD": "synthetic-local-password",
+                "PGSSLMODE": "disable",
+                "PGOPTIONS": "",
+                "DATABASE_URL": "",
+            }
+            invalid = [
+                ("RESTORE_REHEARSAL_CONTAINER", "not-a-container-id"),
+                ("GITHUB_RUN_ID", "0"), ("GITHUB_RUN_ID", "01"),
+                ("GITHUB_RUN_ID", "1;touch"), ("GITHUB_RUN_ID", "1" * 13),
+                ("GITHUB_RUN_ATTEMPT", "0"), ("GITHUB_RUN_ATTEMPT", "01"),
+                ("GITHUB_RUN_ATTEMPT", "$(id)"), ("GITHUB_RUN_ATTEMPT", "1" * 13),
+                ("PGHOST", "synthetic.invalid"), ("PGPORT", "5432"),
+                ("PGDATABASE", "production"), ("PGUSER", "other"),
+                ("PGPASSWORD", "not-the-synthetic-password"),
+                ("PGSSLMODE", "verify-full"), ("PGOPTIONS", "-c search_path=public"),
+                ("DATABASE_URL", "postgres://untrusted.invalid/live"),
+            ]
+            cases = [(name, value) for name, value in invalid]
+            cases.append(("PGOPTIONS", None))
+            for name, value in cases:
+                with self.subTest(name=name, value=value):
+                    env = dict(base)
+                    if value is None:
+                        env.pop(name)
+                    else:
+                        env[name] = value
+                    marker.unlink(missing_ok=True)
+                    result = subprocess.run(["sh", str(ROOT / "scripts/restore-rehearsal-ci.sh")], cwd=ROOT, env=env, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, name + " was accepted")
+                    self.assertFalse(marker.exists(), name + " reached Docker")
+                    self.assertNotIn("synthetic-local-password", result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

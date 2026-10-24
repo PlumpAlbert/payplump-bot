@@ -34,6 +34,12 @@ func configFixture(t *testing.T) (*Store, context.Context, int64, configdelivery
 	// request/lease/transport permissions retain their original deadlines.
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	t.Cleanup(cancel)
+	client, policy := seedConfigurationFixture(t, s, ctx)
+	return s, ctx, client, policy
+}
+
+func seedConfigurationFixture(t *testing.T, s *Store, ctx context.Context) (int64, configdelivery.Policy) {
+	t.Helper()
 	ids := seedActivationAccounts(t, s, ctx, 123, int(configActor), 1)
 	seedActivationBatch(t, s, ctx, 123, []int64{configActor}, 1)
 	op, snapshot := claimOneActivation(t, s, ctx, 123)
@@ -60,7 +66,7 @@ func configFixture(t *testing.T) (*Store, context.Context, int64, configdelivery
 	if err := s.FinishActivation(ctx, op.Lease, snapshot, activationToday, nil); err != nil {
 		t.Fatal(err)
 	}
-	return s, ctx, ids[0], configdelivery.Policy{Enabled: true, Revision: 5, Hash: sha256.Sum256([]byte("synthetic configuration policy"))}
+	return ids[0], configdelivery.Policy{Enabled: true, Revision: 5, Hash: sha256.Sum256([]byte("synthetic configuration policy"))}
 }
 func configExec(t *testing.T, s *Store, ctx context.Context, sql string, args ...any) {
 	t.Helper()
