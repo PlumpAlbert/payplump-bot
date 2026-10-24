@@ -3,8 +3,8 @@
 Go-сервис для Telegram, Invoice Ninja и S-UI. Бизнес-правила и критерии
 приёмки находятся в [spec.md](spec.md). Операторские инструкции: [резервное
 копирование и восстановление](docs/backup-restore.md), [подготовка выпуска](docs/release.md)
-(инструменты готовы и прошли review; exact-HEAD CI pending, выпуск не запускался)
-и [operator tools](docs/operator.md).
+(инструменты прошли review и required/post-merge CI; ручной workflow не запускался)
+и [operator tools](docs/operator.md). Подготовка измерений ресурсов: [docs/resource-measurement.md](docs/resource-measurement.md).
 
 Сейчас реализованы HTTP healthcheck, корректная остановка, PostgreSQL с
 встроенными миграциями, календарные правила и приём личного Telegram `/start`

@@ -87,11 +87,17 @@ durable-revoke effect/read permissions и продвинуть ревизию, �
 Пока не подтверждены владельцем: реальные внешние backup/export, доступность
 архивов/ключей, восстановление S-UI и Invoice Ninja, изолированный запуск
 реального приложения и проверка связей. Эти работы не выполнены и не должны
-отмечаться завершёнными по результатам синтетического CI. Release preparation
-(13) реализована и независимо проверена; финальный re-review
-`43d6862f-9f7a-477` не нашёл доказуемых замечаний. Exact-HEAD required CI и PR
-#39 остаются pending; workflow не запускали, образ не собирали и не
-публиковали. Смежные этапы идут строго в порядке: synthetic restore CI (12),
-release preparation без публикации (13), synthetic resource preparation и
-owner inputs (14). Никаких SSH, чтения real env, production GET/DB, публикации
+отмечаться завершёнными по результатам синтетического CI. Release preparation (13) реализована и независимо проверена; финальный
+re-review `43d6862f-9f7a-477` не нашёл доказуемых замечаний. PR #39 merged;
+точный code HEAD `8824bc1263184e0a3fa80893ab4a8e4458f5c9ee` прошёл required CI
+`40056489006`, merge base `0f1f1deb8dcd7d1bfec5e6d2bcac7c43a5b12d3d` прошёл
+post-merge CI `40057042166`. Manual release workflow не запускали; release image этим workflow не
+произведён. Обычный source CI build/smoke не является release artifact. Stage 14:
+Stage 14 bounded unit harness прошёл independent final review
+`1dd52647-2607-400` без findings и первый required PR #40 CI run `40059203387`
+(all three jobs). Artifact `12545794446` содержит четыре проверенных
+public-safe JSON; результаты см. в [resource-measurement.md](resource-measurement.md).
+Это runner unit evidence, не приложение/VPS. Owner measurements и operational
+gates остаются pending. Репозиторий публичный, artifact access наследует repo
+read access; retention не является ACL. Никаких SSH, чтения real env, production GET/DB, публикации
 или deployment в рамках этого runbook.

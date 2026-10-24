@@ -2,13 +2,16 @@
 
 ## Статус и границы
 
-Ветка `feat/manual-release-tooling` содержит подготовительные скрипты и
-`workflow_dispatch` workflow. PR #38 и synthetic restore rehearsal прошли.
-Release tooling реализовано и прошло независимое review: review A завершился
-без замечаний; review B выявил P2, исправление подтверждено финальным re-review
-`43d6862f-9f7a-477` без доказуемых замечаний. Exact-HEAD required CI и PR #39
-ещё pending. Workflow не запускался; образ не собирался и не публиковался,
-registry digest отсутствует. Подготовка не является разрешением на публикацию,
+Release tooling и `workflow_dispatch` workflow доставлены в PR #39. Review A
+завершился без замечаний; P2 из review B исправлен и подтверждён финальным
+re-review `43d6862f-9f7a-477` без доказуемых замечаний. PR #39 merged.
+Точный code HEAD `8824bc1263184e0a3fa80893ab4a8e4458f5c9ee` прошёл required CI
+`40056489006` (fast-checks, postgres-integration, test); merge base
+`0f1f1deb8dcd7d1bfec5e6d2bcac7c43a5b12d3d` прошёл post-merge main CI
+`40057042166` (3 required jobs). Это обычные source CI проверки, а не запуск
+release workflow. Manual workflow не запускался; release image этим workflow
+не собран и не опубликован, registry digest отсутствует. Обычный source CI
+собирал и запускал свои source/test images; это не release artifact. Подготовка не является разрешением на публикацию,
 развёртывание или доступ к VPS.
 
 [Release Compose](../compose.release.yaml) — шаблон отдельного будущего
@@ -42,7 +45,15 @@ SHA. Сборка использует отдельный source checkout выб
 workflow.
 
 Dry-run ветка не имеет package-write permission, не выполняет registry login и
-push. Предусмотрены локально собранный image и private artifact с manifest.
+push. Будущая artifact payload по workflow contract включает code image archive
+`image.tar` и manifest для выбранного SHA. Это не private artifact: read-only
+GitHub repository metadata подтвердили `isPrivate:false` для
+`PlumpAlbert/payplump-bot`;
+GitHub Actions artifact ACL наследует read access репозитория, и
+`upload-artifact` не предоставляет per-artifact private ACL. Seven-day retention
+ограничивает срок хранения, но не доступ. Сам release workflow, включая
+`dry-run`, никогда не исполнялся; ни archive, ни manifest этим workflow ещё не
+создавались и не загружались.
 Manifest фиксирует commit, migration filenames/SHA-256, PostgreSQL major 17,
 target platform/architecture, image labels, image user `65532:65532`,
 entrypoint/healthcheck, image ID и размер/SHA-256 локального Docker archive.
@@ -83,7 +94,7 @@ run ID и нового независимого owner approval. Перед Docke
 read-only историю approvals текущего run через
 `/repos/{owner}/{repo}/actions/runs/{run_id}/approvals`. Проверка повторяется
 непосредственно перед token login/push. Сохранённый intent не является
-источником авторизации.
+источником авторизации. Artifact retention не является access control.
 
 Approval response — массив записей с `state`, `user{id,login}`, `environments`
 (массив `{id,name}`) и `comment`; timestamp и гарантированного порядка нет.
@@ -105,28 +116,44 @@ ID или archive hash registry digest не заменяют. В dry-run
 
 ## Секреты и артефакты
 
-Intent — приватный файл mode 0600 только для текущего запуска; каждый preflight
-использует новый файл. Его сохранение или artifact upload не даёт права на
-последующую публикацию. Каждая проверка approval читает фактическую историю
+Intent — локальный файл mode 0600 только для текущего запуска; каждый preflight
+использует новый файл. Локальный mode 0600 не создаёт ACL для upload. Будущий
+workflow намеренно загружает code image archive `image.tar` и final manifest;
+в публичном репозитории они доступны читателям с repo read access. Image
+предназначен содержать только код, без environment/credentials; перед upload
+владелец должен проверить build context и payload, не полагаясь на локальные
+права. Не включать private intent/auth, секреты, backup или другие файлы,
+требующие приватной доставки. `upload-artifact` не предоставляет per-artifact
+private ACL, а семь дней retention не ограничивают доступ. Для private image
+distribution нужна отдельная одобренная private storage/ACL; текущий workflow
+такого режима не предоставляет. Manual release workflow, даже dry-run,
+никогда не запускался; никакие release image archive/manifest не создавались
+или не загружались. Будущий artifact contract `image.tar` + final manifest
+сохраняется. Каждая проверка approval читает фактическую историю
 текущего run. Local-build validation manifest и финальный post-push manifest
 имеют разные пути, чтобы исключить коллизию и отказ после успешного push.
 Registry credential передаётся через stdin, используется отдельный приватный
 Docker config и удаляется при завершении. Не помещать секреты в repository,
-manifest, логи или артефакты; не загружать image archive или registry credentials
-в общедоступное место. Dry-run artifact содержит локальный image archive, поэтому
-доступ и retention должны быть ограничены.
+manifest, логи или артефакты; registry credentials и любые private-only файлы
+нельзя включать в upload. Будущий dry-run artifact содержит code image archive
+(`image.tar`) и manifest, публичные для repo readers. Workflow не запускался,
+artifact не создан/не загружен.
 
 ## Что не подтверждено
 
 Родительские безопасные проверки кода (Go unit/race/vet, CGO=0 build,
-`go mod verify`, tagged PostgreSQL compile-only, gofmt и shell syntax) прошли;
-операторские проверки: 14 всего, 13 passed и один локальный Docker-dependent
-skip. Policy tests: 7 групп passed; fake-build tests: 7 passed. Это локальные
-проверки и не actual Docker runtime. Exact-HEAD required CI ещё pending.
-PR #38 synthetic restore CI не является доказательством работы release workflow.
-Сам manual release workflow запрещено dispatch-ить, включая dry-run, в рамках
-этого этапа. Не выполнялись Docker runtime, registry login/push, publication,
-deploy или SSH.
+`go mod verify`, tagged PostgreSQL compile-only, gofmt и shell syntax) и
+локальные operator/policy/fake-build проверки прошли на подготовительном
+изменении. Required CI `40056489006` и post-merge CI `40057042166` прошли на
+указанных выше точных revision. Обычный CI выполняет исходные проверки,
+включая Docker/smoke и PostgreSQL 17 restore rehearsal, но не строит/не
+публикует release artifact и не доказывает фактический запуск release workflow.
+PR #38 synthetic restore CI также не является доказательством release pipeline.
+Сам manual release workflow/build/runtime не выполнялись; dispatch запрещён,
+включая dry-run, в рамках этого этапа. Обычный source CI выполнял сборку и
+Docker/smoke проверки, что не подтверждает release artifact. Локально Docker
+runtime не запускался. Не выполнялись registry login/push, publication, deploy
+или SSH.
 
 Реальные registry size, target VPS architecture/ресурсы, health/signals в фоне,
 compatibility rollback, backup и живой цикл остаются непроверенными. Реальные

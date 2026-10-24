@@ -65,14 +65,10 @@ verification or managed admission has been performed.
 
 ## Historical checkpoint: import-apply before PR #35 merge (superseded below)
 
-The `payplump import-apply` CLI implementation, expanded unit tests/finite
-fixture, and isolated PostgreSQL workflows are ready for parent verification.
-Parent normal unit/race/vet/CGO0 build/module/gofmt/diff and command+PostgreSQL
-compile-only checks passed. Independent review `67ca1346-a4f9-49c` covered the
-full patch (four command files, main/CI and admission/source contracts) with
-zero proven behavior/design findings. PostgreSQL SQL runtime has NOT run, exact-
-HEAD CI is pending, and PR #35 is not open. This is not a live operator
-procedure. Do not run against real providers, manifests, or databases.
+This is a historical pre-merge snapshot only: implementation and local checks
+were ready, but PostgreSQL runtime/required CI/PR #35 delivery had not yet
+occurred at that time. Superseded by the delivered status immediately below;
+this remains no authorization for live providers, manifests, or databases.
 
 The contract is
 `payplump import-apply --file PRIVATE --expected-hash HASH --admission-revision N --apply [--enable-admission]`.
@@ -152,9 +148,9 @@ related durable-effects/source-scope/core contracts; zero proven behavior/design
 findings. The parent-fixed bot-mismatch test keeps the read row when effects are
 denied (counts `1,1,0`); bad-effects-revision uses valid read revision 7, reaches
 the effects-revision rejection and asserts no source GET. `.env.example` now
-clarifies admission versus read-runtime permission terms. New startup SQL runtime
-has not run; exact-HEAD CI and PR #37/merge are pending. Stage 11 and owner live
-gates remain incomplete.
+clarifies admission versus read-runtime permission terms. Historical pre-PR #37 checkpoint: new startup SQL runtime and exact-HEAD CI
+were pending at that snapshot. Superseded by the delivered PR #37 status below;
+Stage 11 owner live gates remain incomplete.
 
 Flags `IMPORTED_EFFECTS_ENABLED=false` / `IMPORTED_EFFECTS_REVISION=` are
 independent of source-policy fingerprint, admission, read-runtime and
@@ -163,11 +159,10 @@ construction requires exact source scope and makes no HTTP request. Read-enabled
 /effects-off may support fresh-GET completion of a known original receipt under
 existing authorization, not automatic writes or broader protected-reader
 capabilities. Existing native known/unknown mutation workflows are prior
-coverage; this slice adds no new native mutation workflow. PR #37 currently
-covers 13 paths (seven implementation/config paths for initial staging, no
-source fields/secrets, plus the six docs). After PR #37, next stages are strictly
-12 synthetic restore CI → 13 manual release preparation with publishing off →
-14 synthetic measurements and owner live gates. Do not skip 12.
+coverage; this slice added no new native mutation workflow. Historical PR #37
+scope was 13 paths (seven implementation/config paths, no source fields/secrets,
+plus six docs); PR #37 has since merged. The sequence proceeded through stages
+12–14; current delivery evidence is recorded in the later status sections.
 
 ## Backup and isolated restore check
 
@@ -210,9 +205,7 @@ container UID 65532 or use an owner-approved secret mechanism. The helper does
 not change permissions. See [release.md](release.md) for the separate manual
 release workflow contract. Implementation and independent review are complete
 (A zero findings; B P2 fixed and confirmed by final re-review `43d6862f-9f7a-477`,
-zero findings); exact-HEAD required CI and PR #39 remain pending. No release
-workflow has been dispatched (including dry-run), no image has been built or
-published, and no deployment has occurred. Dispatch is forbidden in this task.
+zero findings); PR #39 merged, exact code HEAD `8824bc1263184e0a3fa80893ab4a8e4458f5c9ee` passed required CI `40056489006`, and merge base `0f1f1deb8dcd7d1bfec5e6d2bcac7c43a5b12d3d` passed post-merge CI `40057042166`. These source checks do not execute the release workflow. No release workflow has been dispatched (including dry-run); no release image has been produced through that manual workflow, and no deployment has occurred. Ordinary source CI build/smoke images are not release artifacts. Dispatch is forbidden in this task.
 
 ## Latest imported-effects and restore status
 
@@ -249,13 +242,12 @@ live validation remain owner-gated.
 
 ## Safe resource measurements
 
-`scripts/measure-safe.py` is dry-run by default. With `--run`, it executes only
-an allowlist of Go unit-test packages, strips database/provider credential
-variables from the child environment, suppresses test output, and reports runner
-architecture, commit, workload, actual duration, child RSS/CPU when available,
-and cgroup memory only when exposed. Optional image file bytes are reported only
-for a file actually supplied; compressed registry size is explicitly unavailable
-unless measured independently. This does not measure VPS/business workloads,
-external services, or application credentials. Report measurements with runner,
-package selection and duration; never infer production limits from the example
-Compose values. `scripts/measure-safe.py` was not used to claim VPS metrics.
+See [resource-measurement.md](resource-measurement.md) for harness usage,
+profile scope, the verified first CI artifact and the owner-only VPS measurement
+worksheet. The bounded unit harness passed independent final review
+`1dd52647-2607-400` with zero findings and required PR #40 CI run `40059203387`
+(all three jobs). Artifact `12545794446` contains four validated public-safe
+JSON profiles. These are runner unit metrics, not app/VPS capacity measurements.
+The public repository's artifact access inherits repo read access; do not upload
+private data or infer production limits from runner figures or sample Compose
+values.

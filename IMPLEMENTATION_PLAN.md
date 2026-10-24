@@ -375,15 +375,19 @@ rehearsal выполнена на disposable PostgreSQL 17; реальные bac
 
 ## 13. Финальный образ, CI и выпуск
 
-Release tooling и workflow подготовлены в текущей ветке; независимый review
-завершён без доказуемых замечаний. Exact-HEAD required CI и PR #39 ещё pending.
-Подробный контракт и owner gates описаны в [docs/release.md](docs/release.md).
+Release tooling и workflow прошли review и доставлены в PR #39. PR #39
+влит; точный code HEAD `8824bc1263184e0a3fa80893ab4a8e4458f5c9ee` прошёл
+required CI `40056489006` со всеми тремя jobs, включая fast-checks и
+PostgreSQL integration. Merge base `0f1f1deb8dcd7d1bfec5e6d2bcac7c43a5b12d3d`
+прошёл post-merge main CI `40057042166` (3 required jobs). Это не означает,
+что release workflow запускался или образ публиковался. Подробности и owner
+gates: [docs/release.md](docs/release.md).
 Это подготовка к будущему ручному выпуску, не подтверждение registry-артефакта,
 разрешение на публикацию или рабочего deployment.
 
 - [x] Подготовить digest-based release Compose template и валидатор synthetic config; публикация и запуск не выполнялись.
 - [x] Реализовать и независимо проверить release tooling: schema-only Environment gates плюс проверка фактического owner approval текущего run перед Docker и повторно перед registry credentials/push; publish разрешать только при `GITHUB_RUN_ATTEMPT=1` до Git/API-вызовов, retry требует нового run и нового review. Review A завершён с нулём доказуемых замечаний; review B обнаружил P2 о привязке workflow/job, исправление повторно проверено review `43d6862f-9f7a-477` с нулём замечаний. Публичный REST/GraphQL не раскрывает `can_admins_bypass`; нельзя выдавать UI-настройку за API-проверку.
-- [ ] Дождаться required CI на точном HEAD и открытия PR #39 родителем; до этого этап 13 не завершён.
+- [x] Доставить после required CI на точном HEAD и merge PR #39; exact code HEAD `8824bc1263184e0a3fa80893ab4a8e4458f5c9ee` прошёл run `40056489006`, merge base прошёл post-merge run `40057042166`. Это подтверждает CI исходников, не выполнение release workflow.
 - [ ] Проверить образ и сигналы на целевой VPS: architecture, ресурсы, PostgreSQL, HTTPS, timezone, healthcheck и SIGTERM. Архитектура/лимиты VPS неизвестны и требуют владельца.
 - [ ] Проверить интеграционные контракты и сквозные сценарии приложения в штатном CI; это не доказывает release workflow.
 - [ ] После review/CI и отдельного разрешения владельца выполнить только выбранный ручной workflow. Publish gate должен требовать точный reviewed main ancestor, exact green required CI, явное подтверждение, same-repo owner-provided previous digest, проверенную конфигурацию Environment и одобрение из actual current-run approval history; реальная публикация не выполнялась.
@@ -392,11 +396,24 @@ Release tooling и workflow подготовлены в текущей ветк�
 
 ## 14. Измерение ресурсов и запуск
 
-Безопасный harness для локальных синтетических измерений подготовлен; измерений
-целевой машины или рабочих нагрузок нет. Целевые параметры и запуск требуют
-участия владельца и не блокируют подготовку harness и синтетических тестов.
+Stage 14 профили, тесты и CI artifact wiring подготовлены в рабочем изменении.
+Parent Go unit/race/vet (22 packages), CGO0 build, `go mod verify`, tagged
+PostgreSQL compile-only, gofmt and YAML parse passed. Measurement/helper tests:
+38 total, 37 passed, one existing Docker-dependent operator skip. Local Darwin
+arm64/Go 1.27.2 profiles passed 1/1, 2/2, 2/2, 4/4; importplan 15/15. An initial
+`unit-smoke` run returned 155/156 and correctly failed; after JSON diagnosis,
+a manual retry passed 156/156. No production defect inferred. Independent review
+`1dd52647-2607-400` final recheck found zero findings. First required PR #40 CI
+run `40059203387` passed all three jobs on code HEAD
+`7d247b20da2ff0408a22382115ccad9918fc3d1c`; downloaded and validated four
+public-safe JSON profiles in artifact `12545794446`
+(`synthetic-unit-resources-40059203387-1`). Exact measurements and limits are
+in [docs/resource-measurement.md](docs/resource-measurement.md). This is runner
+unit evidence, not VPS/app capacity evidence. Полные значения и ограничения:
+[resource measurement](docs/resource-measurement.md).
 
-- [x] Подготовить safe resource-measurement harness с dry-run и ограниченным synthetic workload; не выдавать CI/локальные показатели за VPS-метрики.
+- [x] Подготовить исходный dry-run harness; он не измеряет VPS.
+- [x] Проверить bounded unit harness, review с нулём findings и первый required CI/artifact checkpoint: PR code HEAD `7d247b20da2ff0408a22382115ccad9918fc3d1c`, run `40059203387` all three jobs success, artifact `12545794446` (4 JSON validated). Это runner-only evidence, не production measurement.
 - [ ] Зафиксировать архитектуру, RAM / SSD VPS, число клиентов и настройки пула БД, размеров порций, параллельности и API-таймаутов.
 - [ ] Измерить простой, обработку счетов, сверку после перезапуска и рассылку с повторами неудачных запросов.
 - [ ] Отдельно записать размер образа на диске / загрузки из реестра, RSS процесса, память контейнера, CPU и пики с версией образа и длительностью сценариев.

@@ -33,8 +33,32 @@ jobs:
         run: |
           sh -n scripts/restore-check.sh scripts/validate-release-config.sh
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-operator-helpers.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-resource-measurement.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-release-tooling.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-release-build.py
+      - name: Measure bounded synthetic unit-test profiles
+        id: resource-reports
+        shell: bash
+        env:
+          MEASUREMENT_SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          output_dir=$(mktemp -d "$RUNNER_TEMP/payplump-resource-reports.XXXXXX")
+          for profile in worker-poll invoice-observation restart-fences dispatch-retries; do
+            python3 scripts/measure-safe.py --run --profile "$profile" > "$output_dir/$profile.json"
+          done
+          printf 'output_dir=%s\n' "$output_dir" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: synthetic-unit-resources-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.resource-reports.outputs.output_dir }}/worker-poll.json
+            ${{ steps.resource-reports.outputs.output_dir }}/invoice-observation.json
+            ${{ steps.resource-reports.outputs.output_dir }}/restart-fences.json
+            ${{ steps.resource-reports.outputs.output_dir }}/dispatch-retries.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Validate release Compose without pulling an image
         shell: bash
         run: |

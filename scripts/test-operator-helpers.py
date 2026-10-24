@@ -283,15 +283,16 @@ class Helpers(unittest.TestCase):
             b = Path(d) / "bin"; b.mkdir()
             captured = Path(d) / "environment"
             go = b / "go"
-            go.write_text('#!/bin/sh\nprintf "%s\\n" "${GOFLAGS-unset}" "$GOPROXY" "$GOSUMDB" > ' + shlex.quote(str(captured)) + '\n')
+            go.write_text('#!/bin/sh\nif [ "$1" = version ]; then printf "go version go1.24.2 linux/amd64\\n"; else printf "%s\\n" "${GOFLAGS-unset}" "$GOENV" "$GOWORK" "$GOTOOLCHAIN" "$GOPROXY" "$GOSUMDB" "$CGO_ENABLED" "$*" > ' + shlex.quote(str(captured)) + '; printf "{\\\"Action\\\":\\\"pass\\\",\\\"Package\\\":\\\"./internal/importplan\\\",\\\"Test\\\":\\\"TestSynthetic\\\"}\\n"; fi\n')
             go.chmod(0o700)
             env = fake_env(PATH=str(b) + os.pathsep + os.environ["PATH"], GOFLAGS="-exec=SYNTHETIC_UNSAFE")
             result = subprocess.run([str(ROOT / "scripts/measure-safe.py"), "--run", "--packages", "./internal/importplan"], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0)
-            self.assertEqual(captured.read_text().splitlines(), ["unset", "off", "sum.golang.org"])
+            self.assertEqual(captured.read_text().splitlines(), ["unset", "off", "off", "local", "off", "off", "0", "test -json -count=1 -timeout=60s ./internal/importplan"])
             report = json.loads(result.stdout)
             self.assertTrue(report["executed"])
             self.assertEqual(report["workload"]["kind"], "go_test")
+            self.assertEqual(report["go_version"], "go1.24.2")
 
     def test_archive_name_cannot_override_restore_database(self):
         with tempfile.TemporaryDirectory() as d:
