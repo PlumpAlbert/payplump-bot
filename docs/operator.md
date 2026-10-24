@@ -210,9 +210,7 @@ container UID 65532 or use an owner-approved secret mechanism. The helper does
 not change permissions. See [release.md](release.md) for the separate manual
 release workflow contract. Implementation and independent review are complete
 (A zero findings; B P2 fixed and confirmed by final re-review `43d6862f-9f7a-477`,
-zero findings); exact-HEAD required CI and PR #39 remain pending. No release
-workflow has been dispatched (including dry-run), no image has been built or
-published, and no deployment has occurred. Dispatch is forbidden in this task.
+zero findings); PR #39 merged, exact code HEAD `8824bc1263184e0a3fa80893ab4a8e4458f5c9ee` passed required CI `40056489006`, and merge base `0f1f1deb8dcd7d1bfec5e6d2bcac7c43a5b12d3d` passed post-merge CI `40057042166`. These source checks do not execute the release workflow. No release workflow has been dispatched (including dry-run); no release image has been produced through that manual workflow, and no deployment has occurred. Ordinary source CI build/smoke images are not release artifacts. Dispatch is forbidden in this task.
 
 ## Latest imported-effects and restore status
 
@@ -249,13 +247,15 @@ live validation remain owner-gated.
 
 ## Safe resource measurements
 
-`scripts/measure-safe.py` is dry-run by default. With `--run`, it executes only
-an allowlist of Go unit-test packages, strips database/provider credential
-variables from the child environment, suppresses test output, and reports runner
-architecture, commit, workload, actual duration, child RSS/CPU when available,
-and cgroup memory only when exposed. Optional image file bytes are reported only
-for a file actually supplied; compressed registry size is explicitly unavailable
-unless measured independently. This does not measure VPS/business workloads,
-external services, or application credentials. Report measurements with runner,
-package selection and duration; never infer production limits from the example
-Compose values. `scripts/measure-safe.py` was not used to claim VPS metrics.
+See [resource-measurement.md](resource-measurement.md) for harness usage,
+profile scope, metric meanings and the owner-only VPS measurement worksheet.
+The harness is dry-run by default. Closed Stage 14 profiles, tests and CI JSON
+artifact wiring are present in the current worktree; parent Go/helper checks
+passed and local profiles ran as described in [resource-measurement.md](resource-measurement.md).
+`RLIMIT_FSIZE` and EOF/wall-timeout issues are fixed. Review
+`1dd52647-2607-400` final recheck found zero findings after fixing the
+`--prof` P3 and fixture SHA/marker test issue. Required CI PR #40 and actual
+artifact remain pending. The repo is public, so future JSON must contain only
+public-safe metadata. Any future CI artifact will measure bounded unit tests on a
+runner, not application/container/VPS behavior. Do not infer production limits
+from runner figures or sample Compose values.
