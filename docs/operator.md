@@ -4,6 +4,26 @@ For the current normal runtime configuration and automatic import behavior, see
 [configuration.md](configuration.md). Historical sections below describe the
 operator tools as they were introduced; they are not a recipe for normal startup.
 
+## Telegram transport selection
+
+Normal startup uses long polling when `TELEGRAM_WEBHOOK_URL` is empty or absent.
+Telegram needs outbound HTTPS connectivity, but no public listener or tunnel.
+`TELEGRAM_WEBHOOK_SECRET` is unused in this mode. Business settings and the
+separate Ninja/lifecycle secrets remain required.
+
+A nonempty URL selects webhook and requires the existing HTTPS/path validation
+and webhook secret. Invalid configuration is fatal, never a fallback to polling.
+Stop the old bot process before changing modes. Setup preserves pending updates
+(`drop_pending_updates=false`) when setting or removing Telegram's webhook.
+Keep a single process/replica per bot token and preserve the same full bot DB
+when moving from Mac to a server. Telegram's 409 detects polling conflicts; it
+is not a global mixed-mode or cross-database instance lock.
+
+Both transports use the existing durable update pipeline. Long polling does not
+make full startup a read-only pilot: automatic import and normal client effects
+remain enabled. Only the explicit health-only command below avoids those workers.
+It still requires a disposable DB because of migrations and startup fences.
+
 ## Local health-only startup
 
 Use `payplump serve-health` only for local CI/development readiness checks that

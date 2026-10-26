@@ -97,6 +97,31 @@ func TestNormalServiceNeedsNoFeatureSwitchesOrManualScope(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+func TestNormalServicePollingNeedsNoWebhookSettings(t *testing.T) {
+	for _, unusedSecret := range []string{"", "unused secret with invalid characters"} {
+		values := normalServiceValues()
+		delete(values, "TELEGRAM_WEBHOOK_URL")
+		values["TELEGRAM_WEBHOOK_SECRET"] = unusedSecret
+		if err := parseNormalService(values); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestNormalServiceInvalidWebhookDoesNotFallBackToPolling(t *testing.T) {
+	for key, value := range map[string]string{
+		"TELEGRAM_WEBHOOK_URL":    "http://bot.invalid/telegram/webhook",
+		"TELEGRAM_WEBHOOK_SECRET": "",
+	} {
+		values := normalServiceValues()
+		values[key] = value
+		err := parseNormalService(values)
+		if err == nil || !strings.Contains(err.Error(), key) || strings.Contains(err.Error(), values["TELEGRAM_BOT_TOKEN"]) {
+			t.Fatal("invalid webhook configuration must fail without leaking credentials")
+		}
+	}
+}
+
 func TestNormalServiceDefaultsDoNotChangeProcessEnvironment(t *testing.T) {
 	t.Setenv("ACTIVATION_ENABLED", "false")
 	if e := parseNormalService(normalServiceValues()); e != nil {
@@ -122,7 +147,7 @@ func TestNormalServiceRejectsLegacyDisablingAndManualRevisions(t *testing.T) {
 	}
 }
 func TestNormalServiceValidatesActualBusinessParameters(t *testing.T) {
-	for _, key := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_IDS", "TELEGRAM_WEBHOOK_URL", "TELEGRAM_WEBHOOK_SECRET", "INVOICE_NINJA_BASE_URL", "INVOICE_NINJA_API_TOKEN", "INVOICE_NINJA_PRODUCT_ID", "INVOICE_NINJA_INCLUSIVE_TAXES", "PAYMENTS_CURRENCY_ID", "PAYMENTS_CURRENCY_CODE", "SUI_BASE_URL", "SUI_API_TOKEN", "SUI_INBOUND_IDS", "SUI_SUBSCRIPTION_BASE_URL", "PAYMENT_PHONE", "TZ"} {
+	for _, key := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_IDS", "INVOICE_NINJA_BASE_URL", "INVOICE_NINJA_API_TOKEN", "INVOICE_NINJA_PRODUCT_ID", "INVOICE_NINJA_INCLUSIVE_TAXES", "PAYMENTS_CURRENCY_ID", "PAYMENTS_CURRENCY_CODE", "SUI_BASE_URL", "SUI_API_TOKEN", "SUI_INBOUND_IDS", "SUI_SUBSCRIPTION_BASE_URL", "PAYMENT_PHONE", "TZ"} {
 		t.Run(key, func(t *testing.T) {
 			values := normalServiceValues()
 			delete(values, key)

@@ -58,7 +58,7 @@ exclusive-writer из прежнего rollout не нужны при обычн
 | `INTEGRATION_PAGE_SIZE` / `INTEGRATION_MAX_PAGES` | Shared bounded Invoice Ninja pagination; defaults 50 / 20 |
 | `INVOICE_NINJA_BASE_URL` / `INVOICE_NINJA_API_TOKEN` | Existing Invoice Ninja GET configuration; not stored in source or logs |
 
-`REGISTRATION_EXCLUDED_TELEGRAM_IDS` excludes explicitly unmanaged actors. Read [configuration.md](configuration.md) for normal business inputs. The lifecycle webhook and worker start only after Telegram webhook setup succeeds.
+`REGISTRATION_EXCLUDED_TELEGRAM_IDS` excludes explicitly unmanaged actors. Read [configuration.md](configuration.md) for normal business inputs. The lifecycle webhook and worker start only after the selected Telegram transport is configured and startup policies are installed.
 
 ## Stage 2: overdue enforcement
 

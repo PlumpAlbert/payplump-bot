@@ -12,6 +12,57 @@ type WebhookAPI interface {
 	SetWebhook(context.Context, string, string) error
 }
 
+type PollingSetupAPI interface {
+	GetMe(context.Context) (User, error)
+	DeleteWebhook(context.Context) error
+}
+
+// ConfigurePolling verifies bot identity and removes any prior webhook while
+// preserving pending updates. Polling itself starts only after common setup.
+func ConfigurePolling(ctx context.Context, api PollingSetupAPI, logger *slog.Logger) (User, error) {
+	return configurePolling(ctx, api, logger, waitForWebhookRetry)
+}
+
+func configurePolling(ctx context.Context, api PollingSetupAPI, logger *slog.Logger, wait func(context.Context, time.Duration) error) (User, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	var bot User
+	backoff := time.Second
+	for {
+		if err := ctx.Err(); err != nil {
+			return User{}, err
+		}
+		var err error
+		bot, err = api.GetMe(ctx)
+		if err == nil {
+			if bot.ID <= 0 || !bot.IsBot || bot.Username == "" {
+				return User{}, errors.New("invalid Telegram bot identity")
+			}
+			break
+		}
+		setup := webhookSetup{logger: logger, wait: wait}
+		if retryErr := setup.retry(ctx, "get_me", err, &backoff); retryErr != nil {
+			return User{}, retryErr
+		}
+	}
+	backoff = time.Second
+	for {
+		if err := ctx.Err(); err != nil {
+			return User{}, err
+		}
+		err := api.DeleteWebhook(ctx)
+		if err == nil {
+			logger.Info("Telegram polling initialized", "bot_id", bot.ID)
+			return bot, nil
+		}
+		setup := webhookSetup{logger: logger, wait: wait}
+		if retryErr := setup.retry(ctx, "delete_webhook", err, &backoff); retryErr != nil {
+			return User{}, retryErr
+		}
+	}
+}
+
 type webhookSetup struct {
 	api    WebhookAPI
 	logger *slog.Logger
@@ -51,7 +102,7 @@ func (s *webhookSetup) retry(ctx context.Context, operation string, err error, b
 		}
 		delay = max(delay, apiErr.RetryAfter)
 	}
-	s.logger.Warn("Telegram webhook setup retry", "operation", operation, "delay", delay.String())
+	s.logger.Warn("Telegram transport setup retry", "operation", operation, "delay", delay.String())
 	*backoff = min(*backoff*2, 30*time.Second)
 	return s.wait(ctx, delay)
 }

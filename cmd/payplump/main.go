@@ -254,22 +254,22 @@ func run(logger *slog.Logger, args []string) error {
 		}
 		lifecycleHandler = lifecycleEndpoint
 	}
-	var endpoint *telegram.WebhookHandler
+	var transport *telegramTransport
 	var handler http.Handler
 	var initialize func(context.Context) error
 	var background func(context.Context) error
 	if telegramConfig.Enabled {
 		gateway := &startupGateway{}
-		endpoint, err = telegram.NewWebhookHandler(telegramConfig.WebhookSecret, gateway)
+		client := telegram.NewClient(telegramConfig.Token)
+		transport, err = newTelegramTransport(telegramConfig, client, gateway, logger)
 		if err != nil {
 			return err
 		}
-		handler = endpoint
-		client := telegram.NewClient(telegramConfig.Token)
+		handler = transport.Handler()
 		var botID int64
 		var importer *automaticImporter
 		initialize = func(ctx context.Context) error {
-			bot, err := telegram.ConfigureWebhook(ctx, client, telegramConfig, logger)
+			bot, err := transport.Configure(ctx)
 			if err != nil {
 				return err
 			}
@@ -354,7 +354,7 @@ func run(logger *slog.Logger, args []string) error {
 					return err
 				}
 			}
-			return endpoint.Activate(bot)
+			return transport.Activate(bot)
 		}
 		background = func(ctx context.Context) error {
 			admins := make([]int64, 0, len(telegramConfig.AdminIDs))
@@ -371,6 +371,9 @@ func run(logger *slog.Logger, args []string) error {
 				return err
 			}
 			workers := []func(context.Context) error{worker.Run}
+			if polling := transport.Worker(); polling != nil {
+				workers = append(workers, polling)
+			}
 			if importer != nil {
 				workers = append(workers, importer.Run)
 			}
@@ -437,8 +440,8 @@ func run(logger *slog.Logger, args []string) error {
 		}
 	}
 	ready := func(ctx context.Context) error {
-		if endpoint != nil && !endpoint.Ready() {
-			return errors.New("Telegram webhook setup pending")
+		if transport != nil && !transport.Ready() {
+			return errors.New("Telegram transport setup pending")
 		}
 		if lifecycleEndpoint != nil && !lifecycleEndpoint.Ready() {
 			return errors.New("invoice lifecycle webhook setup pending")
@@ -449,10 +452,10 @@ func run(logger *slog.Logger, args []string) error {
 	return serve(ctx, logger, srv, initialize, background)
 }
 
-// The listener is opened before registering the webhook. Successful setup leaves
-// HTTP serving; fatal setup errors stop the service. Shutdown drains in-flight
-// requests and joins background deliveries before the database pool is closed.
-// Telegram's webhook and interrupted durable leases are preserved.
+// The listener is opened before configuring Telegram. Successful setup leaves
+// HTTP serving and starts incoming polling, when selected, with the other workers.
+// Shutdown drains requests and joins workers before the database pool is closed.
+// Pending updates, Telegram's configured webhook and durable leases are preserved.
 func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, initialize, background func(context.Context) error) error {
 	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
@@ -492,7 +495,7 @@ running:
 				continue
 			}
 			if ctx.Err() == nil {
-				failure = fmt.Errorf("Telegram webhook setup: %w", err)
+				failure = fmt.Errorf("Telegram transport setup: %w", err)
 			}
 			break running
 		case err := <-backgroundResult:

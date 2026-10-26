@@ -44,12 +44,23 @@ func TestConfigRejectsInvalidValuesWithoutLeakingToken(t *testing.T) {
 	}
 }
 
+func TestPollingConfigIgnoresUnusedSecret(t *testing.T) {
+	t.Setenv("TELEGRAM_ENABLED", "true")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-only-token")
+	t.Setenv("TELEGRAM_ADMIN_IDS", "42")
+	t.Setenv("TELEGRAM_WEBHOOK_URL", "")
+	t.Setenv("TELEGRAM_WEBHOOK_SECRET", "malformed unused secret")
+	cfg, err := ConfigFromEnv()
+	if err != nil || cfg.UsesWebhook() || cfg.WebhookSecret != "" {
+		t.Fatal("polling configuration rejected unused secret")
+	}
+}
+
 func TestWebhookConfigValidation(t *testing.T) {
 	t.Setenv("TELEGRAM_ENABLED", "true")
 	t.Setenv("TELEGRAM_BOT_TOKEN", "test-only-token")
 	t.Setenv("TELEGRAM_ADMIN_IDS", "42")
 	for _, tc := range []struct{ url, secret string }{
-		{"", "test-webhook-secret"},
 		{"http://bot.example.com/telegram/webhook", "test-webhook-secret"},
 		{"https://bot.example.com/wrong", "test-webhook-secret"},
 		{"https://user:private@bot.example.com/telegram/webhook", "test-webhook-secret"},
