@@ -207,6 +207,65 @@ func telegramJSONFold(name string) string {
 	return string(folded)
 }
 
+const maxUpdateBatch = 100
+const pollRequestTimeout = 25 * time.Second
+
+// DeleteWebhook switches a bot to polling without dropping queued updates.
+func (c *Client) DeleteWebhook(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var accepted bool
+	if err := c.callRequest(ctx, "deleteWebhook", struct {
+		Drop bool `json:"drop_pending_updates"`
+	}{false}, &accepted, true); err != nil {
+		return err
+	}
+	if !accepted {
+		return errors.New("Telegram did not accept webhook removal")
+	}
+	return nil
+}
+
+// GetUpdates uses a request-scoped longer HTTP deadline; outbound calls retain
+// the client's ordinary ten-second timeout.
+func (c *Client) GetUpdates(ctx context.Context, offset int64) ([]Update, error) {
+	if offset < 0 || offset == math.MaxInt64 {
+		return nil, errors.New("invalid Telegram polling offset")
+	}
+	ctx, cancel := context.WithTimeout(ctx, pollRequestTimeout+5*time.Second)
+	defer cancel()
+	var rawUpdates []json.RawMessage
+	poller := *c
+	client := *c.http
+	client.Timeout = pollRequestTimeout + 5*time.Second
+	poller.http = &client
+	if err := poller.callRequest(ctx, "getUpdates", struct {
+		Offset  int64    `json:"offset"`
+		Limit   int      `json:"limit"`
+		Timeout int      `json:"timeout"`
+		Allowed []string `json:"allowed_updates"`
+	}{offset, maxUpdateBatch, int(pollRequestTimeout.Seconds()), []string{"message"}}, &rawUpdates, true); err != nil {
+		return nil, err
+	}
+	if len(rawUpdates) > maxUpdateBatch {
+		return nil, errors.New("Telegram update batch exceeds size limit")
+	}
+	updates := make([]Update, 0, len(rawUpdates))
+	previous := int64(-1)
+	for _, raw := range rawUpdates {
+		var wire struct {
+			ID      *int64   `json:"update_id"`
+			Message *Message `json:"message"`
+		}
+		if !uniqueTelegramJSON(raw) || json.Unmarshal(raw, &wire) != nil || wire.ID == nil || *wire.ID < 0 || *wire.ID == math.MaxInt64 || *wire.ID <= previous {
+			return nil, errors.New("invalid Telegram update batch")
+		}
+		updates = append(updates, Update{ID: *wire.ID, Message: wire.Message})
+		previous = *wire.ID
+	}
+	return updates, nil
+}
+
 func (c *Client) GetMe(ctx context.Context) (User, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

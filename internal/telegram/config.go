@@ -48,6 +48,10 @@ func ConfigFromEnvironment(getenv func(string) string) (Config, error) {
 		cfg.AdminIDs[id] = struct{}{}
 	}
 	cfg.WebhookURL = getenv("TELEGRAM_WEBHOOK_URL")
+	if cfg.WebhookURL == "" {
+		// A webhook secret has no meaning in polling mode.
+		return cfg, nil
+	}
 	if !validWebhookURL(cfg.WebhookURL) {
 		return Config{}, errors.New("TELEGRAM_WEBHOOK_URL must be an HTTPS URL with path /telegram/webhook without userinfo, query or fragment")
 	}
@@ -76,6 +80,8 @@ func validWebhookSecret(value string) bool {
 	}
 	return true
 }
+
+func (c Config) UsesWebhook() bool { return c.WebhookURL != "" }
 
 func (c Config) IsAdmin(senderID int64) bool {
 	_, allowed := c.AdminIDs[senderID]
