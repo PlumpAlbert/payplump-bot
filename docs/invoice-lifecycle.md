@@ -31,6 +31,13 @@ The bot uses the earliest valid non-empty `invitations[].sent_date` converted in
 
 ## Event signal
 
+> [!WARNING]
+> `X-Payplump-Webhook-Secret` is a bot requirement, not an Invoice Ninja
+> signature or built-in standard. The ability to configure an arbitrary header
+> in Ninja's UI is unconfirmed. An intermediary must authenticate the sender
+> before adding the secret; it must not add it indiscriminately to all incoming
+> requests. Live webhook delivery and sender authentication have not been tested.
+
 Configure Invoice Ninja's **sent_invoice** event to POST to:
 
 ```
