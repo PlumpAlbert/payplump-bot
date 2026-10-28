@@ -27,7 +27,7 @@ func TestConfigDefaultsOffAndIgnoresInactiveCredentials(t *testing.T) {
 	}
 }
 
-func TestConfigRequiresExplicitPilotAndSeparateSecret(t *testing.T) {
+func TestConfigRequiresExplicitPilotAndAllowsSharedNinjaSecret(t *testing.T) {
 	clearLifecycleEnv(t)
 	t.Setenv("INVOICE_LIFECYCLE_ENABLED", "true")
 	t.Setenv("INVOICE_LIFECYCLE_WEBHOOK_SECRET", "synthetic_lifecycle_webhook_secret_123456")
@@ -38,8 +38,8 @@ func TestConfigRequiresExplicitPilotAndSeparateSecret(t *testing.T) {
 	if err != nil || !cfg.Enabled || len(cfg.AllowedTelegramIDs) != 1 || cfg.AllowedTelegramIDs[0] != 101 {
 		t.Fatalf("config rejected safe synthetic pilot: %#v %v", cfg, err)
 	}
-	if _, err := ConfigFromEnv(true, true, cfg.WebhookSecret, "synthetic_telegram_webhook_secret_123456", "synthetic-telegram-token"); err == nil {
-		t.Fatal("lifecycle secret was reused for payment webhook")
+	if _, err := ConfigFromEnv(true, true, cfg.WebhookSecret, "synthetic_telegram_webhook_secret_123456", "synthetic-telegram-token"); err != nil {
+		t.Fatalf("shared Ninja webhook secret rejected: %v", err)
 	}
 	if _, err := ConfigFromEnv(true, true, "synthetic_payment_webhook_secret_123456", "synthetic_telegram_webhook_secret_123456", "synthetic-telegram-token"); err != nil {
 		t.Fatalf("unexpected config error: %v", err)

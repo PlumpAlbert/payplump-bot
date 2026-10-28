@@ -43,9 +43,6 @@ func ConfigFromEnvironment(getenv func(string) string, telegramEnabled bool) (Co
 	if version := getenv("INVOICE_NINJA_VERSION"); version != "" && strings.TrimPrefix(version, "v") != "5.13.47" {
 		return Config{}, errors.New("payment verification supports Invoice Ninja 5.13.47 only")
 	}
-	if cfg.WebhookSecret == cfg.Token || cfg.WebhookSecret == getenv("TELEGRAM_WEBHOOK_SECRET") || cfg.WebhookSecret == getenv("TELEGRAM_BOT_TOKEN") {
-		return Config{}, errors.New("use a separate Invoice Ninja webhook secret")
-	}
 	for _, item := range []struct {
 		key   string
 		value *int
@@ -92,11 +89,8 @@ func (c Config) Validate() error {
 	if integrationhttp.ValidateBaseURL(c.BaseURL) != nil || c.Token == "" || strings.ContainsAny(c.Token, " \r\n\t") {
 		return errors.New("invalid payment API configuration")
 	}
-	if c.WebhookSecret == c.Token {
-		return errors.New("use a separate Invoice Ninja webhook secret")
-	}
 	if !secret(c.WebhookSecret) {
-		return errors.New("INVOICE_NINJA_WEBHOOK_SECRET must contain 32-256 ASCII letters, digits, underscores or hyphens")
+		return errors.New("INVOICE_NINJA_WEBHOOK_SECRET is required")
 	}
 	if !currency(c.CurrencyID) {
 		return errors.New("PAYMENTS_CURRENCY_ID must explicitly identify the native billing currency")
@@ -120,13 +114,5 @@ func (c Config) Validate() error {
 	return nil
 }
 func secret(s string) bool {
-	if len(s) < 32 || len(s) > 256 {
-		return false
-	}
-	for _, b := range []byte(s) {
-		if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-') {
-			return false
-		}
-	}
-	return true
+	return s != ""
 }

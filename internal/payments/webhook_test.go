@@ -63,9 +63,13 @@ func webhookRequest(body string) *http.Request {
 
 func TestWebhookNewAndActivationRequirePrivateVerifiedBotIdentity(t *testing.T) {
 	store := &wakeStoreFake{}
-	for _, secret := range []string{"", strings.Repeat("a", 31), strings.Repeat("a", 257), strings.Repeat("é", 32), strings.Repeat("a", 32) + "\n"} {
-		if _, err := NewWebhook(secret, store); err == nil {
-			t.Fatal("accepted invalid receiver secret")
+	if _, err := NewWebhook("", store); err == nil {
+		t.Fatal("accepted missing receiver secret")
+	}
+	for _, secret := range []string{"123", strings.Repeat("a", 31), strings.Repeat("a", 257), strings.Repeat("é", 32), " base64+/= "} {
+		handler, err := NewWebhook(secret, store)
+		if err != nil || handler.secret != secret {
+			t.Fatal("supplied receiver secret rejected or changed")
 		}
 	}
 	if _, err := NewWebhook(testPaymentSecret, nil); err == nil {

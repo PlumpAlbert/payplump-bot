@@ -86,13 +86,6 @@ func TestConfigEnabledRequiresIndependentCredentialsNativePolicyAndPinnedContrac
 		{"leading zero currency id", "PAYMENTS_CURRENCY_ID", "03"},
 		{"unsupported version", "INVOICE_NINJA_VERSION", "5.13.48"},
 		{"missing dedicated secret", "INVOICE_NINJA_WEBHOOK_SECRET", ""},
-		{"short secret", "INVOICE_NINJA_WEBHOOK_SECRET", strings.Repeat("a", 31)},
-		{"oversized secret", "INVOICE_NINJA_WEBHOOK_SECRET", strings.Repeat("a", 257)},
-		{"nonascii secret", "INVOICE_NINJA_WEBHOOK_SECRET", strings.Repeat("я", 32)},
-		{"header injection secret", "INVOICE_NINJA_WEBHOOK_SECRET", strings.Repeat("a", 32) + "\r\n"},
-		{"API token reuse", "INVOICE_NINJA_API_TOKEN", testPaymentSecret},
-		{"Telegram token reuse", "TELEGRAM_BOT_TOKEN", testPaymentSecret},
-		{"Telegram webhook secret reuse", "TELEGRAM_WEBHOOK_SECRET", testPaymentSecret},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			paymentEnv(t, true)
@@ -208,10 +201,10 @@ func TestConfigValidateDirectBounds(t *testing.T) {
 	}
 }
 
-func TestConfigValidateRejectsDedicatedSecretReuseWithoutEnvironmentParser(t *testing.T) {
+func TestConfigValidateAllowsSecretReuseWithoutEnvironmentParser(t *testing.T) {
 	cfg := validPaymentConfig()
 	cfg.Token = cfg.WebhookSecret
-	if cfg.Validate() == nil {
-		t.Fatal("Config.Validate accepted API token as dedicated webhook secret; New also accepts this unsafe configuration")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("shared secret rejected: %v", err)
 	}
 }
