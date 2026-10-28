@@ -292,11 +292,6 @@ func TestRecurringCreateHTTPContractAndCallerSliceSnapshot(t *testing.T) {
 			t.Error("unexpected action/query flags")
 		}
 		switch r.URL.Path {
-		case "/ninja/api/v1/ping":
-			if r.Method != "GET" {
-				t.Error("probe must GET")
-			}
-			recurringTestReply(t, w, map[string]string{"company_name": "Synthetic"})
 		case "/ninja/api/v1/recurring_invoices":
 			if r.Method != "POST" {
 				t.Error("create must POST")
@@ -338,7 +333,7 @@ func TestRecurringCreateHTTPContractAndCallerSliceSnapshot(t *testing.T) {
 	if err != nil || got.ID != record.ID || got.StatusID != "1" || !recurringEqual(got.Balance, got.Amount) {
 		t.Fatalf("create = %+v, %v", got, err)
 	}
-	if !reflect.DeepEqual(paths, []string{"GET /ninja/api/v1/ping", "POST /ninja/api/v1/recurring_invoices"}) {
+	if !reflect.DeepEqual(paths, []string{"POST /ninja/api/v1/recurring_invoices"}) {
 		t.Fatalf("unexpected requests %v", paths)
 	}
 	if draft.LineItems[0].Cost != "1" {
@@ -365,8 +360,6 @@ func TestRecurringSourceShapedDraftBalanceCreationAndStart(t *testing.T) {
 				path := r.Method + " " + r.URL.Path
 				paths = append(paths, path)
 				switch path {
-				case "GET /api/v1/ping":
-					recurringTestReply(t, w, map[string]any{})
 				case "POST /api/v1/recurring_invoices", "GET /api/v1/recurring_invoices/recurring-A":
 					recurringTestReply(t, w, map[string]any{"data": record})
 				case "POST /api/v1/recurring_invoices/bulk":
@@ -387,7 +380,7 @@ func TestRecurringSourceShapedDraftBalanceCreationAndStart(t *testing.T) {
 			if err != nil || started.StatusID != "2" || !recurringEqual(started.Amount, created.Amount) || !recurringEqual(started.Balance, started.Amount) {
 				t.Fatalf("source-shaped start: %+v %v", started, err)
 			}
-			want := []string{"GET /api/v1/ping", "POST /api/v1/recurring_invoices", "GET /api/v1/recurring_invoices/recurring-A", "GET /api/v1/ping", "POST /api/v1/recurring_invoices/bulk"}
+			want := []string{"POST /api/v1/recurring_invoices", "GET /api/v1/recurring_invoices/recurring-A", "POST /api/v1/recurring_invoices/bulk"}
 			if !reflect.DeepEqual(paths, want) {
 				t.Fatalf("unexpected workflow %v", paths)
 			}
@@ -616,7 +609,7 @@ func TestRecurringFindRejectsInvalidLastSentDatetime(t *testing.T) {
 }
 
 func TestRecurringFindFailsClosed(t *testing.T) {
-	for _, scenario := range []string{"foreign", "duplicate", "changed-total", "changed-size", "wrong-page", "missing-meta", "null-data", "missing-field", "cap", "pages-cap", "version", "http", "empty"} {
+	for _, scenario := range []string{"foreign", "duplicate", "changed-total", "changed-size", "wrong-page", "missing-meta", "null-data", "missing-field", "cap", "pages-cap", "http", "empty"} {
 		t.Run(scenario, func(t *testing.T) {
 			var calls atomic.Int32
 			s := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -624,9 +617,6 @@ func TestRecurringFindFailsClosed(t *testing.T) {
 				page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 				record := recurringTestRecord(t)
 				record.ID = fmt.Sprintf("recurring-%d", page)
-				if scenario == "version" {
-					w.Header().Set("X-APP-VERSION", "5.13.48")
-				}
 				if scenario == "http" {
 					http.Error(w, "remote-secret", 500)
 					return
@@ -760,8 +750,6 @@ func TestRecurringStartFirstHTTPContractAndSnapshot(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/recurring_invoices/recurring-A":
 			recurringTestReply(t, w, map[string]any{"data": before})
-		case "/api/v1/ping":
-			recurringTestReply(t, w, map[string]any{})
 		case "/api/v1/recurring_invoices/bulk":
 			body, _ := io.ReadAll(r.Body)
 			if r.Method != "POST" || string(body) != `{"ids":["recurring-A"],"action":"start"}` {
@@ -786,7 +774,7 @@ func TestRecurringStartFirstHTTPContractAndSnapshot(t *testing.T) {
 	if err != nil || got.StatusID != "2" || got.NextSendDate != before.NextSendDate || got.LastSentDate != "" {
 		t.Fatalf("start=%+v %v", got, err)
 	}
-	if !reflect.DeepEqual(paths, []string{"GET /api/v1/recurring_invoices/recurring-A", "GET /api/v1/ping", "POST /api/v1/recurring_invoices/bulk"}) {
+	if !reflect.DeepEqual(paths, []string{"GET /api/v1/recurring_invoices/recurring-A", "POST /api/v1/recurring_invoices/bulk"}) {
 		t.Fatalf("wrong order %v", paths)
 	}
 }
@@ -867,9 +855,10 @@ func TestRecurringUTCFormats(t *testing.T) {
 }
 
 func TestRecurringCrossMidnightAndUTCRechecks(t *testing.T) {
-	for _, scenario := range []string{"create-local-midnight", "start-local-midnight", "start-utc-due-after-probe", "start-utc-due-after-post"} {
+	for _, scenario := range []string{"create-local-midnight", "start-local-midnight", "start-utc-due-before-post", "start-utc-due-after-post"} {
 		t.Run(scenario, func(t *testing.T) {
-			var posts, probes atomic.Int32
+			var posts, reads atomic.Int32
+			clockCalls := 0
 			r := recurringTestRecord(t)
 			utcBefore := time.Date(2040, 2, 27, 12, 0, 0, 0, time.Local).UTC()
 			if strings.Contains(scenario, "utc") {
@@ -878,11 +867,6 @@ func TestRecurringCrossMidnightAndUTCRechecks(t *testing.T) {
 				r.NextSendDatetime = time.Date(2040, 2, 29, 12, 0, 0, 0, time.Local).UTC().Format(time.RFC3339Nano)
 			}
 			s := recurringTestServer(t, func(w http.ResponseWriter, req *http.Request) {
-				if req.URL.Path == "/api/v1/ping" {
-					probes.Add(1)
-					recurringTestReply(t, w, map[string]any{})
-					return
-				}
 				if req.Method == "POST" {
 					posts.Add(1)
 					after := r
@@ -890,19 +874,21 @@ func TestRecurringCrossMidnightAndUTCRechecks(t *testing.T) {
 					recurringTestReply(t, w, map[string]any{"data": []RecurringRecord{after}})
 					return
 				}
+				reads.Add(1)
 				recurringTestReply(t, w, map[string]any{"data": r})
 			})
 			c := recurringTestClient(t, s.URL, 1, 1)
 			c.now = func() time.Time {
+				clockCalls++
 				if strings.Contains(scenario, "local-midnight") {
-					if probes.Load() == 0 {
+					if clockCalls == 1 {
 						return time.Date(2040, 2, 28, 23, 59, 59, 0, time.Local)
 					}
 					return time.Date(2040, 2, 29, 0, 0, 0, 0, time.Local)
 				}
 				// The local date stays future while the actual UTC send instant
 				// expires, without changing process-global time.Local.
-				if (scenario == "start-utc-due-after-probe" && probes.Load() > 0) || (scenario == "start-utc-due-after-post" && posts.Load() > 0) {
+				if (scenario == "start-utc-due-before-post" && clockCalls >= 3) || (scenario == "start-utc-due-after-post" && posts.Load() > 0) {
 					return utcBefore.Add(time.Second)
 				}
 				return utcBefore
@@ -923,20 +909,24 @@ func TestRecurringCrossMidnightAndUTCRechecks(t *testing.T) {
 					t.Fatal("post-expiry did not require HOLD")
 				}
 			}
-			if posts.Load() != wantPosts || probes.Load() != 1 {
-				t.Fatalf("posts %d probes %d", posts.Load(), probes.Load())
+			wantReads := int32(1)
+			if strings.HasPrefix(scenario, "create") {
+				wantReads = 0
+			}
+			if posts.Load() != wantPosts || reads.Load() != wantReads {
+				t.Fatalf("posts %d reads %d", posts.Load(), reads.Load())
 			}
 		})
 	}
 }
 
-func TestRecurringEveryGETAndPOSTVersionPinned(t *testing.T) {
-	for _, operation := range []string{"get", "find", "create-probe", "create-response", "start-get", "start-probe", "start-response"} {
-		for _, version := range []string{"", "5.13.46", "5.13.48", "5.13.47+build", "duplicate"} {
+func TestRecurringGETAndPOSTAcceptReleaseHeaders(t *testing.T) {
+	for _, operation := range []string{"get", "find", "create-response", "start-get", "start-response"} {
+		for _, version := range []string{"", "5.13.47", "5.13.50", "5.13.46", "5.13.48", "5.13.47+build", "duplicate"} {
 			t.Run(operation+"/"+version, func(t *testing.T) {
 				var posts atomic.Int32
 				s := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-					bad := operation == "get" || operation == "find" || (strings.HasSuffix(operation, "probe") && r.URL.Path == "/api/v1/ping") || (strings.HasSuffix(operation, "response") && r.Method == "POST") || (operation == "start-get" && strings.HasSuffix(r.URL.Path, "/recurring-A"))
+					bad := operation == "get" || operation == "find" || (strings.HasSuffix(operation, "response") && r.Method == "POST") || (operation == "start-get" && strings.HasSuffix(r.URL.Path, "/recurring-A"))
 					if bad {
 						w.Header().Del("X-APP-VERSION")
 						if version == "duplicate" {
@@ -945,10 +935,6 @@ func TestRecurringEveryGETAndPOSTVersionPinned(t *testing.T) {
 						} else if version != "" {
 							w.Header().Set("X-APP-VERSION", version)
 						}
-					}
-					if r.URL.Path == "/api/v1/ping" {
-						recurringTestReply(t, w, map[string]any{})
-						return
 					}
 					record := recurringTestRecord(t)
 					if r.Method == "POST" {
@@ -979,15 +965,12 @@ func TestRecurringEveryGETAndPOSTVersionPinned(t *testing.T) {
 				default:
 					_, err = c.StartFirst(context.Background(), "recurring-A", recurringTestDraft(t))
 				}
-				if !errors.Is(err, ErrWriteVersion) {
-					t.Fatalf("version not pinned: %v", err)
+				if err != nil {
+					t.Fatalf("release header gated valid response: %v", err)
 				}
-				wantPosts := int32(0)
-				if strings.HasSuffix(operation, "response") {
-					wantPosts = 1
-					if !errors.Is(err, ErrRecurringUnknown) {
-						t.Fatal("wrong-version write receipt not unknown")
-					}
+				wantPosts := int32(1)
+				if operation == "get" || operation == "find" {
+					wantPosts = 0
 				}
 				if posts.Load() != wantPosts {
 					t.Fatalf("unexpected POST count %d", posts.Load())
@@ -1007,10 +990,6 @@ func TestRecurringCreationAndFirstStartReceipts(t *testing.T) {
 				var posts atomic.Int32
 				s := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 					record := recurringTestRecord(t)
-					if r.URL.Path == "/api/v1/ping" {
-						recurringTestReply(t, w, map[string]any{})
-						return
-					}
 					if r.Method != "POST" {
 						recurringTestReply(t, w, map[string]any{"data": record})
 						return
@@ -1107,11 +1086,7 @@ func TestRecurringUnknownOutcomesNeverAutoReplay(t *testing.T) {
 				s := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 					if r.Method != "POST" {
 						reads.Add(1)
-						if strings.HasSuffix(r.URL.Path, "/ping") {
-							recurringTestReply(t, w, map[string]any{})
-						} else {
-							recurringTestReply(t, w, map[string]any{"data": recurringTestRecord(t)})
-						}
+						recurringTestReply(t, w, map[string]any{"data": recurringTestRecord(t)})
 						return
 					}
 					posts.Add(1)
@@ -1148,12 +1123,47 @@ func TestRecurringUnknownOutcomesNeverAutoReplay(t *testing.T) {
 				if strings.Contains(err.Error(), recurringTestToken) || strings.Contains(err.Error(), s.URL) || strings.Contains(err.Error(), "private body") {
 					t.Fatal("error leaked secret")
 				}
-				wantReads := int32(1)
+				wantReads := int32(0)
 				if start {
-					wantReads = 2
+					wantReads = 1
 				}
 				if posts.Load() != 1 || reads.Load() != wantReads {
 					t.Fatalf("unknown result replayed/reconciled automatically: posts=%d reads=%d", posts.Load(), reads.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestRecurringMalformed2xxPOSTIsUnknownAcrossReleases(t *testing.T) {
+	for _, version := range []string{"5.13.47", "5.13.50", ""} {
+		for _, body := range []string{`{`, `{"data":null}`, `{"data":{"id":"recurring-A"}}`, `{"data":{},"DATA":{}}`} {
+			t.Run(version+"/"+body, func(t *testing.T) {
+				var posts, reads atomic.Int32
+				s := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Del("X-APP-VERSION")
+					if version != "" {
+						w.Header().Set("X-APP-VERSION", version)
+					}
+					if r.Method == http.MethodGet {
+						reads.Add(1)
+						recurringTestReply(t, w, map[string]any{})
+						return
+					}
+					posts.Add(1)
+					_, _ = io.WriteString(w, body)
+				})
+				c := recurringTestClient(t, s.URL, 1, 1)
+				calls := 0
+				got, err := c.CreateDraftAuthorized(context.Background(), recurringTestDraft(t), func(context.Context) error {
+					calls++
+					if reads.Load() != 0 || posts.Load() != 0 {
+						t.Error("authorization ordering changed")
+					}
+					return nil
+				})
+				if !errors.Is(err, ErrRecurringUnknown) || got.ID != "" || calls != 1 || posts.Load() != 1 || reads.Load() != 0 {
+					t.Fatalf("malformed POST was accepted or replayed: %+v %v posts=%d reads=%d", got, err, posts.Load(), reads.Load())
 				}
 			})
 		}

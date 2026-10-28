@@ -249,9 +249,6 @@ func lifecycleSame(a, b RecurringRecord, d RecurringDraft) bool {
 	return lifecycleTemplate(a, d) == nil
 }
 func (c *RecurringClient) lifecyclePreflight(ctx context.Context, b RecurringRecord, d RecurringDraft) error {
-	if e := c.probe(ctx); e != nil {
-		return e
-	}
 	fresh, e := c.Get(ctx, b.ID)
 	if e != nil {
 		return e
@@ -332,11 +329,11 @@ func (c *RecurringClient) RescheduleAuthorized(ctx context.Context, d ScheduleDr
 		Exchange json.Number `json:"exchange_rate"`
 	}{d.desiredDate, b.ExchangeRate}
 	var raw json.RawMessage
-	h, e := c.writer.Put(ctx, []string{"api", "v1", "recurring_invoices", b.ID}, nil, payload, &raw)
+	_, e := c.writer.Put(ctx, []string{"api", "v1", "recurring_invoices", b.ID}, nil, payload, &raw)
 	if e != nil {
 		return RecurringRecord{}, errors.Join(ErrRecurringUnknown, e)
 	}
-	if recurringVersion(h) != nil || !uniqueNinjaJSON(raw) {
+	if !uniqueNinjaJSON(raw) {
 		return RecurringRecord{}, errors.Join(ErrRecurringUnknown, errInvalidResponse)
 	}
 	var env struct {

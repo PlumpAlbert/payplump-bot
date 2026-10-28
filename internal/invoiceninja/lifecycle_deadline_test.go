@@ -24,10 +24,6 @@ func TestLifecycleCancellationAfterPermissionAlwaysHolds(t *testing.T) {
 					http.Error(w, "unexpected", 500)
 					return
 				}
-				if r.URL.Path == "/api/v1/ping" {
-					recurringTestReply(t, w, map[string]any{})
-					return
-				}
 				recurringTestReply(t, w, map[string]any{"data": b})
 			})
 			c := recurringTestClient(t, server.URL, 1, 1)
@@ -75,10 +71,6 @@ func TestResumeRechecksCalendarAfterPermission(t *testing.T) {
 			http.Error(w, "unexpected", 500)
 			return
 		}
-		if r.URL.Path == "/api/v1/ping" {
-			recurringTestReply(t, w, map[string]any{})
-			return
-		}
 		recurringTestReply(t, w, map[string]any{"data": b})
 	})
 	c := recurringTestClient(t, server.URL, 1, 1)
@@ -104,10 +96,6 @@ func TestPauseRejectsContradictoryWriteReceiptBeforeReadback(t *testing.T) {
 			x.Amount = "999"
 			x.Balance = "999"
 			recurringTestReply(t, w, map[string]any{"data": []RecurringRecord{x}})
-			return
-		}
-		if r.URL.Path == "/api/v1/ping" {
-			recurringTestReply(t, w, map[string]any{})
 			return
 		}
 		x := b

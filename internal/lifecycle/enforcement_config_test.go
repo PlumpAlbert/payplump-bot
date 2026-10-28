@@ -64,8 +64,6 @@ func TestEnforcementStructuralSettingsRemainAvailableWithoutFeatureGates(t *test
 		func(c *EnforcementConfig) { c.BaseURL = "https://billing.synthetic.invalid/api/v1" },
 		func(c *EnforcementConfig) { c.Token = " bad-token" },
 		func(c *EnforcementConfig) { c.Token = "bad token" },
-		func(c *EnforcementConfig) { c.InvoiceNinjaVersion = "5.13.48" },
-		func(c *EnforcementConfig) { c.SUIVersion = "1.7.0" },
 		func(c *EnforcementConfig) { c.SUIBaseURL = "https://panel.synthetic.invalid/%0A" },
 		func(c *EnforcementConfig) { c.MaxAccounts = 1001 },
 	} {
@@ -90,5 +88,31 @@ func TestEnforcementConfigRejectsEmptyEffectiveAllowlist(t *testing.T) {
 	t.Setenv("SUI_VERSION", "1.6.4")
 	if _, err := EnforcementConfigFromEnv(true, true, true); err == nil {
 		t.Fatal("fully excluded pilot allowlist was accepted")
+	}
+}
+
+func TestEnforcementVersionsAreOptionalAndInformational(t *testing.T) {
+	env := map[string]string{
+		"INVOICE_OVERDUE_ENFORCEMENT_ENABLED": "true", "INVOICE_OVERDUE_EXCLUSIVE_WRITER": "true",
+		"INVOICE_NINJA_BASE_URL": "https://billing.example.test", "INVOICE_NINJA_API_TOKEN": "synthetic-api-token",
+		"SUI_BASE_URL": "http://panel.example.test/private", "SUI_API_TOKEN": "synthetic-panel-token",
+		"INVOICE_LIFECYCLE_ALLOWED_TELEGRAM_IDS": "101",
+	}
+	for _, ninja := range []string{"", "5.13.48", "v99.2.1+local", "custom-build"} {
+		for _, panel := range []string{"", "1.7.0", "v99.2.1-dev", "custom-build"} {
+			t.Run(ninja+"/"+panel, func(t *testing.T) {
+				env["INVOICE_NINJA_VERSION"], env["SUI_VERSION"] = ninja, panel
+				cfg, err := EnforcementConfigFromEnvironment(func(key string) string { return env[key] }, true, true, true, false)
+				if err != nil {
+					t.Fatalf("informational versions rejected: %v", err)
+				}
+				if cfg.InvoiceNinjaVersion != ninja || cfg.SUIVersion != panel {
+					t.Fatal("version metadata was not preserved")
+				}
+				if err := cfg.Validate(true, true, true); err != nil {
+					t.Fatalf("version metadata failed validation: %v", err)
+				}
+			})
+		}
 	}
 }

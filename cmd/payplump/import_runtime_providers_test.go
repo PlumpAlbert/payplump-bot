@@ -118,7 +118,6 @@ func TestNewImportedBillingProvidersRejectsInvalidConfigAndScopeBeforeHTTP(t *te
 			c.BaseURL = u.String()
 			return c
 		}()},
-		{name: "panel-version", r: func() lifecycle.RenewalConfig { c := validR; c.SUIVersion = "1.6.3"; return c }()},
 		{name: "scope-hash", r: func() lifecycle.RenewalConfig { c := validR; c.SUIToken = "different-secret-marker"; return c }()},
 		{name: "exclusive-writer", e: func() lifecycle.EnforcementConfig { c := validE; c.ExclusiveWriter = false; return c }()},
 		{name: "pilot-required", r: func() lifecycle.RenewalConfig { c := validR; c.AllowedTelegramIDs = nil; return c }()},

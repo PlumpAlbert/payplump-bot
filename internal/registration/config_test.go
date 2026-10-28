@@ -64,7 +64,7 @@ func TestConfigDisabledIgnoresUnusedSecretsAndSettings(t *testing.T) {
 
 func TestConfigEnabledDefaultsAndExplicitTaxPolicy(t *testing.T) {
 	configEnvironment(t, true)
-	for _, version := range []string{"", invoiceninja.SupportedWriteVersion, "v" + invoiceninja.SupportedWriteVersion} {
+	for _, version := range []string{"", invoiceninja.SupportedWriteVersion, "v" + invoiceninja.SupportedWriteVersion, "5.13.46", "5.13.47+local", "5.14.0", "v99.2.1", "custom-build"} {
 		t.Setenv("INVOICE_NINJA_VERSION", version)
 		for _, inclusive := range []string{"false", "true"} {
 			t.Setenv("INVOICE_NINJA_INCLUSIVE_TAXES", inclusive)
@@ -90,7 +90,6 @@ func TestConfigEnvironmentRejectsUnsafeOrMalformedSettings(t *testing.T) {
 		{"INVOICE_NINJA_TELEGRAM_ID_FIELD", ""}, {"INVOICE_NINJA_TELEGRAM_ID_FIELD", "custom_value1"},
 		{"INVOICE_NINJA_INCLUSIVE_TAXES", ""}, {"INVOICE_NINJA_INCLUSIVE_TAXES", "automatic"},
 		{"INVOICE_NINJA_BASE_URL", ""}, {"INVOICE_NINJA_API_TOKEN", ""}, {"INVOICE_NINJA_PRODUCT_ID", ""}, {"PAYMENT_PHONE", ""},
-		{"INVOICE_NINJA_VERSION", "5.13.46"}, {"INVOICE_NINJA_VERSION", "5.13.47+local"}, {"INVOICE_NINJA_VERSION", "5.14.0"},
 		{"REGISTRATION_WORKERS", "bad"}, {"REGISTRATION_WORKERS", "0"}, {"REGISTRATION_WORKERS", "5"},
 		{"REGISTRATION_POLL_INTERVAL", "bad"}, {"REGISTRATION_POLL_INTERVAL", "99ms"}, {"REGISTRATION_POLL_INTERVAL", "61s"},
 		{"REGISTRATION_HTTP_TIMEOUT", "bad"}, {"REGISTRATION_HTTP_TIMEOUT", "999ms"}, {"REGISTRATION_HTTP_TIMEOUT", "11s"},

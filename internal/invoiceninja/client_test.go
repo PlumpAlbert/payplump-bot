@@ -395,7 +395,7 @@ func TestPaymentCollectionsRequireArrays(t *testing.T) {
 }
 
 func TestAppVersion(t *testing.T) {
-	for _, versions := range [][]string{nil, {"5.13.47"}, {"5.13.47-beta.1+synthetic.001"}, {"5.13.47-0"}, {"0.0.0"}, {"05.13.47"}, {"5.13.47-01"}, {"v5.13.47"}, {"5.13"}, {""}, {"5.13.47", "5.13.47"}, {"synthetic-private-header"}, {"5.13.47+"}, {strings.Repeat("1", 129) + ".0.0"}} {
+	for _, versions := range [][]string{nil, {"5.13.47"}, {"5.13.50"}, {"5.13.47-beta.1+synthetic.001"}, {"5.13.47-0"}, {"0.0.0"}, {"05.13.47"}, {"5.13.47-01"}, {"v5.13.47"}, {"5.13"}, {""}, {"5.13.47", "5.13.47"}, {"synthetic-private-header"}, {"5.13.47+"}, {strings.Repeat("1", 129) + ".0.0"}} {
 		t.Run(fmt.Sprint(versions), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				for _, v := range versions {
@@ -405,7 +405,7 @@ func TestAppVersion(t *testing.T) {
 			}))
 			defer server.Close()
 			p, err := clientAt(t, server.URL).ListCustomers(context.Background(), 1, 25)
-			valid := versions == nil || (len(versions) == 1 && (versions[0] == "5.13.47" || versions[0] == "5.13.47-beta.1+synthetic.001" || versions[0] == "5.13.47-0" || versions[0] == "0.0.0"))
+			valid := versions == nil || (len(versions) == 1 && (versions[0] == "5.13.47" || versions[0] == "5.13.50" || versions[0] == "5.13.47-beta.1+synthetic.001" || versions[0] == "5.13.47-0" || versions[0] == "0.0.0"))
 			if valid {
 				want := ""
 				if versions != nil {
@@ -414,7 +414,7 @@ func TestAppVersion(t *testing.T) {
 				if err != nil || p.AppVersion != want {
 					t.Fatalf("version = %q, error = %v", p.AppVersion, err)
 				}
-			} else if err == nil || p.AppVersion != "" || strings.Contains(err.Error(), "synthetic-private-header") {
+			} else if err != nil || p.AppVersion != "" {
 				t.Fatalf("unsafe version handling: %q, %v", p.AppVersion, err)
 			}
 		})

@@ -115,3 +115,27 @@ func TestCycleInvoiceStrictFields(t *testing.T) {
 		}
 	}
 }
+
+func TestCycleReaderReleaseHeadersDoNotGateExactReads(t *testing.T) {
+	for _, version := range []string{"5.13.47", "5.13.50", ""} {
+		t.Run(version, func(t *testing.T) {
+			calls := 0
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if version != "" {
+					w.Header().Set("X-APP-VERSION", version)
+				}
+				fmt.Fprintf(w, `{"data":%s}`, cycleInvoiceJSON)
+			}))
+			defer s.Close()
+			reader, err := invoiceninja.NewCycleReader(s.URL, "token", time.Second, 1, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := reader.GetInvoice(context.Background(), "inv-1")
+			if err != nil || got.ID != "inv-1" || calls != 1 {
+				t.Fatalf("release gated exact read: %+v %v calls=%d", got, err, calls)
+			}
+		})
+	}
+}

@@ -53,8 +53,8 @@ func TestActivationConfigExplicitPilotAndDependencies(t *testing.T) {
 	}
 	for key, values := range map[string][]string{
 		"ACTIVATION_EXCLUSIVE_WRITER": {"", "false", "bad"}, "ACTIVATION_ALLOWED_TELEGRAM_IDS": {"", "0", "-1", "01", "1,1", "1,", "9223372036854775808"},
-		"REGISTRATION_EXCLUDED_TELEGRAM_IDS": {"0", "01", "1,1"}, "SUI_INBOUND_IDS": {"", "0", "1,1"}, "SUI_VERSION": {"", "1.6.3", "1.6.4-dev"},
-		"INVOICE_NINJA_TELEGRAM_ID_FIELD": {"", "number", "custom_value1"}, "INVOICE_NINJA_VERSION": {"5.13.48"}, "INVOICE_NINJA_INCLUSIVE_TAXES": {"", "bad"},
+		"REGISTRATION_EXCLUDED_TELEGRAM_IDS": {"0", "01", "1,1"}, "SUI_INBOUND_IDS": {"", "0", "1,1"},
+		"INVOICE_NINJA_TELEGRAM_ID_FIELD": {"", "number", "custom_value1"}, "INVOICE_NINJA_INCLUSIVE_TAXES": {"", "bad"},
 		"PAYMENTS_CURRENCY_ID": {"", "RUB", "01", "0", "1e2"}, "ACTIVATION_WORKERS": {"0", "5", "bad"}, "ACTIVATION_MAX_SUI_ACCOUNTS": {"0", "1001", "bad"},
 		"ACTIVATION_POLL_INTERVAL": {"0s", "1ns", "2m", "bad"}, "ACTIVATION_HTTP_TIMEOUT": {"500ms", "11s", "bad"}, "INTEGRATION_PAGE_SIZE": {"0", "101", "bad"}, "INTEGRATION_MAX_PAGES": {"0", "101", "bad"},
 		"INVOICE_NINJA_BASE_URL": {"https://billing.invalid/api/v1", "https://user:synthetic@billing.invalid", "https://billing.invalid?secret=synthetic"},
@@ -80,7 +80,7 @@ func TestActivationConfigValidateAlsoProtectsDirectConstruction(t *testing.T) {
 		for i := range c.AllowedTelegramIDs {
 			c.AllowedTelegramIDs[i] = int64(i + 1)
 		}
-	}, func(c *Config) { c.ExcludedTelegramIDs = []int64{1, 1} }, func(c *Config) { c.InboundIDs = nil }, func(c *Config) { c.CurrencyID = "01" }, func(c *Config) { c.SUIVersion = "1.7.0" }, func(c *Config) { c.Token = "synthetic\u00a0token" }, func(c *Config) { c.Workers = 5 }}
+	}, func(c *Config) { c.ExcludedTelegramIDs = []int64{1, 1} }, func(c *Config) { c.InboundIDs = nil }, func(c *Config) { c.CurrencyID = "01" }, func(c *Config) { c.Token = "synthetic\u00a0token" }, func(c *Config) { c.Workers = 5 }}
 	for _, mutate := range mutations {
 		c := good
 		mutate(&c)
@@ -114,11 +114,53 @@ func TestActivationPolicyFingerprintFreezesScopeNotSecretRotation(t *testing.T) 
 	if reordered.PolicyHash() != base {
 		t.Fatal("secret rotation or set ordering changed policy")
 	}
-	for _, mutate := range []func(*Config){func(c *Config) { c.BaseURL += "/other" }, func(c *Config) { c.SUIBaseURL += "/other" }, func(c *Config) { c.CurrencyID = "2" }, func(c *Config) { c.ProductID = "other" }, func(c *Config) { c.InclusiveTaxes = true }, func(c *Config) { c.SUIVersion = "v1.6.4" }, func(c *Config) { c.InboundIDs = []int64{9, 7} }, func(c *Config) { c.AllowedTelegramIDs = []int64{101} }, func(c *Config) { c.ExcludedTelegramIDs = []int64{201} }} {
+	for _, mutate := range []func(*Config){func(c *Config) { c.BaseURL += "/other" }, func(c *Config) { c.SUIBaseURL += "/other" }, func(c *Config) { c.CurrencyID = "2" }, func(c *Config) { c.ProductID = "other" }, func(c *Config) { c.InclusiveTaxes = true }, func(c *Config) { c.TelegramIDField = "name" }, func(c *Config) { c.InboundIDs = []int64{9, 7} }, func(c *Config) { c.AllowedTelegramIDs = []int64{101} }, func(c *Config) { c.ExcludedTelegramIDs = []int64{201} }} {
 		changed := c
 		mutate(&changed)
 		if changed.PolicyHash() == base {
 			t.Fatal("authorization policy change was not fenced")
+		}
+	}
+}
+
+func TestActivationPolicyHashPreservesLegacyVersionLabel(t *testing.T) {
+	c := activationTestConfig()
+	base := c.PolicyHash()
+	if got := fmt.Sprintf("%x", base); got != "f1d73de66f87e47a77b433d3e1022469e6684e5ea04dd334b533a2e1ddfe0a3b" {
+		t.Fatalf("legacy default policy hash changed: %s", got)
+	}
+	for _, version := range []string{"1.6.4", "", "v1.6.4", "1.6.5", "custom"} {
+		t.Run(version, func(t *testing.T) {
+			c := activationTestConfig()
+			c.SUIVersion = version
+			if c.PolicyHash() != base {
+				t.Fatal("version metadata changed policy hash")
+			}
+			if c.SUIVersion != version {
+				t.Fatal("policy hashing changed version metadata")
+			}
+		})
+	}
+}
+
+func TestActivationVersionsAreOptionalAndInformational(t *testing.T) {
+	enabledActivationEnv(t)
+	for _, ninja := range []string{"", "5.13.46", "5.13.48", "v99.2.1+local", "custom-build"} {
+		for _, panel := range []string{"", "1.6.3", "1.7.0", "v99.2.1-dev", "custom-build"} {
+			t.Run(ninja+"/"+panel, func(t *testing.T) {
+				t.Setenv("INVOICE_NINJA_VERSION", ninja)
+				t.Setenv("SUI_VERSION", panel)
+				cfg, err := ConfigFromEnv(true, true)
+				if err != nil {
+					t.Fatalf("informational versions rejected: %v", err)
+				}
+				if cfg.SUIVersion != panel {
+					t.Fatal("SUI version metadata was not preserved")
+				}
+				if err := cfg.Validate(); err != nil {
+					t.Fatalf("version metadata failed validation: %v", err)
+				}
+			})
 		}
 	}
 }

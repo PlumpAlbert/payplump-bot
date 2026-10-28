@@ -13,14 +13,15 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
 )
 
-// SupportedSettlementVersion pins the read contract to Invoice Ninja source
+// SupportedSettlementVersion records the inspected read-contract source baseline:
 // commit 493c3884e4214028bc5970cb41bafbd9c4d96401 (v5.13.47). This is a
 // source-verified contract, not evidence of live settlement or write testing.
 const SupportedSettlementVersion = "5.13.47"
 
 var (
-	ErrSettlementContract   = errInvalidResponse
-	ErrSettlementVersion    = errors.New("Invoice Ninja settlement requires app version 5.13.47")
+	ErrSettlementContract = errInvalidResponse
+	// ErrSettlementVersion is retained for compatibility; release headers no longer gate reads.
+	ErrSettlementVersion    = errors.New("Invoice Ninja settlement release version mismatch")
 	ErrSettlementIncomplete = errors.New("Invoice Ninja settlement inventory is incomplete")
 )
 
@@ -192,10 +193,10 @@ func (c *SettlementClient) ListSettlementPayments(ctx context.Context, customerI
 	return nil, ErrSettlementIncomplete
 }
 
-// Decode the envelope only after checking the authenticated response version.
+// Decode only bounded, unambiguous JSON, independently of release headers.
 // The shared transport is bounded, GET-only and does not follow redirects.
 func (c *SettlementClient) get(ctx context.Context, path []string, query url.Values, result any) error {
-	return getUniqueNinjaJSON(ctx, c.transport, path, query, SupportedSettlementVersion, ErrSettlementVersion, result)
+	return getUniqueNinjaJSON(ctx, c.transport, path, query, result)
 }
 
 // Strict settlement decoding is independent of the permissive legacy DTOs.

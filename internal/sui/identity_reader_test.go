@@ -23,8 +23,6 @@ func TestRecordReaderListIdentities(t *testing.T) {
 			t.Errorf("unexpected request method or authentication")
 		}
 		switch r.URL.RequestURI() {
-		case "/panel/apiv2/status?r=sys":
-			fmt.Fprint(w, readerStatus)
 		case "/panel/apiv2/clients":
 			fmt.Fprint(w, body)
 		default:
@@ -48,8 +46,8 @@ func TestRecordReaderListIdentities(t *testing.T) {
 	if strings.Contains(formatted, "legacy-123") || strings.Contains(formatted, "identity-secret") || slog.AnyValue(got[0]).String() != "[private SUI identity]" {
 		t.Fatal("identity formatting disclosed private fields")
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("expected one version and one inventory GET, got %d", calls.Load())
+	if calls.Load() != 1 {
+		t.Fatalf("expected only one inventory GET, got %d", calls.Load())
 	}
 }
 
@@ -80,8 +78,6 @@ func TestRecordReaderListIdentitiesRejectsUntrustedInventory(t *testing.T) {
 					t.Errorf("non-GET request issued")
 				}
 				switch r.URL.Path {
-				case "/apiv2/status":
-					fmt.Fprint(w, readerStatus)
 				case "/apiv2/clients":
 					clientReads.Add(1)
 					fmt.Fprint(w, response)
@@ -102,32 +98,27 @@ func TestRecordReaderListIdentitiesRejectsUntrustedInventory(t *testing.T) {
 	}
 }
 
-func TestRecordReaderListIdentitiesWrongVersionAndEmptyList(t *testing.T) {
-	for _, tc := range []struct {
-		status, clients string
-		wantErr         bool
-	}{
-		{`{"success":true,"obj":{"sys":{"appVersion":"1.6.5"}}}`, `{"success":true,"obj":{"clients":[]}}`, true},
-		{readerStatus, `{"success":true,"obj":{"clients":[]}}`, false},
-	} {
-		var clientReads atomic.Int32
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet {
-				t.Errorf("non-GET request issued")
+func TestIdentityReaderEmptyListWithoutVersionProbe(t *testing.T) {
+	for _, version := range []string{"", "1.6.5", "v1.6.4", "1.6.4+build", "unknown"} {
+		t.Run(version, func(t *testing.T) {
+			var reads atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reads.Add(1)
+				if r.Method != http.MethodGet || r.URL.RequestURI() != "/apiv2/clients" {
+					t.Error("unexpected request or version probe")
+				}
+				fmt.Fprint(w, `{"success":true,"obj":{"clients":[]}}`)
+			}))
+			defer server.Close()
+			reader, err := NewIdentityReader(server.URL, "identity-secret", version, time.Second)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if r.URL.Path == "/apiv2/status" {
-				fmt.Fprint(w, tc.status)
-				return
+			got, err := reader.ListIdentities(context.Background(), 1)
+			if err != nil || len(got) != 0 || reads.Load() != 1 {
+				t.Fatal("empty inventory rejected or version probed", err)
 			}
-			clientReads.Add(1)
-			fmt.Fprint(w, tc.clients)
-		}))
-		reader, _ := NewIdentityReader(server.URL, "identity-secret", "1.6.4", time.Second)
-		got, err := reader.ListIdentities(context.Background(), 1)
-		server.Close()
-		if (err != nil) != tc.wantErr || (!tc.wantErr && len(got) != 0) || (tc.wantErr && clientReads.Load() != 0) {
-			t.Fatal("version claim or empty inventory contract failed")
-		}
+		})
 	}
 }
 
@@ -135,9 +126,16 @@ func TestIdentityReaderValidationBeforeIO(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
 	defer server.Close()
-	for _, version := range []string{"", "1.6.5"} {
-		if reader, err := NewIdentityReader(server.URL, "identity-secret", version, time.Second); reader != nil || err == nil {
-			t.Fatal("invalid declared version accepted")
+	for _, args := range []struct {
+		base, token string
+		timeout     time.Duration
+	}{
+		{server.URL + "/apiv2", "identity-secret", time.Second},
+		{server.URL, "", time.Second},
+		{server.URL, "identity-secret", 0},
+	} {
+		if reader, err := NewIdentityReader(args.base, args.token, "", args.timeout); reader != nil || err == nil {
+			t.Fatal("invalid configuration accepted")
 		}
 	}
 	reader, err := NewIdentityReader(server.URL, "identity-secret", "1.6.4", time.Second)

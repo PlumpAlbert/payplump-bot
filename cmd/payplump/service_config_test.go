@@ -147,7 +147,7 @@ func TestNormalServiceRejectsLegacyDisablingAndManualRevisions(t *testing.T) {
 	}
 }
 func TestNormalServiceValidatesActualBusinessParameters(t *testing.T) {
-	for _, key := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_IDS", "INVOICE_NINJA_BASE_URL", "INVOICE_NINJA_API_TOKEN", "INVOICE_NINJA_PRODUCT_ID", "INVOICE_NINJA_INCLUSIVE_TAXES", "PAYMENTS_CURRENCY_ID", "PAYMENTS_CURRENCY_CODE", "SUI_BASE_URL", "SUI_API_TOKEN", "SUI_INBOUND_IDS", "SUI_SUBSCRIPTION_BASE_URL", "PAYMENT_PHONE", "TZ"} {
+	for _, key := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_IDS", "INVOICE_NINJA_BASE_URL", "INVOICE_NINJA_API_TOKEN", "INVOICE_NINJA_PRODUCT_ID", "SUI_BASE_URL", "SUI_API_TOKEN", "SUI_INBOUND_IDS", "SUI_SUBSCRIPTION_BASE_URL", "PAYMENT_PHONE", "TZ"} {
 		t.Run(key, func(t *testing.T) {
 			values := normalServiceValues()
 			delete(values, key)
@@ -156,7 +156,7 @@ func TestNormalServiceValidatesActualBusinessParameters(t *testing.T) {
 			}
 		})
 	}
-	for key, value := range map[string]string{"SUI_VERSION": "1.6.5", "INVOICE_NINJA_VERSION": "5.13.46", "ACTIVATION_WORKERS": "0", "INVOICE_NINJA_TELEGRAM_ID_FIELD": "name", "TZ": "Not/A_Timezone"} {
+	for key, value := range map[string]string{"ACTIVATION_WORKERS": "0", "INVOICE_NINJA_TELEGRAM_ID_FIELD": "name", "TZ": "Not/A_Timezone"} {
 		t.Run(key, func(t *testing.T) {
 			values := normalServiceValues()
 			values[key] = value
@@ -166,6 +166,25 @@ func TestNormalServiceValidatesActualBusinessParameters(t *testing.T) {
 		})
 	}
 }
+func TestNormalServiceDoesNotPinProviderVersions(t *testing.T) {
+	for _, version := range []string{"", "5.13.50", "future-release"} {
+		values := normalServiceValues()
+		values["INVOICE_NINJA_VERSION"], values["SUI_VERSION"] = version, version
+		if err := parseNormalService(values); err != nil {
+			t.Fatalf("version metadata rejected: %v", err)
+		}
+	}
+}
+
+func TestNormalServiceNinjaWebhooksAreOptional(t *testing.T) {
+	values := normalServiceValues()
+	delete(values, "INVOICE_NINJA_WEBHOOK_SECRET")
+	delete(values, "INVOICE_LIFECYCLE_WEBHOOK_SECRET")
+	if err := parseNormalService(values); err != nil {
+		t.Fatalf("polling without Ninja webhooks rejected: %v", err)
+	}
+}
+
 func TestServiceImportReusesBusinessSettingsAndPreservesAdminExclusions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/ninja/api/v1/products/product-a" {

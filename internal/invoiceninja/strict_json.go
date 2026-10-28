@@ -69,17 +69,13 @@ func ninjaJSONValue(d *json.Decoder, depth int) bool {
 	}
 }
 
-// getUniqueNinjaJSON applies the strict read pipeline used by pinned Invoice
-// Ninja capabilities. Callers keep their own version and structural contracts.
-func getUniqueNinjaJSON(ctx context.Context, client *integrationhttp.Client, path []string, query url.Values, expectedVersion string, versionErr error, result any) error {
+// getUniqueNinjaJSON validates bounded, unambiguous JSON independently of release
+// headers. Callers retain their structural and business contracts.
+func getUniqueNinjaJSON(ctx context.Context, client *integrationhttp.Client, path []string, query url.Values, result any) error {
 	var raw json.RawMessage
-	headers, err := client.Get(ctx, path, query, &raw)
+	_, err := client.Get(ctx, path, query, &raw)
 	if err != nil {
 		return err
-	}
-	versions := headers.Values("X-APP-VERSION")
-	if len(versions) != 1 || versions[0] != expectedVersion {
-		return versionErr
 	}
 	if !uniqueNinjaJSON(raw) || json.Unmarshal(raw, result) != nil {
 		return errInvalidResponse

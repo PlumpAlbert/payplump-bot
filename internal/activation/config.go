@@ -52,9 +52,6 @@ func ConfigFromEnvironment(getenv func(string) string, telegramEnabled, payments
 	c.BaseURL, c.Token, c.ProductID = getenv("INVOICE_NINJA_BASE_URL"), getenv("INVOICE_NINJA_API_TOKEN"), getenv("INVOICE_NINJA_PRODUCT_ID")
 	c.CurrencyID, c.TelegramIDField = getenv("PAYMENTS_CURRENCY_ID"), getenv("INVOICE_NINJA_TELEGRAM_ID_FIELD")
 	c.SUIBaseURL, c.SUIToken, c.SUIVersion = getenv("SUI_BASE_URL"), getenv("SUI_API_TOKEN"), getenv("SUI_VERSION")
-	if version := getenv("INVOICE_NINJA_VERSION"); version != "" && strings.TrimPrefix(version, "v") != invoiceninja.SupportedRecurringVersion {
-		return Config{}, errors.New("activation supports Invoice Ninja 5.13.47 only")
-	}
 	for _, item := range []struct {
 		key    string
 		target *bool
@@ -181,13 +178,16 @@ func nativeCurrency(value string) bool {
 // and resource limits are intentionally excluded; endpoint/identity/pricing and
 // private scope changes require quiescence and review of any unfinished flow.
 func (c Config) PolicyHash() [32]byte {
+	// This frozen label is solely for backward-compatible serialization,
+	// not an accepted-server-release check. Runtime SUIVersion is metadata.
+	const legacySUIVersionLabel = "1.6.4"
 	sorted := func(ids []int64) []int64 { v := slices.Clone(ids); slices.Sort(v); return v }
 	raw, _ := json.Marshal(struct {
 		Version                                                          int
 		BaseURL, SUIBaseURL, SUIVersion, CurrencyID, ProductID, Identity string
 		InclusiveTaxes                                                   bool
 		Inbounds, Allowed, Excluded                                      []int64
-	}{policyVersion(c.ManagedClients), c.BaseURL, c.SUIBaseURL, c.SUIVersion, c.CurrencyID, c.ProductID, c.TelegramIDField, c.InclusiveTaxes, slices.Clone(c.InboundIDs), sorted(c.AllowedTelegramIDs), sorted(c.ExcludedTelegramIDs)})
+	}{policyVersion(c.ManagedClients), c.BaseURL, c.SUIBaseURL, legacySUIVersionLabel, c.CurrencyID, c.ProductID, c.TelegramIDField, c.InclusiveTaxes, slices.Clone(c.InboundIDs), sorted(c.AllowedTelegramIDs), sorted(c.ExcludedTelegramIDs)})
 	return sha256.Sum256(raw)
 }
 

@@ -1,4 +1,4 @@
-// Package sui provides read-only access to the verified S-UI v1.6.4 API.
+// Package sui provides validated access to the S-UI API.
 // Its partial DTOs must never be used to save clients or protocol settings.
 package sui
 

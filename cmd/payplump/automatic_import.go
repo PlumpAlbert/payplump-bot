@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sort"
@@ -23,7 +24,9 @@ import (
 )
 
 func serviceImportedRuntimeConfig(cfg lifecycle.EnforcementConfig) (importedRuntimeConfig, error) {
-	scope, e := importverify.SourceScope(cfg.BaseURL, cfg.Token, "5.13.47", cfg.SUIBaseURL, cfg.SUIToken, cfg.SUIVersion)
+	// These labels identify the persisted import contract, not installed API
+	// releases. Keep them stable so a server upgrade does not orphan provenance.
+	scope, e := importverify.SourceScope(cfg.BaseURL, cfg.Token, "5.13.47", cfg.SUIBaseURL, cfg.SUIToken, "1.6.4")
 	if e != nil {
 		return importedRuntimeConfig{}, errors.New("invalid normal service import source configuration")
 	}
@@ -42,7 +45,7 @@ func serviceVerificationConfig(ctx context.Context, get func(string) string, bot
 	}
 	productKey, e := api.ProductKey(ctx, cfg.ProductID)
 	if e != nil {
-		return c, errors.New("could not verify INVOICE_NINJA_PRODUCT_ID and its product_key against supported Invoice Ninja API")
+		return c, fmt.Errorf("Invoice Ninja product lookup (INVOICE_NINJA_PRODUCT_ID): %w", e)
 	}
 	scope, e := importverify.SourceScope(c.ninjaBase, c.ninjaToken, "5.13.47", c.suiBase, c.suiToken, "1.6.4")
 	if e != nil {

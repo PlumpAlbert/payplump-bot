@@ -49,7 +49,7 @@ func TestManagedAuthorizedNilDeniesBeforeIO(t *testing.T) {
 
 func TestManagedAuthorizedRunsOnlyAfterAllPreflights(t *testing.T) {
 	for _, operation := range []string{"create", "enable"} {
-		for _, failure := range []string{"none", "inventory", "inbound", "version"} {
+		for _, failure := range []string{"none", "inventory", "inbound"} {
 			t.Run(operation+"/"+failure, func(t *testing.T) {
 				p, call := managedAuthorizationCase(t, operation)
 				switch failure {
@@ -57,8 +57,6 @@ func TestManagedAuthorizedRunsOnlyAfterAllPreflights(t *testing.T) {
 					p.fullHook = func([]json.RawMessage) []json.RawMessage { return []json.RawMessage{} }
 				case "inbound":
 					p.inboundType = "wireguard"
-				case "version":
-					p.version = "unsupported"
 				}
 				denied := errors.New("synthetic authorization denied")
 				calls := 0
@@ -67,7 +65,7 @@ func TestManagedAuthorizedRunsOnlyAfterAllPreflights(t *testing.T) {
 					calls++
 					p.mu.Lock()
 					defer p.mu.Unlock()
-					if got != ctx || p.last != "status" || len(p.fullQueries) != 1 || p.posts != 0 {
+					if got != ctx || p.last != "inbounds" || len(p.fullQueries) != 1 || p.posts != 0 {
 						t.Error("authorization was not the final pre-save gate")
 					}
 					return denied

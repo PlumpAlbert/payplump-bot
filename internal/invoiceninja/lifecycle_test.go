@@ -72,8 +72,6 @@ func TestPauseAuthorizedLifecycle(t *testing.T) {
 	var posts, gets int
 	srv := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
-		case "GET /api/v1/ping":
-			recurringTestReply(t, w, map[string]any{})
 		case "GET /api/v1/recurring_invoices/recurring-A":
 			gets++
 			a := b
@@ -109,56 +107,75 @@ func TestPauseAuthorizedLifecycle(t *testing.T) {
 	}
 }
 func TestRescheduleAuthorizedUsesSparsePutAndNeverReplays(t *testing.T) {
-	d, b := lifecycleFixture(t, "3")
-	draft, e := PrepareSchedule(b, d, "2040-03-31", "2040-02-01")
-	if e != nil {
-		t.Fatal(e)
-	}
-	var gets, puts, calls int
-	srv := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method + " " + r.URL.Path {
-		case "GET /api/v1/ping":
-			recurringTestReply(t, w, map[string]any{})
-		case "GET /api/v1/recurring_invoices/recurring-A":
-			gets++
-			a := b
-			if gets > 1 {
-				a.NextSendDate = "2040-03-31"
-				a.NextSendDatetime = "2040-03-31T08:00:00Z"
-			}
-			recurringTestReply(t, w, map[string]any{"data": a, "extra": "must not be written"})
-		case "PUT /api/v1/recurring_invoices/recurring-A":
-			puts++
-			if r.Header.Get("Content-Type") != "application/json" {
-				t.Error("not JSON")
-			}
-			raw, _ := io.ReadAll(r.Body)
-			var fields map[string]json.RawMessage
-			_ = json.Unmarshal(raw, &fields)
-			if len(fields) != 2 || string(fields["next_send_date"]) != "\"2040-03-31\"" || string(fields["exchange_rate"]) != "1" {
-				t.Errorf("unexpected sparse payload %s", raw)
-			}
-			a := b
-			a.NextSendDate = "2040-03-31"
-			a.NextSendDatetime = "2040-03-31T08:00:00Z"
-			recurringTestReply(t, w, map[string]any{"data": a})
-		default:
-			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
-			http.NotFound(w, r)
+	for _, version := range []string{"5.13.47", "5.13.50", ""} {
+		for _, malformed := range []string{"", `{`, `{"data":null}`, `{"data":{},"DATA":{}}`} {
+			t.Run(version+"/"+malformed, func(t *testing.T) {
+				d, b := lifecycleFixture(t, "3")
+				draft, e := PrepareSchedule(b, d, "2040-03-31", "2040-02-01")
+				if e != nil {
+					t.Fatal(e)
+				}
+				var gets, puts, calls int
+				srv := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Del("X-APP-VERSION")
+					if version != "" {
+						w.Header().Set("X-APP-VERSION", version)
+					}
+					switch r.Method + " " + r.URL.Path {
+					case "GET /api/v1/recurring_invoices/recurring-A":
+						gets++
+						a := b
+						if gets > 1 {
+							a.NextSendDate = "2040-03-31"
+							a.NextSendDatetime = "2040-03-31T08:00:00Z"
+						}
+						recurringTestReply(t, w, map[string]any{"data": a, "extra": "must not be written"})
+					case "PUT /api/v1/recurring_invoices/recurring-A":
+						puts++
+						if r.Header.Get("Content-Type") != "application/json" {
+							t.Error("not JSON")
+						}
+						raw, _ := io.ReadAll(r.Body)
+						var fields map[string]json.RawMessage
+						_ = json.Unmarshal(raw, &fields)
+						if len(fields) != 2 || string(fields["next_send_date"]) != "\"2040-03-31\"" || string(fields["exchange_rate"]) != "1" {
+							t.Errorf("unexpected sparse payload %s", raw)
+						}
+						if malformed != "" {
+							_, _ = io.WriteString(w, malformed)
+							return
+						}
+						a := b
+						a.NextSendDate = "2040-03-31"
+						a.NextSendDatetime = "2040-03-31T08:00:00Z"
+						recurringTestReply(t, w, map[string]any{"data": a})
+					default:
+						t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+						http.NotFound(w, r)
+					}
+				})
+				c := recurringTestClient(t, srv.URL, 1, 1)
+				got, e := c.RescheduleAuthorized(context.Background(), draft, func(context.Context) error {
+					calls++
+					if gets != 1 || puts != 0 {
+						t.Errorf("callback timing")
+					}
+					return nil
+				})
+				if malformed != "" {
+					if !errors.Is(e, ErrRecurringUnknown) || got.ID != "" || puts != 1 || gets != 1 || calls != 1 {
+						t.Fatalf("malformed 2xx PUT not held: got=%+v err=%v gets=%d puts=%d calls=%d", got, e, gets, puts, calls)
+					}
+					return
+				}
+				if e != nil || got.NextSendDate != "2040-03-31" || puts != 1 || gets != 2 || calls != 1 {
+					t.Fatalf("got=%+v err=%v gets=%d puts=%d calls=%d", got, e, gets, puts, calls)
+				}
+			})
 		}
-	})
-	c := recurringTestClient(t, srv.URL, 1, 1)
-	got, e := c.RescheduleAuthorized(context.Background(), draft, func(context.Context) error {
-		calls++
-		if gets != 1 || puts != 0 {
-			t.Errorf("callback timing")
-		}
-		return nil
-	})
-	if e != nil || got.NextSendDate != "2040-03-31" || puts != 1 || gets != 2 || calls != 1 {
-		t.Fatalf("got=%+v err=%v gets=%d puts=%d calls=%d", got, e, gets, puts, calls)
 	}
 }
+
 func TestResumeAuthorizedUsesOriginalReceiptAndStartsOnly(t *testing.T) {
 	d, b := lifecycleFixture(t, "3")
 	receipt := RecurringReceipt{Amount: b.Amount, NextSendDatetime: b.NextSendDatetime}
@@ -169,8 +186,6 @@ func TestResumeAuthorizedUsesOriginalReceiptAndStartsOnly(t *testing.T) {
 	var gets, posts, calls int
 	srv := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
-		case "GET /api/v1/ping":
-			recurringTestReply(t, w, map[string]any{})
 		case "GET /api/v1/recurring_invoices/recurring-A":
 			gets++
 			a := b
@@ -234,8 +249,6 @@ func TestLifecycleRefusalsAndUnknownAreOneShot(t *testing.T) {
 			var mutations, calls, gets int
 			s := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 				switch r.Method + " " + r.URL.Path {
-				case "GET /api/v1/ping":
-					recurringTestReply(t, w, map[string]any{})
 				case "GET /api/v1/recurring_invoices/recurring-A":
 					gets++
 					recurringTestReply(t, w, map[string]any{"data": tc.before})

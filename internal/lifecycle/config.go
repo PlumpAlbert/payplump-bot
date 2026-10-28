@@ -45,12 +45,6 @@ func ConfigFromEnvironment(getenv func(string) string, telegramEnabled, payments
 		return Config{}, errors.New("INVOICE_LIFECYCLE_ENABLED requires Telegram and payment verification")
 	}
 	cfg.BaseURL, cfg.Token, cfg.WebhookSecret = getenv("INVOICE_NINJA_BASE_URL"), getenv("INVOICE_NINJA_API_TOKEN"), getenv("INVOICE_LIFECYCLE_WEBHOOK_SECRET")
-	if version := strings.TrimPrefix(getenv("INVOICE_NINJA_VERSION"), "v"); version != "" && version != "5.13.47" {
-		return Config{}, errors.New("invoice lifecycle supports Invoice Ninja 5.13.47 only")
-	}
-	if !validSecret(cfg.WebhookSecret) {
-		return Config{}, errors.New("INVOICE_LIFECYCLE_WEBHOOK_SECRET is required")
-	}
 	if raw := strings.TrimSpace(getenv("INVOICE_LIFECYCLE_ALLOWED_TELEGRAM_IDS")); raw != "" {
 		var err error
 		cfg.AllowedTelegramIDs, err = parseIDs(raw, 20)
@@ -96,8 +90,11 @@ func (c Config) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
-	if integrationhttp.ValidateBaseURL(c.BaseURL) != nil || c.Token == "" || strings.ContainsAny(c.Token, " \r\n\t") || !validSecret(c.WebhookSecret) {
-		return errors.New("invalid invoice lifecycle API or webhook configuration")
+	if integrationhttp.ValidateBaseURL(c.BaseURL) != nil {
+		return errors.New("INVOICE_NINJA_BASE_URL must be a service base URL")
+	}
+	if c.Token == "" || strings.ContainsAny(c.Token, " \r\n\t") {
+		return errors.New("INVOICE_NINJA_API_TOKEN must be set without spaces, tabs or line breaks")
 	}
 	if (!c.ManagedClients && (!validIDs(c.AllowedTelegramIDs, 1, 20) || len(enforcementEffectiveIDs(c.AllowedTelegramIDs, c.ExcludedTelegramIDs)) == 0)) || !validIDs(c.ExcludedTelegramIDs, 0, 1000) {
 		return errors.New("invoice lifecycle requires an effective pilot allowlist")

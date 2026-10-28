@@ -28,12 +28,10 @@ func recurringAuthorizationCase(t *testing.T, start bool) (*RecurringClient, *re
 		defer p.mu.Unlock()
 		path := r.Method + " " + r.URL.Path
 		p.paths = append(p.paths, path)
+		if p.badVersion {
+			w.Header().Set("X-APP-VERSION", "unsupported")
+		}
 		switch path {
-		case "GET /api/v1/ping":
-			if p.badVersion {
-				w.Header().Set("X-APP-VERSION", "unsupported")
-			}
-			recurringTestReply(t, w, map[string]any{})
 		case "GET /api/v1/recurring_invoices/recurring-A":
 			recurringTestReply(t, w, map[string]any{"data": p.record})
 		case "POST /api/v1/recurring_invoices":
@@ -68,9 +66,9 @@ func recurringAuthorizationCase(t *testing.T, start bool) (*RecurringClient, *re
 
 func recurringAuthorizationPreflights(start bool) []string {
 	if start {
-		return []string{"GET /api/v1/recurring_invoices/recurring-A", "GET /api/v1/ping"}
+		return []string{"GET /api/v1/recurring_invoices/recurring-A"}
 	}
-	return []string{"GET /api/v1/ping"}
+	return nil
 }
 
 func TestRecurringAuthorizedNilDeniesBeforeIO(t *testing.T) {
@@ -105,12 +103,12 @@ func TestRecurringAuthorizedRunsAfterAllPreflights(t *testing.T) {
 				p.mu.Lock()
 				defer p.mu.Unlock()
 				if got != ctx || !reflect.DeepEqual(p.paths, recurringAuthorizationPreflights(start)) || p.posts != 0 {
-					t.Error("authorization ran before the complete GET/probe sequence")
+					t.Error("authorization ran before the complete exact-resource GET sequence")
 				}
 				return denied
 			})
 			want := 0
-			if failure == "none" {
+			if failure == "none" || failure == "version" {
 				want = 1
 				if err != denied {
 					t.Fatal("callback rejection was changed")

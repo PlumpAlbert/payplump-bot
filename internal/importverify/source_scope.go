@@ -13,11 +13,13 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
 )
 
-// SourceScope hashes the normalized source tenants, pinned versions, and
-// fingerprints of credentials. Raw credentials are never included in output.
-func SourceScope(ninjaBase, ninjaToken, ninjaVersion, suiBase, suiToken, suiVersion string) (string, error) {
+// SourceScope hashes source tenants and credential fingerprints. The legacy
+// release labels in the serialized hash are frozen contract identifiers, not
+// installed-version requirements. Keep them unchanged for existing provenance.
+// Version arguments remain for source compatibility and are ignored.
+func SourceScope(ninjaBase, ninjaToken, _ string, suiBase, suiToken, _ string) (string, error) {
 	if integrationhttp.ValidateBaseURL(ninjaBase) != nil || integrationhttp.ValidateBaseURL(suiBase) != nil ||
-		!validSecret(ninjaToken) || !validSecret(suiToken) || normalizeNinjaVersion(ninjaVersion) != "5.13.47" || normalizeSUIVersion(suiVersion) != "1.6.4" {
+		!validSecret(ninjaToken) || !validSecret(suiToken) {
 		return "", errors.New("invalid import verification source scope")
 	}
 	ninja, err := normalizedBase(ninjaBase)
@@ -49,8 +51,6 @@ func fingerprint(s string) string { sum := sha256.Sum256([]byte(s)); return hex.
 func validSecret(s string) bool {
 	return s != "" && utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) < 0
 }
-func normalizeNinjaVersion(s string) string { return strings.TrimPrefix(s, "v") }
-func normalizeSUIVersion(s string) string   { return strings.TrimPrefix(s, "v") }
 func normalizedBase(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {

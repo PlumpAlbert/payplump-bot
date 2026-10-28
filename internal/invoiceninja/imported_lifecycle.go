@@ -329,9 +329,6 @@ func (c *ImportedRecurringClient) PauseAuthorized(ctx context.Context, d Importe
 	return c.confirm(ctx, d.profile, b, "3", b.NextSendDate)
 }
 func (c *ImportedRecurringClient) preflight(ctx context.Context, b RecurringRecord, p ImportedRecurringProfile) error {
-	if e := c.base.probe(ctx); e != nil {
-		return e
-	}
 	f, e := c.Get(ctx, b.ID)
 	if e != nil {
 		return e
@@ -394,11 +391,11 @@ func (c *ImportedRecurringClient) RescheduleAuthorized(ctx context.Context, d Im
 		Exchange json.Number `json:"exchange_rate"`
 	}{d.date, b.ExchangeRate}
 	var raw json.RawMessage
-	h, e := c.base.writer.Put(ctx, []string{"api", "v1", "recurring_invoices", b.ID}, nil, payload, &raw)
+	_, e := c.base.writer.Put(ctx, []string{"api", "v1", "recurring_invoices", b.ID}, nil, payload, &raw)
 	if e != nil {
 		return RecurringRecord{}, errors.Join(ErrRecurringUnknown, e)
 	}
-	if recurringVersion(h) != nil || !uniqueNinjaJSON(raw) {
+	if !uniqueNinjaJSON(raw) {
 		return RecurringRecord{}, errors.Join(ErrRecurringUnknown, errInvalidResponse)
 	}
 	var env struct {

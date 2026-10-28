@@ -130,9 +130,6 @@ func (c EnforcementConfig) validateSettings() error {
 	if invoiceninja.ValidateClientConfiguration(c.BaseURL, c.Token, c.HTTPTimeout) != nil || strings.ContainsAny(c.Token, " ") {
 		return errors.New("invalid invoice overdue Invoice Ninja configuration")
 	}
-	if c.InvoiceNinjaVersion != "" && strings.TrimPrefix(c.InvoiceNinjaVersion, "v") != invoiceninja.SupportedRecurringVersion {
-		return errors.New("invoice overdue enforcement supports Invoice Ninja 5.13.47 only")
-	}
 	if (!c.ManagedClients && (!validIDs(c.AllowedTelegramIDs, 1, 20) || len(enforcementEffectiveIDs(c.AllowedTelegramIDs, c.ExcludedTelegramIDs)) == 0)) || !validIDs(c.ExcludedTelegramIDs, 0, 1000) {
 		return errors.New("invoice overdue enforcement requires an effective pilot allowlist")
 	}

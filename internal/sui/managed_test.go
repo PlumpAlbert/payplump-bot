@@ -85,16 +85,13 @@ func (p *managedPanel) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	route := strings.TrimPrefix(r.URL.EscapedPath(), prefix)
-	previous := p.last
 	p.last = route
 	w.Header().Set("Content-Type", "application/json")
 	reply := func(obj any) { _ = json.NewEncoder(w).Encode(map[string]any{"success": true, "obj": obj}) }
 	if r.Method == http.MethodGet {
 		switch route {
 		case "status":
-			if r.URL.RawQuery != "r=sys" {
-				p.t.Error("wrong version query")
-			}
+			p.t.Error("unexpected version-only status probe")
 			reply(map[string]any{"sys": map[string]any{"appVersion": p.version}})
 		case "inbounds":
 			if r.URL.RawQuery != "" {
@@ -150,9 +147,6 @@ func (p *managedPanel) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.posts++
-	if previous != "status" {
-		p.t.Error("POST missing immediate version preflight")
-	}
 	if r.URL.RawQuery != "" || r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" || r.ParseForm() != nil || len(r.PostForm) != 3 || r.PostForm.Get("object") != "clients" || len(r.PostForm["data"]) != 1 || len(r.PostForm["action"]) != 1 {
 		p.t.Error("not the source-pinned save form")
 		w.WriteHeader(400)
@@ -531,7 +525,8 @@ func TestValidateManagedClientConfigurationMatchesConstructor(t *testing.T) {
 	}{
 		{"valid", "https://synthetic.invalid/panel", "synthetic-token", "1.6.4", time.Second, 10, true},
 		{"valid prefixed version", "http://synthetic.netbird.invalid", "synthetic-token", "v1.6.4", time.Second, 1, true},
-		{"invalid version", "https://synthetic.invalid/panel", "synthetic-token", "1.6.5", time.Second, 10, false},
+		{"new version", "https://synthetic.invalid/panel", "synthetic-token", "1.6.5", time.Second, 10, true},
+		{"absent version", "https://synthetic.invalid/panel", "synthetic-token", "", time.Second, 10, true},
 		{"invalid capacity", "https://synthetic.invalid/panel", "synthetic-token", "1.6.4", time.Second, 1001, false},
 		{"invalid base", "https://synthetic.invalid/panel/apiv2", "synthetic-token", "1.6.4", time.Second, 10, false},
 		{"invalid timeout", "https://synthetic.invalid/panel", "synthetic-token", "1.6.4", 31 * time.Second, 10, false},
@@ -549,25 +544,51 @@ func TestValidateManagedClientConfigurationMatchesConstructor(t *testing.T) {
 	}
 }
 
-func TestManagedRefusesVersionAndInvalidConstruction(t *testing.T) {
-	p, c := newManagedPanel(t)
-	d, _ := NewDisabledDraft([]int64{7})
-	for _, version := range []string{"", "1.6.3", "1.6.4-dev", "v1.6.4", "1.7.0"} {
-		p.version = version
-		if _, err := c.CreateDisabled(context.Background(), d); !errors.Is(err, ErrManagedVersion) || p.countPosts() != 0 {
-			t.Fatal("unmatched version claim permitted POST")
-		}
+func TestManagedAcceptsInformationalVersionsAndRuntimeDrift(t *testing.T) {
+	for _, version := range []string{"", "1.6.5", "v1.6.4", "1.6.4+build", "unknown"} {
+		t.Run(version, func(t *testing.T) {
+			p, _ := newManagedPanel(t)
+			c, err := NewManagedClient(p.server.URL+"/installed%20panel", "invented-token", version, time.Second, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.mu.Lock()
+			p.version = "1.6.5"
+			p.afterSave = func(p *managedPanel, _ ClientRecord, _ string) { p.version = "unknown-new-release" }
+			p.mu.Unlock()
+			d, err := NewDisabledDraft([]int64{7})
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := c.CreateDisabled(context.Background(), d)
+			if err != nil || created.Enabled() || p.countPosts() != 1 {
+				t.Fatal("compatible create rejected", err)
+			}
+			found, ok, err := c.FindCreated(context.Background(), d)
+			if err != nil || !ok || found.ID() != created.ID() {
+				t.Fatal("recovery rejected after release drift", err)
+			}
+			binding := Binding{ID: created.ID(), Name: created.Name(), CredentialsHash: created.CredentialsHash()}
+			enable, err := PrepareEnable(created, binding)
+			if err != nil {
+				t.Fatal(err)
+			}
+			enabled, err := c.Enable(context.Background(), enable)
+			expected := created
+			expected.wire.Enable = true
+			if err != nil || !enabled.Enabled() || !sameStatic(expected, enabled, false) || p.countPosts() != 2 {
+				t.Fatal("compatible enable rejected after release drift", err)
+			}
+			got, err := c.GetRecord(context.Background(), created.ID())
+			if err != nil || !got.Enabled() || !sameStatic(enabled, got, false) {
+				t.Fatal("record read rejected after release drift", err)
+			}
+		})
 	}
-	p.version = "v1.6.4"
-	c.declaredVersion = "v1.6.4"
-	if _, err := c.CreateDisabled(context.Background(), d); err != nil {
-		t.Fatal("explicitly declared version prefix rejected")
-	}
-	for _, version := range []string{"", "1.6.3", "v1.6.4-dev", " 1.6.4"} {
-		if _, err := NewManagedClient(p.server.URL, "invented-token", version, time.Second, 1); err == nil {
-			t.Fatal("accepted unpinned manual version")
-		}
-	}
+}
+
+func TestManagedInvalidConstruction(t *testing.T) {
+	p, _ := newManagedPanel(t)
 	for _, cap := range []int{-1, 0, 1001} {
 		if _, err := NewManagedClient(p.server.URL, "invented-token", "1.6.4", time.Second, cap); err == nil {
 			t.Fatal("accepted invalid cap")

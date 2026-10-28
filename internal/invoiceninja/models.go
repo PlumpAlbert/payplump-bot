@@ -1,5 +1,5 @@
 // Package invoiceninja separates read-only Invoice Ninja v5 access from
-// explicitly constructed, version-pinned billing writes.
+// explicitly constructed billing writes with strict response contracts.
 package invoiceninja
 
 import (

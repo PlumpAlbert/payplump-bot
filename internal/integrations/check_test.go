@@ -21,6 +21,7 @@ type fakeNinja struct {
 	fail           string
 	ver            string
 	productVersion string
+	product        invoiceninja.Product
 }
 
 func (f *fakeNinja) ListCustomers(_ context.Context, page, _ int) (invoiceninja.Page[invoiceninja.Customer], error) {
@@ -31,7 +32,7 @@ func (f *fakeNinja) GetProductWithVersion(context.Context, string) (invoiceninja
 	if f.fail == "product" {
 		return invoiceninja.Product{}, "", errors.New("synthetic product unavailable")
 	}
-	return invoiceninja.Product{ID: "synthetic-product", Price: json.Number("100")}, f.productVersion, nil
+	return f.product, f.productVersion, nil
 }
 func (f *fakeNinja) ListInvoices(context.Context, int, int) (invoiceninja.Page[invoiceninja.Invoice], error) {
 	return invoiceninja.Page[invoiceninja.Invoice]{Data: []invoiceninja.Invoice{}, AppVersion: f.ver}, nil
@@ -58,7 +59,7 @@ func exampleCheck() (Config, *fakeNinja, *fakeSUI) {
 	cfg.PageSize = 2
 	cfg.InvoiceNinja.ExpectedVersion = "5.13.47"
 	cfg.SUI.DeclaredVersion = "v1.6.4"
-	n := &fakeNinja{ver: "5.13.47", productVersion: "5.13.47", pages: map[int]invoiceninja.Page[invoiceninja.Customer]{
+	n := &fakeNinja{ver: "5.13.47", productVersion: "5.13.47", product: invoiceninja.Product{ID: "synthetic-product", Price: json.Number("100")}, pages: map[int]invoiceninja.Page[invoiceninja.Customer]{
 		1: {Data: []invoiceninja.Customer{{ID: "synthetic-a", IDNumber: "9007199254740993", Name: "never-print-name"}, {ID: "synthetic-b", IDNumber: "42"}}, Pagination: invoiceninja.Pagination{Total: 3, Count: 2, PerPage: 2, CurrentPage: 1, TotalPages: 2}, AppVersion: "5.13.47"},
 		2: {Data: []invoiceninja.Customer{{ID: "synthetic-archived", IDNumber: "43", ArchivedAt: 1}}, Pagination: invoiceninja.Pagination{Total: 3, Count: 1, PerPage: 2, CurrentPage: 2, TotalPages: 2}, AppVersion: "5.13.47"},
 	}}
@@ -107,7 +108,7 @@ func TestMissingSUIIsInformationalNotProofOfUnpaidOrMissingConfig(t *testing.T) 
 }
 
 func TestCheckRejectsPaginationBoundsRepeatedRowsAndChanges(t *testing.T) {
-	for _, kind := range []string{"limit", "repeated", "changing-total", "incomplete", "version-change"} {
+	for _, kind := range []string{"limit", "repeated", "changing-total", "incomplete"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg, n, s := exampleCheck()
 			switch kind {
@@ -125,10 +126,6 @@ func TestCheckRejectsPaginationBoundsRepeatedRowsAndChanges(t *testing.T) {
 				page := n.pages[1]
 				page.Pagination.TotalPages = 1
 				n.pages[1] = page
-			case "version-change":
-				page := n.pages[2]
-				page.AppVersion = "5.13.48"
-				n.pages[2] = page
 			}
 			report, err := check(context.Background(), cfg, n, s)
 			if err == nil || report.Status != "failed" || report.InvoiceNinja.InventoryComplete {
@@ -174,35 +171,97 @@ func TestCheckRejectsAmbiguousIdentifiersWithoutLabelMatching(t *testing.T) {
 	}
 }
 
-func TestCheckVersionsInboundsProductAndPublicOverride(t *testing.T) {
-	for _, kind := range []string{"version", "missing-version", "product-version", "product-missing-version", "inbound", "product", "public-base", "private-version-header"} {
+func TestCheckVersionsAreInformational(t *testing.T) {
+	for _, kind := range []string{"expected-mismatch", "missing-version", "version-change", "product-version", "product-missing-version", "sample-version", "all-missing", "no-declarations", "new-declarations"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg, n, s := exampleCheck()
+			wantVersion := n.ver
 			switch kind {
-			case "version":
+			case "expected-mismatch":
 				cfg.InvoiceNinja.ExpectedVersion = "5.13.46"
 			case "missing-version":
 				page := n.pages[1]
 				page.AppVersion = ""
 				n.pages[1] = page
+			case "version-change":
+				page := n.pages[2]
+				page.AppVersion = "5.13.50"
+				n.pages[2] = page
+				n.productVersion, n.ver = "", ""
+				wantVersion = "5.13.50"
 			case "product-version":
-				n.productVersion = "5.13.48"
+				n.productVersion, n.ver = "v5.13.50", ""
+				wantVersion = "5.13.50"
 			case "product-missing-version":
 				n.productVersion = ""
+			case "sample-version":
+				n.ver = "v5.13.50"
+				wantVersion = "5.13.50"
+			case "all-missing":
+				for number, page := range n.pages {
+					page.AppVersion = ""
+					n.pages[number] = page
+				}
+				n.productVersion, n.ver, wantVersion = "", "", ""
+			case "no-declarations":
+				cfg.InvoiceNinja.ExpectedVersion, cfg.SUI.DeclaredVersion = "", ""
+			case "new-declarations":
+				cfg.InvoiceNinja.ExpectedVersion, cfg.SUI.DeclaredVersion = "5.13.50", "v1.7.0"
+			}
+			report, err := check(context.Background(), cfg, n, s)
+			if err != nil || report.Status != "ok" || report.FailedCheck != "" || !report.InvoiceNinja.InventoryComplete || report.InvoiceNinja.AppVersion != wantVersion {
+				t.Fatalf("informational version rejected or last observed version lost: %+v, %v", report, err)
+			}
+			if report.SUI.VersionVerified || report.SUI.DeclaredVersion != cfg.SUI.DeclaredVersion {
+				t.Fatal("manual S-UI version declaration interpreted incorrectly")
+			}
+		})
+	}
+}
+
+func TestCheckRejectsInvalidHeadersInboundsProductAndPublicOverride(t *testing.T) {
+	for _, tc := range []struct{ kind, stage string }{
+		{"inbound", "sui_inbounds"},
+		{"product", "invoice_ninja_product"},
+		{"archived-product", "invoice_ninja_product"},
+		{"deleted-product", "invoice_ninja_product"},
+		{"public-base", "sui_subscription_base"},
+		{"private-version-header", "invoice_ninja_version"},
+		{"private-product-version", "invoice_ninja_version"},
+		{"private-sample-version", "invoice_ninja_version"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			cfg, n, s := exampleCheck()
+			switch tc.kind {
 			case "inbound":
 				s.inbounds = nil
 			case "product":
 				n.fail = "product"
+			case "archived-product":
+				n.product.ArchivedAt = 1
+			case "deleted-product":
+				n.product.IsDeleted = true
 			case "public-base":
 				s.settings.SubURI = "https://different.example.invalid/never-print-url"
 			case "private-version-header":
 				page := n.pages[1]
 				page.AppVersion = "never-print-header"
 				n.pages[1] = page
+			case "private-product-version":
+				n.productVersion = "never-print-header"
+			case "private-sample-version":
+				n.ver = "never-print-header"
 			}
 			report, err := check(context.Background(), cfg, n, s)
-			if err == nil || report.Status != "failed" || strings.Contains(err.Error(), "never-print") {
-				t.Fatal("configuration disagreement accepted or remote data leaked")
+			if err == nil || report.Status != "failed" || report.FailedCheck != tc.stage || strings.Contains(err.Error(), "never-print") {
+				t.Fatalf("invalid integration data accepted or remote data leaked: %+v, %v", report, err)
+			}
+			body, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(body), "never-print") {
+				t.Fatal("report exposed remote data")
 			}
 		})
 	}
@@ -228,7 +287,7 @@ func TestCheckUsingRealAdaptersAndSyntheticFixtures(t *testing.T) {
 	}
 	fixtures["/panel/apiv2/clients"] = []byte(strings.Replace(string(fixtures["/panel/apiv2/clients"]), "synthetic-account-a", "9007199254740993", 1))
 	var requests atomic.Int32
-	productVersion := "5.13.47"
+	appVersion, productVersion := "5.13.50", "5.13.50"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if r.Method != http.MethodGet || r.ContentLength != 0 {
@@ -246,7 +305,7 @@ func TestCheckUsingRealAdaptersAndSyntheticFixtures(t *testing.T) {
 			if r.Header.Get("X-API-TOKEN") != "synthetic-invoice-token" || r.Header.Get("Token") != "" {
 				t.Error("wrong Invoice Ninja authentication")
 			}
-			version := "5.13.47"
+			version := appVersion
 			if r.URL.Path == "/billing/api/v1/products/synthetic-product-1" {
 				version = productVersion
 			}
@@ -269,14 +328,19 @@ func TestCheckUsingRealAdaptersAndSyntheticFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requests.Load() != 8 || report.Mapping.ExactMatches != 1 || report.Mapping.SUIOutsideExactMapping != 1 || report.InvoiceNinja.AppVersion != "5.13.47" || report.Status != "ok" {
+	if requests.Load() != 8 || report.Mapping.ExactMatches != 1 || report.Mapping.SUIOutsideExactMapping != 1 || report.InvoiceNinja.AppVersion != "5.13.50" || report.Status != "ok" {
 		t.Fatalf("unexpected integration preflight summary: requests=%d, report=%+v", requests.Load(), report)
 	}
-	for _, version := range []string{"5.13.48", ""} {
+	for _, version := range []string{"5.13.51", ""} {
 		productVersion = version
 		report, err = Check(context.Background(), cfg)
-		if err == nil || report.Status != "failed" || report.FailedCheck != "invoice_ninja_version" {
-			t.Fatalf("product endpoint version %q was not checked: %+v, %v", version, report, err)
+		if err != nil || report.Status != "ok" || report.InvoiceNinja.AppVersion != "5.13.50" {
+			t.Fatalf("informational product endpoint version %q was rejected: %+v, %v", version, report, err)
 		}
+	}
+	appVersion, productVersion = "", ""
+	report, err = Check(context.Background(), cfg)
+	if err != nil || report.Status != "ok" || report.InvoiceNinja.AppVersion != "" {
+		t.Fatalf("missing informational version headers rejected: %+v, %v", report, err)
 	}
 }

@@ -22,6 +22,7 @@ import (
 // or an activation runtime. Plain creation makes a DRAFT, not an ordinary invoice.
 // Company update_products can enqueue product updates; installed event handlers
 // and external automation are unknown. No claim of side-effect-free writes is made.
+// SupportedRecurringVersion records this baseline, not a runtime release gate.
 const SupportedRecurringVersion = "5.13.47"
 
 var (
@@ -337,14 +338,6 @@ func (c *RecurringClient) futureFirst(record RecurringRecord, draft RecurringDra
 	return nil
 }
 
-func recurringVersion(headers http.Header) error {
-	values := headers.Values("X-APP-VERSION")
-	if len(values) != 1 || values[0] != SupportedRecurringVersion {
-		return ErrWriteVersion
-	}
-	return nil
-}
-
 type recurringGetter func(context.Context, []string, url.Values, any) error
 
 func (c *RecurringClient) get(ctx context.Context, path []string, query url.Values, result any) error {
@@ -352,23 +345,7 @@ func (c *RecurringClient) get(ctx context.Context, path []string, query url.Valu
 }
 
 func getRecurring(ctx context.Context, reader *integrationhttp.Client, path []string, query url.Values, result any) error {
-	var raw json.RawMessage
-	headers, err := reader.Get(ctx, path, query, &raw)
-	if err != nil {
-		return err
-	}
-	if err := recurringVersion(headers); err != nil {
-		return err
-	}
-	if !uniqueNinjaJSON(raw) || json.Unmarshal(raw, result) != nil {
-		return errInvalidResponse
-	}
-	return nil
-}
-
-func (c *RecurringClient) probe(ctx context.Context) error {
-	var raw json.RawMessage
-	return c.get(ctx, []string{"api", "v1", "ping"}, nil, &raw)
+	return getUniqueNinjaJSON(ctx, reader, path, query, result)
 }
 
 // Get includes archived/deleted entities at the source pin and checks the exact
@@ -451,11 +428,8 @@ func (c *RecurringClient) Find(ctx context.Context, customerID string) ([]Recurr
 // Every error from the moment Writer.Post is invoked is conservatively unknown.
 func (c *RecurringClient) post(ctx context.Context, path []string, payload, result any) error {
 	var raw json.RawMessage
-	headers, err := c.writer.Post(ctx, path, nil, payload, &raw)
+	_, err := c.writer.Post(ctx, path, nil, payload, &raw)
 	if err != nil {
-		return errors.Join(ErrRecurringUnknown, err)
-	}
-	if err := recurringVersion(headers); err != nil {
 		return errors.Join(ErrRecurringUnknown, err)
 	}
 	if !uniqueNinjaJSON(raw) || json.Unmarshal(raw, result) != nil {
@@ -468,7 +442,7 @@ func (c *RecurringClient) CreateDraft(ctx context.Context, draft RecurringDraft)
 	return c.createDraft(ctx, draft, nil)
 }
 
-// CreateDraftAuthorized requires final authorization after the version probe and
+// CreateDraftAuthorized requires final authorization after local draft validation and
 // before the final clock check. Rejection is unchanged and never attempts a POST.
 func (c *RecurringClient) CreateDraftAuthorized(ctx context.Context, draft RecurringDraft, authorize func(context.Context) error) (RecurringRecord, error) {
 	if authorize == nil {
@@ -483,9 +457,6 @@ func (c *RecurringClient) createDraft(ctx context.Context, draft RecurringDraft,
 		return RecurringRecord{}, err
 	}
 	if err := c.futureDate(draft, c.now()); err != nil {
-		return RecurringRecord{}, err
-	}
-	if err := c.probe(ctx); err != nil {
 		return RecurringRecord{}, err
 	}
 	if authorize != nil {
@@ -523,8 +494,8 @@ func (c *RecurringClient) StartFirst(ctx context.Context, id string, draft Recur
 	return c.startFirst(ctx, id, draft, nil, nil)
 }
 
-// StartFirstAuthorized requires final authorization after the exact GET and
-// version probe, before the final date/UTC schedule check. It never retries.
+// StartFirstAuthorized requires final authorization after the exact GET,
+// before the final date/UTC schedule check. It never retries.
 func (c *RecurringClient) StartFirstAuthorized(ctx context.Context, id string, draft RecurringDraft, authorize func(context.Context) error) (RecurringRecord, error) {
 	if authorize == nil {
 		return RecurringRecord{}, errRecurringDraft
@@ -571,9 +542,6 @@ func (c *RecurringClient) startFirst(ctx context.Context, id string, draft Recur
 		return RecurringRecord{}, errInvalidResponse
 	}
 	if err := c.futureFirst(before, draft, c.now()); err != nil {
-		return RecurringRecord{}, err
-	}
-	if err := c.probe(ctx); err != nil {
 		return RecurringRecord{}, err
 	}
 	if authorize != nil {

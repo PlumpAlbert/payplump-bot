@@ -57,8 +57,6 @@ func TestConfigRejectsInvalidValuesAndRedactsInputs(t *testing.T) {
 		func(c *Config) { c.InvoiceNinja.ProductID = "" },
 		func(c *Config) { c.InvoiceNinja.TelegramIDField = "number" },
 		func(c *Config) { c.InvoiceNinja.TelegramIDField = "id" },
-		func(c *Config) { c.InvoiceNinja.ExpectedVersion = "never-print-me" },
-		func(c *Config) { c.SUI.DeclaredVersion = "never-print-me" },
 		func(c *Config) { c.SUI.InboundIDs = nil },
 		func(c *Config) { c.SUI.InboundIDs = []int64{2, 2} },
 		func(c *Config) { c.SUI.InboundIDs = []int64{-1} },
@@ -89,5 +87,27 @@ func TestConfigRejectsMalformedEnvironment(t *testing.T) {
 				t.Fatal("malformed environment accepted or not redacted")
 			}
 		})
+	}
+}
+
+func TestConfigVersionsAreOptionalAndInformational(t *testing.T) {
+	setConfigEnv(t)
+	for _, ninja := range []string{"", "5.13.48", "v99.2.1+local", "custom-build"} {
+		for _, panel := range []string{"", "1.7.0", "v99.2.1-dev", "custom-build"} {
+			t.Run(ninja+"/"+panel, func(t *testing.T) {
+				t.Setenv("INVOICE_NINJA_VERSION", ninja)
+				t.Setenv("SUI_VERSION", panel)
+				cfg, err := ConfigFromEnv()
+				if err != nil {
+					t.Fatalf("informational versions rejected: %v", err)
+				}
+				if cfg.InvoiceNinja.ExpectedVersion != ninja || cfg.SUI.DeclaredVersion != panel {
+					t.Fatal("version metadata was not preserved")
+				}
+				if err := cfg.Validate(); err != nil {
+					t.Fatalf("version metadata failed validation: %v", err)
+				}
+			})
+		}
 	}
 }

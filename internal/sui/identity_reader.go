@@ -28,15 +28,12 @@ func (i Identity) Enabled() bool      { return i.enabled }
 // expose full records or any write capability.
 type IdentityReader struct {
 	http            *integrationhttp.Client
-	declaredVersion string
+	declaredVersion string // Informational only; retained for compatibility.
 }
 
-// NewIdentityReader accepts the same pinned version claims as RecordReader.
+// NewIdentityReader retains declaredVersion as optional informational metadata.
 // It constructs only a read-only HTTP client.
 func NewIdentityReader(base, token, declaredVersion string, timeout time.Duration) (*IdentityReader, error) {
-	if declaredVersion != "1.6.4" && declaredVersion != "v1.6.4" {
-		return nil, errInvalidConfiguration
-	}
 	reader, err := New(base, token, timeout)
 	if err != nil {
 		return nil, err
@@ -55,9 +52,6 @@ func (c *IdentityReader) ListIdentities(ctx context.Context, maxAccounts int) ([
 		return nil, ErrManagedInvalid
 	}
 	get := managedGetter(c.get)
-	if err := checkManagedVersion(ctx, get, c.declaredVersion); err != nil {
-		return nil, err
-	}
 	summaries, err := managedIdentitySummaries(ctx, get, maxAccounts)
 	if err != nil {
 		return nil, err

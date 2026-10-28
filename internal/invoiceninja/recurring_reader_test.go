@@ -135,10 +135,10 @@ func TestRecurringReaderStrictFullPresence(t *testing.T) {
 
 func TestRecurringReaderVersionAndExactEnvelope(t *testing.T) {
 	body := recurringTestJSON(t, map[string]any{"data": recurringTestRecord(t)})
-	for _, versions := range [][]string{nil, {"5.13.46"}, {"5.13.48"}, {"v5.13.47"}, {"5.13.47+build"}, {SupportedRecurringVersion, SupportedRecurringVersion}} {
+	for _, versions := range [][]string{nil, {"5.13.47"}, {"5.13.50"}, {"5.13.46"}, {"5.13.48"}, {"v5.13.47"}, {"5.13.47+build"}, {SupportedRecurringVersion, SupportedRecurringVersion}} {
 		c, calls := recurringReaderServer(t, body, versions...)
-		if _, err := c.Get(context.Background(), "recurring-A"); err == nil || calls.Load() != 1 {
-			t.Fatal("unsupported version claim accepted")
+		if _, err := c.Get(context.Background(), "recurring-A"); err != nil || calls.Load() != 1 {
+			t.Fatalf("release header gated valid record: %v", err)
 		}
 	}
 	wrong := recurringTestRecord(t)

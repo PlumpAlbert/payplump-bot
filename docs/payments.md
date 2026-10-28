@@ -25,11 +25,11 @@ webhook в Invoice Ninja автоматически не выполняется.
 
 | Переменная | Значение |
 | --- | --- |
-| `PAYMENTS_CURRENCY_CODE` | Подтверждённый оператором трёхбуквенный ISO-код родной валюты |
+| `PAYMENTS_CURRENCY_CODE` | Необязательный ISO-код валюты; по умолчанию определяется по справочнику Ninja |
 | `INVOICE_NINJA_BASE_URL`, `INVOICE_NINJA_API_TOKEN` | База API без `/api/v1`, токен с полным чтением платежей компании |
 | `INVOICE_NINJA_TELEGRAM_ID_FIELD` | Только `id_number` |
-| `INVOICE_NINJA_WEBHOOK_SECRET` | Непустая строка как задана, без ограничений длины и алфавита; допускается общий секрет с lifecycle |
-| `PAYMENTS_CURRENCY_ID` | Обязательный заранее проверенный API ID собственной валюты компании, не `RUB` / `USD` и не код ISO |
+| `INVOICE_NINJA_WEBHOOK_SECRET` | Необязательно: строка как задана; пусто отключает только HTTP webhook, не опрос API |
+| `PAYMENTS_CURRENCY_ID` | Необязательный API ID валюты; по умолчанию валюта компании из Ninja |
 | `PAYMENTS_WORKERS` | По умолчанию `1`, допустимо `1`–`4` |
 | `PAYMENTS_POLL_INTERVAL` | По умолчанию `1s`, допустимо `100ms`–`1m` |
 | `PAYMENTS_RECHECK_INTERVAL` | По умолчанию `5m`, допустимо `30s`–`1h` |

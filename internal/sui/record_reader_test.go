@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-func recordReaderTestServer(t *testing.T, status, clients string) (*RecordReader, *atomic.Int32) {
+func recordReaderTestServer(t *testing.T, clients string) (*RecordReader, *atomic.Int32) {
 	t.Helper()
 	var reads atomic.Int32
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -24,11 +24,6 @@ func recordReaderTestServer(t *testing.T, status, clients string) (*RecordReader
 			t.Error("unexpected method/authentication")
 		}
 		switch r.URL.EscapedPath() {
-		case "/installed%20panel/apiv2/status":
-			if r.URL.RawQuery != "r=sys" {
-				t.Error("invalid version query")
-			}
-			fmt.Fprint(w, status)
 		case "/installed%20panel/apiv2/clients":
 			reads.Add(1)
 			if r.URL.RawQuery != "id=123" {
@@ -47,8 +42,6 @@ func recordReaderTestServer(t *testing.T, status, clients string) (*RecordReader
 	}
 	return c, &reads
 }
-
-const readerStatus = `{"success":true,"obj":{"sys":{"appVersion":"1.6.4"}}}`
 
 func readerClients(raw []byte) string {
 	return `{"success":true,"obj":{"clients":[` + string(raw) + `]}}`
@@ -69,9 +62,6 @@ func TestRecordReaderCapabilityAndValidation(t *testing.T) {
 		base, token, version string
 		timeout              time.Duration
 	}{
-		{"http://synthetic.invalid", "reader-secret", "", time.Second},
-		{"http://synthetic.invalid", "reader-secret", "1.6.4 ", time.Second},
-		{"http://synthetic.invalid", "reader-secret", "1.6.5", time.Second},
 		{"http://synthetic.invalid/apiv2", "reader-secret", "1.6.4", time.Second},
 		{"http://user:reader-secret@synthetic.invalid", "reader-secret", "1.6.4", time.Second},
 		{"http://synthetic.invalid?token=reader-secret", "reader-secret", "1.6.4", time.Second},
@@ -105,8 +95,8 @@ func TestRecordReaderCapabilityAndValidation(t *testing.T) {
 	}
 }
 
-func TestRecordReaderFullRecordAndExactVersionSpelling(t *testing.T) {
-	for _, version := range []string{"1.6.4", "v1.6.4"} {
+func TestRecordReaderFullRecordWithoutVersionProbe(t *testing.T) {
+	for _, version := range []string{"", "1.6.5", "v1.6.4", "1.6.4+build", "unknown"} {
 		t.Run(version, func(t *testing.T) {
 			r := managedTestRecord(t, 9007199254740993)
 			r.wire.Links = []map[string]string{{"type": "sub", "uri": "http://must-never-fetch.invalid/secret"}}
@@ -118,8 +108,6 @@ func TestRecordReaderFullRecordAndExactVersionSpelling(t *testing.T) {
 					t.Error("wrong read contract")
 				}
 				switch req.URL.RequestURI() {
-				case "/prefix/apiv2/status?r=sys":
-					fmt.Fprintf(w, `{"success":true,"obj":{"sys":{"appVersion":%q}}}`, version)
 				case "/prefix/apiv2/clients?id=9007199254740993":
 					fmt.Fprint(w, readerClients(r.Raw()))
 				default:
@@ -141,8 +129,8 @@ func TestRecordReaderFullRecordAndExactVersionSpelling(t *testing.T) {
 					t.Fatal("record formatter disclosed contents")
 				}
 			}
-			if calls.Load() != 4 {
-				t.Fatal("missing per-read version probe or unexpected fetch")
+			if calls.Load() != 2 {
+				t.Fatal("expected only one full-record GET per read")
 			}
 		})
 	}
@@ -172,28 +160,12 @@ func TestRecordReaderStrictShapeAndEnvelope(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			c, reads := recordReaderTestServer(t, readerStatus, body)
+			c, reads := recordReaderTestServer(t, body)
 			_, err := c.GetRecord(context.Background(), 123)
 			if err == nil || reads.Load() != 1 || strings.Contains(fmt.Sprint(err), "reader-secret") || strings.Contains(fmt.Sprint(err), "remote-secret") {
 				t.Fatal("invalid record accepted, retried or disclosed")
 			}
 		})
-	}
-}
-
-func TestRecordReaderVersionFailuresBeforeRecordGET(t *testing.T) {
-	for _, status := range []string{
-		`{"success":true,"obj":{"sys":{"appVersion":"v1.6.4"}}}`,
-		`{"success":true,"obj":{"sys":{"appVersion":"1.6.5"}}}`,
-		`{"success":true,"obj":{"sys":{"appVersion":"1.6.4+build"}}}`,
-		`{"success":true,"obj":{"sys":{}}}`,
-		`{"success":false,"msg":"reader-secret"}`,
-		`{"success":true,"obj":{"sys":{"appVersion":"bad","appVersion":"1.6.4"}}}`,
-	} {
-		c, reads := recordReaderTestServer(t, status, "")
-		if _, err := c.GetRecord(context.Background(), 123); err == nil || reads.Load() != 0 {
-			t.Fatal("bad claim fetched a record")
-		}
 	}
 }
 

@@ -38,10 +38,7 @@ func ConfigFromEnvironment(getenv func(string) string, telegramEnabled bool) (Co
 	cfg.BaseURL, cfg.Token = getenv("INVOICE_NINJA_BASE_URL"), getenv("INVOICE_NINJA_API_TOKEN")
 	cfg.WebhookSecret, cfg.CurrencyID = getenv("INVOICE_NINJA_WEBHOOK_SECRET"), getenv("PAYMENTS_CURRENCY_ID")
 	if getenv("INVOICE_NINJA_TELEGRAM_ID_FIELD") != "id_number" {
-		return Config{}, errors.New("payment verification requires id_number")
-	}
-	if version := getenv("INVOICE_NINJA_VERSION"); version != "" && strings.TrimPrefix(version, "v") != "5.13.47" {
-		return Config{}, errors.New("payment verification supports Invoice Ninja 5.13.47 only")
+		return Config{}, errors.New("payment verification requires INVOICE_NINJA_TELEGRAM_ID_FIELD=id_number")
 	}
 	for _, item := range []struct {
 		key   string
@@ -86,11 +83,11 @@ func (c Config) Validate() error {
 	if !c.TelegramEnabled {
 		return errors.New("PAYMENTS_ENABLED requires TELEGRAM_ENABLED=true")
 	}
-	if integrationhttp.ValidateBaseURL(c.BaseURL) != nil || c.Token == "" || strings.ContainsAny(c.Token, " \r\n\t") {
-		return errors.New("invalid payment API configuration")
+	if integrationhttp.ValidateBaseURL(c.BaseURL) != nil {
+		return errors.New("INVOICE_NINJA_BASE_URL must be a service base URL")
 	}
-	if !secret(c.WebhookSecret) {
-		return errors.New("INVOICE_NINJA_WEBHOOK_SECRET is required")
+	if c.Token == "" || strings.ContainsAny(c.Token, " \r\n\t") {
+		return errors.New("INVOICE_NINJA_API_TOKEN must be set without spaces, tabs or line breaks")
 	}
 	if !currency(c.CurrencyID) {
 		return errors.New("PAYMENTS_CURRENCY_ID must explicitly identify the native billing currency")

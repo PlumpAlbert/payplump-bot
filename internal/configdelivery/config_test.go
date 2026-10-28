@@ -40,7 +40,7 @@ func TestConfigurationEnvIsExplicitCanonicalAndBounded(t *testing.T) {
 	if err != nil || cfg.Validate() != nil || cfg.HTTPTimeout != 3*time.Second || cfg.Revision != 1 || !cfg.Allows(101) {
 		t.Fatal("synthetic pilot config rejected")
 	}
-	for _, tc := range []struct{ key, value string }{{"CONFIGURATION_POLICY_REVISION", ""}, {"CONFIGURATION_POLICY_REVISION", "0"}, {"CONFIGURATION_POLICY_REVISION", "01"}, {"CONFIGURATION_POLICY_REVISION", "+1"}, {"CONFIGURATION_POLICY_REVISION", "9223372036854775808"}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", ""}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", "101,101"}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", "0101"}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", "-101"}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", "101,"}, {"REGISTRATION_EXCLUDED_TELEGRAM_IDS", "103,103"}, {"INVOICE_NINJA_TELEGRAM_ID_FIELD", "name"}, {"PAYMENTS_CURRENCY_ID", "01"}, {"INVOICE_NINJA_VERSION", "5.13.46"}, {"SUI_VERSION", "1.6.5"}, {"CONFIGURATION_HTTP_TIMEOUT", "999ms"}, {"CONFIGURATION_HTTP_TIMEOUT", "6s"}, {"CONFIGURATION_HTTP_TIMEOUT", "broken"}, {"INTEGRATION_PAGE_SIZE", "0"}, {"INTEGRATION_MAX_PAGES", "101"}, {"INTEGRATION_MAX_PAGES", "broken"}, {"SUI_API_TOKEN", "contains space"}, {"INVOICE_NINJA_API_TOKEN", "token\n"}, {"SUI_SUBSCRIPTION_BASE_URL", "http://subscription.example.test/"}, {"SUI_SUBSCRIPTION_BASE_URL", "https://user:pass@subscription.example.test/"}, {"SUI_SUBSCRIPTION_BASE_URL", "https://subscription.example.test/?other=value"}, {"SUI_SUBSCRIPTION_BASE_URL", "https://subscription.example.test/#fragment"}} {
+	for _, tc := range []struct{ key, value string }{{"CONFIGURATION_POLICY_REVISION", ""}, {"CONFIGURATION_POLICY_REVISION", "0"}, {"CONFIGURATION_POLICY_REVISION", "01"}, {"CONFIGURATION_POLICY_REVISION", "+1"}, {"CONFIGURATION_POLICY_REVISION", "9223372036854775808"}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", ""}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", "101,101"}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", "0101"}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", "-101"}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", "101,"}, {"REGISTRATION_EXCLUDED_TELEGRAM_IDS", "103,103"}, {"INVOICE_NINJA_TELEGRAM_ID_FIELD", "name"}, {"PAYMENTS_CURRENCY_ID", "01"}, {"CONFIGURATION_HTTP_TIMEOUT", "999ms"}, {"CONFIGURATION_HTTP_TIMEOUT", "6s"}, {"CONFIGURATION_HTTP_TIMEOUT", "broken"}, {"INTEGRATION_PAGE_SIZE", "0"}, {"INTEGRATION_MAX_PAGES", "101"}, {"INTEGRATION_MAX_PAGES", "broken"}, {"SUI_API_TOKEN", "contains space"}, {"INVOICE_NINJA_API_TOKEN", "token\n"}, {"SUI_SUBSCRIPTION_BASE_URL", "http://subscription.example.test/"}, {"SUI_SUBSCRIPTION_BASE_URL", "https://user:pass@subscription.example.test/"}, {"SUI_SUBSCRIPTION_BASE_URL", "https://subscription.example.test/?other=value"}, {"SUI_SUBSCRIPTION_BASE_URL", "https://subscription.example.test/#fragment"}} {
 		t.Run(tc.key+"/"+fmt.Sprint(len(tc.value)), func(t *testing.T) {
 			configurationEnv(t)
 			t.Setenv(tc.key, tc.value)
@@ -75,7 +75,7 @@ func TestConfigurationPolicyFreezesScopeAndEndpointsNotSecrets(t *testing.T) {
 			t.Fatal("operational change invalidated policy")
 		}
 	}
-	for _, mutate := range []func(*Config){func(c *Config) { c.BaseURL = "https://other.example.test/" }, func(c *Config) { c.SUIBaseURL = "http://other.example.test/" }, func(c *Config) { c.SubscriptionBaseURL = "https://other.example.test/" }, func(c *Config) { c.CurrencyID = "2" }, func(c *Config) { c.AllowedTelegramIDs = []int64{101} }, func(c *Config) { c.ExcludedTelegramIDs = []int64{101} }, func(c *Config) { c.SUIVersion = "v1.6.4" }} {
+	for _, mutate := range []func(*Config){func(c *Config) { c.BaseURL = "https://other.example.test/" }, func(c *Config) { c.SUIBaseURL = "http://other.example.test/" }, func(c *Config) { c.SubscriptionBaseURL = "https://other.example.test/" }, func(c *Config) { c.CurrencyID = "2" }, func(c *Config) { c.AllowedTelegramIDs = []int64{101} }, func(c *Config) { c.ExcludedTelegramIDs = []int64{101} }, func(c *Config) { c.TelegramIDField = "name" }} {
 		c := configurationTestConfig()
 		mutate(&c)
 		if c.Policy().Hash == base.Hash {
@@ -117,5 +117,49 @@ func TestConfigurationScopeAndURLBounds(t *testing.T) {
 	c.AllowedTelegramIDs = append(c.AllowedTelegramIDs, 21)
 	if c.Validate() == nil {
 		t.Fatal("broad rollout accepted")
+	}
+}
+
+func TestConfigurationPolicyHashPreservesLegacyVersionLabel(t *testing.T) {
+	local := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = local })
+	base := configurationTestConfig().Policy()
+	if got := fmt.Sprintf("%x", base.Hash); got != "357b8f0f43fc3b57c7ce4a01017748443335c316e115e145a5f61641d64b22cc" {
+		t.Fatalf("legacy default policy hash changed: %s", got)
+	}
+	for _, version := range []string{"1.6.4", "", "v1.6.4", "1.6.5", "custom"} {
+		t.Run(version, func(t *testing.T) {
+			c := configurationTestConfig()
+			c.SUIVersion = version
+			if c.Policy() != base {
+				t.Fatal("version metadata changed policy")
+			}
+			if c.SUIVersion != version {
+				t.Fatal("policy hashing changed version metadata")
+			}
+		})
+	}
+}
+
+func TestConfigurationVersionsAreOptionalAndInformational(t *testing.T) {
+	configurationEnv(t)
+	for _, ninja := range []string{"", "5.13.46", "5.13.48", "v99.2.1+local", "custom-build"} {
+		for _, panel := range []string{"", "1.6.3", "1.7.0", "v99.2.1-dev", "custom-build"} {
+			t.Run(ninja+"/"+panel, func(t *testing.T) {
+				t.Setenv("INVOICE_NINJA_VERSION", ninja)
+				t.Setenv("SUI_VERSION", panel)
+				cfg, err := ConfigFromEnv(true, true)
+				if err != nil {
+					t.Fatalf("informational versions rejected: %v", err)
+				}
+				if cfg.SUIVersion != panel {
+					t.Fatal("SUI version metadata was not preserved")
+				}
+				if err := cfg.Validate(); err != nil {
+					t.Fatalf("version metadata failed validation: %v", err)
+				}
+			})
+		}
 	}
 }

@@ -73,6 +73,8 @@ func run(logger *slog.Logger, args []string) error {
 	if len(args) != 0 && !healthOnly {
 		return errors.New("usage: payplump [serve-health | healthcheck | check-integrations | resume-registration OPERATION_ID | recovery-report [--operation LOCAL_ID] | import-plan --file PATH | import-stage --file PATH --expected-hash HASH --apply | import-verify --file PATH --expected-hash HASH --read-only [--evidence-file NEW_PRIVATE_PATH] | import-apply --file PRIVATE --expected-hash HASH --admission-revision N --apply [--enable-admission]]")
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	var get func(string) string
 	var standard bool
 	var err error
@@ -83,6 +85,12 @@ func run(logger *slog.Logger, args []string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if standard {
+		get, err = resolveServiceEnvironment(ctx, get)
+		if err != nil {
+			return err
+		}
 	}
 	telegramConfig, err := telegram.ConfigFromEnvironment(get)
 	if err != nil {
@@ -206,8 +214,6 @@ func run(logger *slog.Logger, args []string) error {
 			return err
 		}
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	maxConns, err := strconv.ParseInt(envOr("DB_MAX_CONNS", "4"), 10, 32)
 	if err != nil {
 		return errors.New("DB_MAX_CONNS must be an integer between 1 and 64")
@@ -238,7 +244,7 @@ func run(logger *slog.Logger, args []string) error {
 	cancelStartup()
 	var paymentEndpoint *payments.WebhookHandler
 	var paymentHandler http.Handler
-	if paymentConfig.Enabled {
+	if paymentConfig.Enabled && paymentConfig.WebhookSecret != "" {
 		paymentEndpoint, err = payments.NewWebhook(paymentConfig.WebhookSecret, store)
 		if err != nil {
 			return err
@@ -247,7 +253,7 @@ func run(logger *slog.Logger, args []string) error {
 	}
 	var lifecycleEndpoint *lifecycle.WebhookHandler
 	var lifecycleHandler http.Handler
-	if lifecycleConfig.Enabled {
+	if lifecycleConfig.Enabled && lifecycleConfig.WebhookSecret != "" {
 		lifecycleEndpoint, err = lifecycle.NewWebhook(lifecycleConfig.WebhookSecret, store)
 		if err != nil {
 			return err
@@ -271,7 +277,7 @@ func run(logger *slog.Logger, args []string) error {
 		initialize = func(ctx context.Context) error {
 			bot, err := transport.Configure(ctx)
 			if err != nil {
-				return err
+				return fmt.Errorf("Telegram transport configuration: %w", err)
 			}
 			botID = bot.ID
 			if standard {
@@ -441,7 +447,7 @@ func run(logger *slog.Logger, args []string) error {
 	}
 	ready := func(ctx context.Context) error {
 		if transport != nil && !transport.Ready() {
-			return errors.New("Telegram transport setup pending")
+			return errors.New("service initialization pending")
 		}
 		if lifecycleEndpoint != nil && !lifecycleEndpoint.Ready() {
 			return errors.New("invoice lifecycle webhook setup pending")
@@ -495,7 +501,7 @@ running:
 				continue
 			}
 			if ctx.Err() == nil {
-				failure = fmt.Errorf("Telegram transport setup: %w", err)
+				failure = fmt.Errorf("service initialization: %w", err)
 			}
 			break running
 		case err := <-backgroundResult:
