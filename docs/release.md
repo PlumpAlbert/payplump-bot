@@ -52,8 +52,35 @@ SHA. Сборка использует отдельный source checkout выб
 другой workflow, неактуальная попытка, pending/failure или несовпадающий SHA
 не дают пройти gate. Финальный re-review проверил, что чужой workflow или
 старая попытка не авторизуют выпуск, а повторный GET обнаруживает смену attempt.
-Обычный source CI подтверждает исходный код, но не является запуском release
-workflow.
+Обычный source CI подтверждает исходный код, но не является запуском ручного
+release workflow. Отдельная job `publish-main-image` описана ниже.
+
+## Автоматическая публикация main
+
+После merge workflow CI для push в `main` запускает `publish-main-image` только
+после успешного агрегатора `test`, который требует зелёные `fast-checks` и
+`postgres-integration` exact-head. Job ограничена `contents:read` и
+`packages:write`, проверяет canonical repository, использует `GITHUB_TOKEN` через
+stdin и отдельный временный Docker config с очисткой. PR, ручные Neon jobs и
+остальные ветки образы не публикуют. Перед push сверяется, что commit всё ещё
+текущий `main`; параллельные публикации сериализованы.
+
+Job строит multi-platform `linux/amd64` + `linux/arm64` из проверенного commit и
+обновляет GHCR-теги `ghcr.io/plumpalbert/payplump-bot:main` и
+`:sha-<commit>`. Полный `sha256` digest выводится в summary успешного main CI.
+Тег `main` намеренно изменяемый канал образов; `sha-<commit>` указывает на сборку
+из конкретного commit, но registry tag сам по себе не pin. Для точного pin
+используйте digest из summary. При пропуске устаревшего push остаётся новая
+попытка только от актуального main commit. Эта job **публикует контейнер, но
+не вызывает Komodo и не разворачивает стек**. Изменение `main` в registry само по себе не обновляет
+уже запущенный контейнер.
+
+Для нового GHCR package владелец должен один раз проверить и выставить package
+visibility `Public`; GitHub может создать package закрытым по умолчанию. Перед
+использованием проверяйте digest из CI summary, не полагайтесь только на moving
+tag. Публикация содержит только приложение без runtime env, provider tokens,
+DB credentials или backups. Ручной `release.yml` остаётся отдельным owner-gated
+workflow и не вызывается автоматически.
 
 Dry-run ветка не имеет package-write permission, не выполняет registry login и
 push. Будущая artifact payload по workflow contract включает code image archive
