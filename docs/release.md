@@ -61,9 +61,9 @@ release workflow. Отдельная job `publish-main-image` описана н�
 после успешного агрегатора `test`, который требует зелёные `fast-checks` и
 `postgres-integration` exact-head. Job ограничена `contents:read` и
 `packages:write`, проверяет canonical repository, использует `GITHUB_TOKEN` через
-stdin и отдельный временный Docker config с очисткой. PR, ручные Neon jobs и
-остальные ветки образы не публикуют. Перед push сверяется, что commit всё ещё
-текущий `main`; параллельные публикации сериализованы.
+stdin и отдельный временный Docker config с очисткой. PR и другие ветки образы
+не публикуют. Перед push сверяется, что commit всё ещё текущий `main`;
+параллельные публикации сериализованы.
 
 Job строит multi-platform `linux/amd64` + `linux/arm64` из проверенного commit и
 сначала публикует `ghcr.io/plumpalbert/payplump-bot:sha-<commit>`. Затем ещё раз
@@ -84,6 +84,14 @@ visibility `Public`; GitHub может создать package закрытым �
 tag. Публикация содержит только приложение без runtime env, provider tokens,
 DB credentials или backups. Ручной `release.yml` остаётся отдельным owner-gated
 workflow и не вызывается автоматически.
+
+Для ручного запуска на ветке `main` в CI → Run workflow есть явный флаг
+`skip_postgres_checks`. Он пропускает jobs `postgres-integration` и `test`, но
+`fast-checks` всё равно обязательны. Чтобы такой запуск опубликовал образ,
+отдельно включите `publish_main_image`; оба флага по умолчанию выключены.
+Оставьте `full_neon` выключенным. Обычный автоматический push в `main` по-прежнему
+требует успешных `fast-checks`, `postgres-integration` и `test`. Ручной путь
+показывает оба пропущенных job как skipped, не подменяет их успешный результат.
 
 Dry-run ветка не имеет package-write permission, не выполняет registry login и
 push. Будущая artifact payload по workflow contract включает code image archive

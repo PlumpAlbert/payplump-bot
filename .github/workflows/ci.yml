@@ -11,6 +11,14 @@ on:
         description: Also run the full PostgreSQL integration suite on Neon (manual only)
         type: boolean
         default: false
+      skip_postgres_checks:
+        description: Skip postgres-integration and its test aggregator (fast-checks still run)
+        type: boolean
+        default: false
+      publish_main_image:
+        description: Publish the current main image to GHCR after the selected checks pass
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -89,6 +97,7 @@ jobs:
       - run: git diff --exit-code -- go.mod go.sum
 
   postgres-integration:
+    if: ${{ !inputs.skip_postgres_checks }}
     needs: fast-checks
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -194,7 +203,7 @@ jobs:
 
   test:
     needs: [fast-checks, postgres-integration]
-    if: ${{ always() }}
+    if: ${{ always() && !inputs.skip_postgres_checks }}
     runs-on: ubuntu-latest
     steps:
       - name: Require all required checks to succeed
@@ -212,9 +221,9 @@ jobs:
           fi
 
   publish-main-image:
-    name: Publish GHCR image after required CI
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'PlumpAlbert/payplump-bot' }}
-    needs: [test]
+    name: Publish GHCR image after CI checks
+    if: ${{ always() && github.repository == 'PlumpAlbert/payplump-bot' && github.ref == 'refs/heads/main' && ((github.event_name == 'push' && needs.fast-checks.result == 'success' && needs.postgres-integration.result == 'success' && needs.test.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.publish_main_image && needs.fast-checks.result == 'success' && ((inputs.skip_postgres_checks && needs.postgres-integration.result == 'skipped' && needs.test.result == 'skipped') || (!inputs.skip_postgres_checks && needs.postgres-integration.result == 'success' && needs.test.result == 'success')))) }}
+    needs: [fast-checks, postgres-integration, test]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
