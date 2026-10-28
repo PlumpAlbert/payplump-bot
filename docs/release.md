@@ -66,12 +66,15 @@ stdin и отдельный временный Docker config с очисткой
 текущий `main`; параллельные публикации сериализованы.
 
 Job строит multi-platform `linux/amd64` + `linux/arm64` из проверенного commit и
-обновляет GHCR-теги `ghcr.io/plumpalbert/payplump-bot:main` и
-`:sha-<commit>`. Полный `sha256` digest выводится в summary успешного main CI.
-Тег `main` намеренно изменяемый канал образов; `sha-<commit>` указывает на сборку
-из конкретного commit, но registry tag сам по себе не pin. Для точного pin
-используйте digest из summary. При пропуске устаревшего push остаётся новая
-попытка только от актуального main commit. Эта job **публикует контейнер, но
+сначала публикует `ghcr.io/plumpalbert/payplump-bot:sha-<commit>`. Затем ещё раз
+проверяет текущий `main` и только для актуального commit передвигает тег
+`ghcr.io/plumpalbert/payplump-bot:main`. Так завершение долгой устаревшей сборки
+не перезаписывает moving tag после появления более нового commit. Полный `sha256`
+digest выводится в summary успешного main CI. Тег `main` намеренно изменяемый
+канал образов; `sha-<commit>` указывает на сборку из конкретного commit, но
+registry tag сам по себе не pin. Для точного pin используйте digest из summary.
+Если commit устарел во время сборки, его commit-specific tag всё равно доступен,
+но `main` не передвигается. Эта job **публикует контейнер, но
 не вызывает Komodo и не разворачивает стек**. Изменение `main` в registry само по себе не обновляет
 уже запущенный контейнер.
 

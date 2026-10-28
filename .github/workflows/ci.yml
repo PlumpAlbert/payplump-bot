@@ -247,7 +247,7 @@ jobs:
           mkdir -m 700 "$config"
           printf 'DOCKER_CONFIG=%s\n' "$config" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Publish commit-specific tag and moving main channel
+      - name: Publish commit-specific image
         id: publish
         shell: bash
         env:
@@ -259,7 +259,6 @@ jobs:
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --build-arg "VCS_REF=$GITHUB_SHA" \
-            --tag "$image:main" \
             --tag "$image:sha-$GITHUB_SHA" \
             --metadata-file "$RUNNER_TEMP/payplump-image-metadata.json" \
             --push .
@@ -273,22 +272,44 @@ jobs:
           print(digest)
           PY
           )
-          printf 'image=%s@%s\n' "$image" "$digest" >> "$GITHUB_OUTPUT"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
           {
             echo '### Container image published to GHCR'
             echo
             echo "- Commit: \`$GITHUB_SHA\`"
-            echo "- Multi-platform image: \`${image}@${digest}\`"
-            echo "- Tags: \`${image}:main\`, \`${image}:sha-${GITHUB_SHA}\`"
-            echo '- Automatic Komodo redeploy: not configured.'
+            echo "- Commit tag: \`${image}:sha-${GITHUB_SHA}\`"
+            echo "- Immutable digest: \`${image}@${digest}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Confirm commit is still main before moving the channel tag
+        id: current-main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main --quiet
+          if [[ "$(git rev-parse FETCH_HEAD)" == "$GITHUB_SHA" ]]; then
+            echo 'publish_main=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'publish_main=false' >> "$GITHUB_OUTPUT"
+            echo 'A newer main commit exists; preserving the current main image tag.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Update the moving main image channel
+        if: ${{ steps.current-main.outputs.publish_main == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker buildx imagetools create --tag "$image:main" "$image:sha-$GITHUB_SHA"
+          echo "- Main channel: \`${image}:main\` now points to this checked commit." >> "$GITHUB_STEP_SUMMARY"
       - name: Remove registry credentials
         if: always()
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
           docker logout ghcr.io >/dev/null 2>&1 || true
-          rm -rf -- "$DOCKER_CONFIG"
+          expected="$RUNNER_TEMP/payplump-ghcr-docker-config"
+          if [[ -n "${DOCKER_CONFIG:-}" && "$DOCKER_CONFIG" == "$expected" ]]; then
+            rm -rf -- "$expected"
+          fi
 
   validate-postgres-settings:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_neon }}
