@@ -113,9 +113,6 @@ func (c *ManagedClient) DisableAuthorized(ctx context.Context, d DisableDraft, a
 	if !current.Enabled() || !safeEnablePolicy(current) {
 		return ClientRecord{}, ErrManagedState
 	}
-	if e = c.checkVersion(ctx); e != nil {
-		return ClientRecord{}, e
-	}
 	current, e = c.GetRecord(ctx, prepared.binding.ID)
 	if e != nil {
 		return ClientRecord{}, e
@@ -163,9 +160,6 @@ func (c *ManagedClient) CloseSessionsAuthorized(ctx context.Context, d CloseSess
 	}
 	if current.Enabled() {
 		return ErrManagedState
-	}
-	if e = c.checkVersion(ctx); e != nil {
-		return e
 	}
 	// This is deliberately the last GET before caller authorization.
 	current, e = c.GetRecord(ctx, prepared.binding.ID)

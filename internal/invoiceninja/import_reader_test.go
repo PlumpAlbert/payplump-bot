@@ -176,8 +176,8 @@ func TestImportReaderRejectsRecurringDuplicatesForeignRecordsAndDrift(t *testing
 	}
 }
 
-func TestImportReaderVersionAndErrorsAreFailClosedAndRedacted(t *testing.T) {
-	for _, version := range []string{"", "5.13.46", "5.13.48", "v5.13.47", "5.13.47,5.13.47"} {
+func TestImportReaderReleaseHeadersAndRedactedErrors(t *testing.T) {
+	for _, version := range []string{"", "5.13.47", "5.13.50", "5.13.46", "5.13.48", "v5.13.47", "5.13.47,5.13.47"} {
 		t.Run(fmt.Sprintf("version-%q", version), func(t *testing.T) {
 			reader, calls := newImportReaderServer(t, func(w http.ResponseWriter, r *http.Request) {
 				if version != "" {
@@ -186,8 +186,8 @@ func TestImportReaderVersionAndErrorsAreFailClosedAndRedacted(t *testing.T) {
 				fmt.Fprint(w, importPage(nil, 0, 1, 0))
 			})
 			_, err := reader.ListRecurring(context.Background(), "201")
-			if err == nil || calls.Load() != 1 || strings.Contains(fmt.Sprint(err), importReaderToken) {
-				t.Fatal("invalid version accepted or error disclosed")
+			if err != nil || calls.Load() != 1 {
+				t.Fatalf("release header gated valid inventory: %v", err)
 			}
 		})
 	}

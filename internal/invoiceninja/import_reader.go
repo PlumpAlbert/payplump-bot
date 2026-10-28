@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -18,7 +19,7 @@ const (
 	maxImportRecurring   = 2000
 )
 
-// ImportReader is a GET-only, version-pinned bounded inventory capability used
+// ImportReader is a GET-only, bounded inventory capability used
 // to reconcile legacy records. It intentionally performs no adoption policy.
 type ImportReader struct {
 	transport *integrationhttp.Client
@@ -76,44 +77,65 @@ func NewCustomerInventoryReader(base, token string, timeout time.Duration, pageS
 }
 
 // ProductKey reads only the exact configured active product, using the same
-// unique, version-pinned JSON boundary as import inventories.
+// unique JSON boundary as import inventories. Errors never include remote values.
 func (r *CustomerInventoryReader) ProductKey(ctx context.Context, id string) (string, error) {
 	if !billingID(id) {
-		return "", ErrLookupIncomplete
+		return "", fmt.Errorf("%w: invalid configured product ID", ErrLookupIncomplete)
 	}
 	var raw json.RawMessage
-	if err := getUniqueNinjaJSON(ctx, r.transport, []string{"api", "v1", "products", id}, nil, SupportedRecurringVersion, ErrWriteVersion, &raw); err != nil {
+	if err := getUniqueNinjaJSON(ctx, r.transport, []string{"api", "v1", "products", id}, nil, &raw); err != nil {
+		if errors.Is(err, errInvalidResponse) || errors.Is(err, integrationhttp.ErrInvalidResponse) {
+			return "", fmt.Errorf("%w: invalid product JSON response", ErrLookupIncomplete)
+		}
 		return "", err
 	}
 	var shape map[string]json.RawMessage
-	if json.Unmarshal(raw, &shape) != nil || len(shape["data"]) == 0 {
-		return "", ErrLookupIncomplete
+	if json.Unmarshal(raw, &shape) != nil || shape == nil {
+		return "", fmt.Errorf("%w: invalid product envelope", ErrLookupIncomplete)
+	}
+	if len(shape["data"]) == 0 || string(shape["data"]) == "null" {
+		return "", fmt.Errorf("%w: missing product data envelope", ErrLookupIncomplete)
 	}
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(shape["data"], &fields) != nil {
-		return "", ErrLookupIncomplete
+	if json.Unmarshal(shape["data"], &fields) != nil || fields == nil {
+		return "", fmt.Errorf("%w: invalid product data envelope", ErrLookupIncomplete)
 	}
 	for _, key := range []string{"id", "product_key", "is_deleted", "archived_at"} {
 		if len(fields[key]) == 0 || string(fields[key]) == "null" {
-			return "", ErrLookupIncomplete
+			return "", fmt.Errorf("%w: missing required product field %s", ErrLookupIncomplete, key)
 		}
 	}
-	var envelope struct {
-		Data *struct {
-			ID       string `json:"id"`
-			Key      string `json:"product_key"`
-			Deleted  *bool  `json:"is_deleted"`
-			Archived *int64 `json:"archived_at"`
-		} `json:"data"`
+	var productID, key string
+	var deleted bool
+	var archived int64
+	if json.Unmarshal(fields["id"], &productID) != nil {
+		return "", fmt.Errorf("%w: invalid product id", ErrLookupIncomplete)
 	}
-	if json.Unmarshal(raw, &envelope) != nil || envelope.Data == nil {
-		return "", ErrLookupIncomplete
+	if productID != id {
+		return "", fmt.Errorf("%w: product ID does not match configured ID", ErrLookupIncomplete)
 	}
-	p := envelope.Data
-	if p.ID != id || p.Deleted == nil || *p.Deleted || p.Archived == nil || *p.Archived != 0 || p.Key == "" || !billingText(p.Key, 256) || strings.TrimSpace(p.Key) != p.Key || strings.ContainsAny(p.Key, "\r\n\t") {
-		return "", ErrLookupIncomplete
+	if json.Unmarshal(fields["is_deleted"], &deleted) != nil {
+		return "", fmt.Errorf("%w: invalid product is_deleted", ErrLookupIncomplete)
 	}
-	return p.Key, nil
+	if deleted {
+		return "", fmt.Errorf("%w: product is deleted", ErrLookupIncomplete)
+	}
+	if json.Unmarshal(fields["archived_at"], &archived) != nil {
+		return "", fmt.Errorf("%w: invalid product archived_at", ErrLookupIncomplete)
+	}
+	if archived != 0 {
+		return "", fmt.Errorf("%w: product is archived", ErrLookupIncomplete)
+	}
+	if json.Unmarshal(fields["product_key"], &key) != nil {
+		return "", fmt.Errorf("%w: invalid product_key", ErrLookupIncomplete)
+	}
+	if key == "" {
+		return "", fmt.Errorf("%w: empty product_key", ErrLookupIncomplete)
+	}
+	if !billingText(key, 256) || strings.TrimSpace(key) != key || strings.ContainsAny(key, "\r\n\t") {
+		return "", fmt.Errorf("%w: invalid product_key", ErrLookupIncomplete)
+	}
+	return key, nil
 }
 
 func (r *CustomerInventoryReader) ListCustomers(ctx context.Context) ([]Customer, error) {
@@ -157,9 +179,9 @@ func importInventoryPages[T any](ctx context.Context, reader *ImportReader, reso
 		q := query.Clone()
 		q.Set("page", strconv.Itoa(page))
 		var raw json.RawMessage
-		err := getUniqueNinjaJSON(ctx, reader.transport, []string{"api", "v1", resource}, q, SupportedRecurringVersion, ErrWriteVersion, &raw)
+		err := getUniqueNinjaJSON(ctx, reader.transport, []string{"api", "v1", resource}, q, &raw)
 		if err != nil {
-			if billingLookupTemporaryFailure(err) || errors.Is(err, ErrWriteVersion) {
+			if billingLookupTemporaryFailure(err) {
 				return nil, err
 			}
 			return nil, billingLookupFailure(errors.Join(ErrLookupIncomplete, err))

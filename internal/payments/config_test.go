@@ -71,7 +71,7 @@ func TestConfigDefaultsDisabledAndIgnoresIntegrationSecrets(t *testing.T) {
 	}
 }
 
-func TestConfigEnabledRequiresIndependentCredentialsNativePolicyAndPinnedContract(t *testing.T) {
+func TestConfigEnabledRequiresCredentialsNativePolicyAndIdentityMapping(t *testing.T) {
 	for _, tc := range []struct{ name, key, value string }{
 		{"missing API URL", "INVOICE_NINJA_BASE_URL", ""},
 		{"URL credentials", "INVOICE_NINJA_BASE_URL", "https://user:password@invoice.invalid"},
@@ -84,14 +84,12 @@ func TestConfigEnabledRequiresIndependentCredentialsNativePolicyAndPinnedContrac
 		{"symbol instead of currency id", "PAYMENTS_CURRENCY_ID", "RUB"},
 		{"zero currency id", "PAYMENTS_CURRENCY_ID", "0"},
 		{"leading zero currency id", "PAYMENTS_CURRENCY_ID", "03"},
-		{"unsupported version", "INVOICE_NINJA_VERSION", "5.13.48"},
-		{"missing dedicated secret", "INVOICE_NINJA_WEBHOOK_SECRET", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			paymentEnv(t, true)
 			t.Setenv(tc.key, tc.value)
-			if _, err := ConfigFromEnv(true); err == nil {
-				t.Fatal("accepted unsafe enabled configuration")
+			if _, err := ConfigFromEnv(true); err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("expected an error identifying %s, got %v", tc.key, err)
 			}
 		})
 	}
@@ -99,11 +97,11 @@ func TestConfigEnabledRequiresIndependentCredentialsNativePolicyAndPinnedContrac
 	if _, err := ConfigFromEnv(false); err == nil {
 		t.Fatal("enabled verification requires Telegram startup")
 	}
-	for _, version := range []string{"", "5.13.47", "v5.13.47"} {
+	for _, version := range []string{"", "5.13.47", "v5.13.47", "5.13.48", "v99.2.1+local", "custom-build"} {
 		t.Setenv("INVOICE_NINJA_VERSION", version)
 		cfg, err := ConfigFromEnv(true)
 		if err != nil {
-			t.Fatalf("supported source pin %q rejected: %v", version, err)
+			t.Fatalf("informational version %q rejected: %v", version, err)
 		}
 		if !cfg.Enabled || cfg.CurrencyID != "3" {
 			t.Fatal("explicit native policy lost")
@@ -206,5 +204,24 @@ func TestConfigValidateAllowsSecretReuseWithoutEnvironmentParser(t *testing.T) {
 	cfg.Token = cfg.WebhookSecret
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("shared secret rejected: %v", err)
+	}
+}
+
+func TestConfigWebhookSecretIsOptionalAndPreserved(t *testing.T) {
+	paymentEnv(t, true)
+	for _, value := range []string{"", "short", " spaces and punctuation! ", "секрет", "line\nbreak", strings.Repeat("x", 512)} {
+		t.Setenv("INVOICE_NINJA_WEBHOOK_SECRET", value)
+		cfg, err := ConfigFromEnv(true)
+		if err != nil {
+			t.Fatalf("polling config rejected webhook secret: %v", err)
+		}
+		if cfg.WebhookSecret != value {
+			t.Fatal("webhook secret was not preserved verbatim")
+		}
+		direct := validPaymentConfig()
+		direct.WebhookSecret = value
+		if err := direct.Validate(); err != nil {
+			t.Fatalf("direct polling config rejected webhook secret: %v", err)
+		}
 	}
 }

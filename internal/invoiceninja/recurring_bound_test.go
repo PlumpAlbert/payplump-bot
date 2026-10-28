@@ -96,8 +96,6 @@ func TestRecurringBoundLastGETMustMatchOriginalReceipt(t *testing.T) {
 						record = changed
 					}
 					recurringTestReply(t, w, map[string]any{"data": record})
-				case "GET /api/v1/ping":
-					recurringTestReply(t, w, map[string]any{})
 				case "POST /api/v1/recurring_invoices/bulk":
 					posts.Add(1)
 					after := changed
@@ -142,8 +140,6 @@ func TestRecurringAllStartsCompareReceiptSemantically(t *testing.T) {
 						case "GET /api/v1/recurring_invoices/recurring-A":
 							gets.Add(1)
 							recurringTestReply(t, w, map[string]any{"data": before})
-						case "GET /api/v1/ping":
-							recurringTestReply(t, w, map[string]any{})
 						case "POST /api/v1/recurring_invoices/bulk":
 							posts.Add(1)
 							recurringTestReply(t, w, map[string]any{"data": []RecurringRecord{after}})
@@ -208,8 +204,6 @@ func TestRecurringBoundChangedPOSTReceiptIsUnknown(t *testing.T) {
 				switch r.Method + " " + r.URL.Path {
 				case "GET /api/v1/recurring_invoices/recurring-A":
 					recurringTestReply(t, w, map[string]any{"data": original})
-				case "GET /api/v1/ping":
-					recurringTestReply(t, w, map[string]any{})
 				case "POST /api/v1/recurring_invoices/bulk":
 					posts.Add(1)
 					recurringTestReply(t, w, map[string]any{"data": []RecurringRecord{after}})

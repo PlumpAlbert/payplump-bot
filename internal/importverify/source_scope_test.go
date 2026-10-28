@@ -38,13 +38,16 @@ func TestSourceScopeNormalizationAndBinding(t *testing.T) {
 			t.Fatal("source binding change not reflected")
 		}
 	}
-	for _, args := range [][6]string{{"https://u:p@example.invalid", "x", "5.13.47", "http://panel.invalid", "y", "1.6.4"}, {"https://example.invalid", "x", "5.13.47/other", "http://panel.invalid", "y", "1.6.4"}, {"https://example.invalid", "x", "unknown", "http://panel.invalid", "y", "1.6.4"}} {
+	for _, args := range [][6]string{{"https://u:p@example.invalid", "x", "5.13.47", "http://panel.invalid", "y", "1.6.4"}, {"https://example.invalid?secret=value", "x", "", "http://panel.invalid", "y", ""}} {
 		if _, e := SourceScope(args[0], args[1], args[2], args[3], args[4], args[5]); e == nil {
 			t.Fatal("malformed source accepted")
 		}
 	}
-	if _, err := SourceScope("https://example.invalid/ninja", "ninja-secret", "5.13.46", "http://panel.invalid/prefix", "panel-secret", "1.6.4"); err == nil {
-		t.Fatal("unsupported source version accepted")
+	for _, version := range []string{"", "5.13.50", "1.6.5", "unknown"} {
+		got, err := SourceScope("https://example.invalid/ninja", "ninja-secret", version, "http://panel.invalid/prefix", "panel-secret", version)
+		if err != nil || got != base {
+			t.Fatal("release metadata rejected or changed existing source binding")
+		}
 	}
 	if strings.Contains(base, "secret") {
 		t.Fatal("raw credential in hash")

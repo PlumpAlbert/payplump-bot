@@ -40,10 +40,12 @@ const (
 type Policy struct {
 	// Automatic discovery uses verified identities instead of a pilot allowlist.
 	// Omitted false preserves the historical manual-policy hash encoding.
-	Automatic                            bool `json:",omitempty"`
-	BotID                                int64
-	SourceScopeHash                      string
-	PilotIDs, ExcludedIDs                []string
+	Automatic             bool `json:",omitempty"`
+	BotID                 int64
+	SourceScopeHash       string
+	PilotIDs, ExcludedIDs []string
+	// Legacy serialized contract labels, not observed provider release claims.
+	// They remain fixed to preserve existing import policy fingerprints.
 	NinjaVersion, SUIVersion             string
 	NativeCurrencyID, NativeCurrencyCode string
 	ProductKey                           string

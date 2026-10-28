@@ -58,9 +58,6 @@ func ConfigFromEnvironment(getenv func(string) string, telegramEnabled, payments
 	c.Revision = revision
 	c.BaseURL, c.Token, c.CurrencyID, c.TelegramIDField = getenv("INVOICE_NINJA_BASE_URL"), getenv("INVOICE_NINJA_API_TOKEN"), getenv("PAYMENTS_CURRENCY_ID"), getenv("INVOICE_NINJA_TELEGRAM_ID_FIELD")
 	c.SUIBaseURL, c.SUIToken, c.SUIVersion, c.SubscriptionBaseURL = getenv("SUI_BASE_URL"), getenv("SUI_API_TOKEN"), getenv("SUI_VERSION"), getenv("SUI_SUBSCRIPTION_BASE_URL")
-	if version := getenv("INVOICE_NINJA_VERSION"); version != "" && strings.TrimPrefix(version, "v") != invoiceninja.SupportedSettlementVersion {
-		return Config{}, errors.New("configuration delivery supports Invoice Ninja 5.13.47 only")
-	}
 	for _, item := range []struct {
 		key    string
 		target *int
@@ -170,12 +167,15 @@ func (c Config) Policy() Policy {
 	if !c.Enabled {
 		return Policy{}
 	}
+	// This frozen label is solely for backward-compatible serialization,
+	// not an accepted-server-release check. Runtime SUIVersion is metadata.
+	const legacySUIVersionLabel = "1.6.4"
 	sorted := func(values []int64) []int64 { v := slices.Clone(values); slices.Sort(v); return v }
 	raw, _ := json.Marshal(struct {
 		Version                                                                int
 		Ninja, SUI, VersionClaim, PublicBase, Currency, Identity, CalendarZone string
 		Allowed, Excluded                                                      []int64
-	}{policyVersion(c.ManagedClients), c.BaseURL, c.SUIBaseURL, c.SUIVersion, c.SubscriptionBaseURL, c.CurrencyID, c.TelegramIDField, time.Local.String(), sorted(c.AllowedTelegramIDs), sorted(c.ExcludedTelegramIDs)})
+	}{policyVersion(c.ManagedClients), c.BaseURL, c.SUIBaseURL, legacySUIVersionLabel, c.SubscriptionBaseURL, c.CurrencyID, c.TelegramIDField, time.Local.String(), sorted(c.AllowedTelegramIDs), sorted(c.ExcludedTelegramIDs)})
 	return Policy{Enabled: true, Revision: c.Revision, Hash: sha256.Sum256(raw)}
 }
 

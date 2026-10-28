@@ -6,13 +6,16 @@ package integrationhttp
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 )
@@ -20,6 +23,7 @@ import (
 const MaxResponseBytes = 4 << 20
 
 var ErrInvalidResponse = errors.New("invalid integration API response")
+var ErrConnection = errors.New("integration API connection failed")
 
 type HTTPError struct {
 	StatusCode int
@@ -78,6 +82,32 @@ func New(baseURL string, headers http.Header, timeout time.Duration) (*Client, e
 	}}, nil
 }
 
+// connectionError reports the failure category without echoing URLs, provider
+// error bodies or credentials from net/http's wrapped error strings.
+func connectionError(err error) error {
+	var dns *net.DNSError
+	var authority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var certificate x509.CertificateInvalidError
+	var network net.Error
+	switch {
+	case errors.As(err, &dns):
+		return fmt.Errorf("%w: DNS lookup failed", ErrConnection)
+	case errors.As(err, &authority):
+		return fmt.Errorf("%w: TLS certificate authority is not trusted", ErrConnection)
+	case errors.As(err, &hostname):
+		return fmt.Errorf("%w: TLS certificate does not match the server hostname", ErrConnection)
+	case errors.As(err, &certificate):
+		return fmt.Errorf("%w: TLS certificate is invalid or expired", ErrConnection)
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return fmt.Errorf("%w: connection refused", ErrConnection)
+	case errors.As(err, &network) && network.Timeout():
+		return context.DeadlineExceeded
+	default:
+		return ErrConnection
+	}
+}
+
 // Get appends escaped path segments, preserving an installed panel's prefix.
 // It deliberately does not follow pagination links supplied by a remote API:
 // adapters construct each page on the configured origin themselves.
@@ -123,7 +153,7 @@ func (c *Client) requestType(ctx context.Context, method string, segments []stri
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, context.DeadlineExceeded
 		}
-		return nil, errors.New("integration API connection failed")
+		return nil, connectionError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {

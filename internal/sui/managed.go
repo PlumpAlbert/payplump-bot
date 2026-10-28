@@ -19,7 +19,8 @@ var (
 	ErrManagedResponse = errors.New("invalid SUI managed response")
 	ErrManagedConflict = errors.New("SUI managed account conflict")
 	ErrManagedState    = errors.New("unsupported SUI managed state")
-	ErrManagedVersion  = errors.New("unsupported SUI managed version claim")
+	// ErrManagedVersion is retained for source compatibility; release claims are not validated.
+	ErrManagedVersion = errors.New("unsupported SUI managed version claim")
 	// ErrManagedUnknown means a POST was attempted. The caller MUST hold the
 	// operation and reconcile, never blindly resubmit, even after success=true.
 	ErrManagedUnknown = errors.New("SUI write outcome unknown; hold and reconcile")
@@ -34,8 +35,7 @@ type ManagedAPI interface {
 	Enable(context.Context, EnableDraft) (ClientRecord, error)
 }
 
-// ManagedClient targets backend db7f9545e7e2907a5d46a2b6bfc4a0b64c2de348
-// (v1.6.4). Version checking is only a version CLAIM, not build attestation.
+// ManagedClient validates API records and operations, not release claims.
 //
 // The panel has no CAS or idempotency. Callers must enforce an EXCLUSIVE writer
 // across all processes, administrators and panel UI; this mutex serializes only
@@ -45,7 +45,7 @@ type ManagedAPI interface {
 type ManagedClient struct {
 	http            *integrationhttp.Client
 	writer          *integrationhttp.Writer
-	declaredVersion string
+	declaredVersion string // Informational only; retained for compatibility.
 	maxAccounts     int
 	mu              sync.Mutex
 }
@@ -53,15 +53,14 @@ type ManagedClient struct {
 // ValidateManagedClientConfiguration checks managed-writer settings without
 // creating the read-only or write capability.
 func ValidateManagedClientConfiguration(base, token, declaredVersion string, timeout time.Duration, maxAccounts int) error {
-	if (declaredVersion != "1.6.4" && declaredVersion != "v1.6.4") || maxAccounts < 1 || maxAccounts > 1000 {
+	if maxAccounts < 1 || maxAccounts > 1000 {
 		return errInvalidConfiguration
 	}
 	return ValidateClientConfiguration(base, token, timeout)
 }
 
-// NewManagedClient requires an explicit manual declaration of 1.6.4 (or
-// v1.6.4). The GET status claim must exactly match that spelling before EVERY
-// POST. HTTP supports private NetBird networks; HTTPS uses normal verification.
+// NewManagedClient retains declaredVersion as optional informational metadata.
+// HTTP supports private NetBird networks; HTTPS uses normal verification.
 func NewManagedClient(base, token, declaredVersion string, timeout time.Duration, maxAccounts int) (*ManagedClient, error) {
 	if err := ValidateManagedClientConfiguration(base, token, declaredVersion, timeout, maxAccounts); err != nil {
 		return nil, err
@@ -113,21 +112,6 @@ func managedEnvelope(raw []byte) (map[string]any, error) {
 		return nil, ErrManagedResponse
 	}
 	return obj, nil
-}
-func (c *ManagedClient) checkVersion(ctx context.Context) error {
-	return checkManagedVersion(ctx, c.get, c.declaredVersion)
-}
-
-func checkManagedVersion(ctx context.Context, get managedGetter, declaredVersion string) error {
-	obj, err := get(ctx, "status", url.Values{"r": {"sys"}})
-	if err != nil {
-		return err
-	}
-	sys, ok := obj["sys"].(map[string]any)
-	if !ok || sys["appVersion"] != declaredVersion {
-		return ErrManagedVersion
-	}
-	return nil
 }
 
 type managedSummary struct {
@@ -434,9 +418,6 @@ func (c *ManagedClient) createDisabled(ctx context.Context, draft CreateDraft, a
 	if err = c.verifyInbounds(ctx, r.wire.Inbounds); err != nil {
 		return ClientRecord{}, err
 	}
-	if err = c.checkVersion(ctx); err != nil {
-		return ClientRecord{}, err
-	}
 	if authorize != nil {
 		if err = authorize(ctx); err != nil {
 			return ClientRecord{}, err
@@ -508,9 +489,6 @@ func (c *ManagedClient) enable(ctx context.Context, draft EnableDraft, authorize
 		return ClientRecord{}, err
 	}
 	if err = c.verifyInbounds(ctx, current.wire.Inbounds); err != nil {
-		return ClientRecord{}, err
-	}
-	if err = c.checkVersion(ctx); err != nil {
 		return ClientRecord{}, err
 	}
 	// Only enable changes. Preserve fresh counters, all nested config keys and

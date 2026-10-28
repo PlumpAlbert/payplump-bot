@@ -104,7 +104,7 @@ func NewCycleReader(base, token string, timeout time.Duration, pageSize, maxPage
 }
 
 func (c *CycleReader) get(ctx context.Context, path []string, query url.Values, result any) error {
-	return getUniqueNinjaJSON(ctx, c.transport, path, query, SupportedSettlementVersion, ErrSettlementVersion, result)
+	return getUniqueNinjaJSON(ctx, c.transport, path, query, result)
 }
 
 func (c *CycleReader) GetInvoice(ctx context.Context, id string) (CycleInvoice, error) {

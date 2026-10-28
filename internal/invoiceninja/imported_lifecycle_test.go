@@ -167,8 +167,6 @@ func TestImportedFreshGETRejectsProfileDriftBeforeAuthorization(t *testing.T) {
 	var callbacks, writes int
 	srv := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
-		case "GET /api/v1/ping":
-			recurringTestReply(t, w, map[string]any{})
 		case "GET /api/v1/recurring_invoices/recurring-A":
 			x := b
 			x.TaxRate1 = "1"
@@ -255,82 +253,90 @@ func TestImportedElapsedJournalsDecodeButWritesRemainDenied(t *testing.T) {
 }
 
 func TestImportedScheduleAndResumeHappyPaths(t *testing.T) {
-	t.Run("schedule", func(t *testing.T) {
-		p, b := importedFixture(t, "3")
-		d, err := PrepareImportedSchedule(p, b, "2040-03-31", "2040-02-01")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var gets, puts, calls int
-		srv := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method + " " + r.URL.Path {
-			case "GET /api/v1/ping":
-				recurringTestReply(t, w, map[string]any{})
-			case "GET /api/v1/recurring_invoices/recurring-A":
-				gets++
-				x := b
-				if gets > 1 {
-					x.NextSendDate = "2040-03-31"
-					x.NextSendDatetime = "2040-03-31T08:00:00Z"
+	for _, version := range []string{"5.13.47", "5.13.50", ""} {
+		t.Run(version, func(t *testing.T) {
+			t.Run("schedule", func(t *testing.T) {
+				p, b := importedFixture(t, "3")
+				d, err := PrepareImportedSchedule(p, b, "2040-03-31", "2040-02-01")
+				if err != nil {
+					t.Fatal(err)
 				}
-				recurringTestReply(t, w, map[string]any{"data": x})
-			case "PUT /api/v1/recurring_invoices/recurring-A":
-				puts++
-				var fields map[string]json.RawMessage
-				_ = json.NewDecoder(r.Body).Decode(&fields)
-				if len(fields) != 2 {
-					t.Errorf("unexpected PUT fields: %v", fields)
+				var gets, puts, calls int
+				srv := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Del("X-APP-VERSION")
+					if version != "" {
+						w.Header().Set("X-APP-VERSION", version)
+					}
+					switch r.Method + " " + r.URL.Path {
+					case "GET /api/v1/recurring_invoices/recurring-A":
+						gets++
+						x := b
+						if gets > 1 {
+							x.NextSendDate = "2040-03-31"
+							x.NextSendDatetime = "2040-03-31T08:00:00Z"
+						}
+						recurringTestReply(t, w, map[string]any{"data": x})
+					case "PUT /api/v1/recurring_invoices/recurring-A":
+						puts++
+						var fields map[string]json.RawMessage
+						_ = json.NewDecoder(r.Body).Decode(&fields)
+						if len(fields) != 2 {
+							t.Errorf("unexpected PUT fields: %v", fields)
+						}
+						x := b
+						x.NextSendDate = "2040-03-31"
+						x.NextSendDatetime = "2040-03-31T08:00:00Z"
+						recurringTestReply(t, w, map[string]any{"data": x})
+					default:
+						http.NotFound(w, r)
+					}
+				})
+				c, _ := NewImportedRecurringClient(srv.URL, recurringTestToken, time.Second, 1, 1)
+				c.base.now = func() time.Time { return time.Date(2040, 1, 1, 12, 0, 0, 0, time.Local) }
+				got, err := c.RescheduleAuthorized(context.Background(), d, func(context.Context) error { calls++; return nil })
+				if err != nil || got.NextSendDate != "2040-03-31" || gets != 2 || puts != 1 || calls != 1 {
+					t.Fatalf("got=%+v err=%v gets=%d puts=%d calls=%d", got, err, gets, puts, calls)
 				}
-				x := b
-				x.NextSendDate = "2040-03-31"
-				x.NextSendDatetime = "2040-03-31T08:00:00Z"
-				recurringTestReply(t, w, map[string]any{"data": x})
-			default:
-				http.NotFound(w, r)
-			}
+			})
+			t.Run("resume", func(t *testing.T) {
+				p, b := importedFixture(t, "3")
+				receipt := RecurringReceipt{Amount: b.Amount, NextSendDatetime: b.NextSendDatetime}
+				d, err := PrepareImportedResume(p, b, receipt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var gets, posts, calls int
+				srv := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Del("X-APP-VERSION")
+					if version != "" {
+						w.Header().Set("X-APP-VERSION", version)
+					}
+					switch r.Method + " " + r.URL.Path {
+					case "GET /api/v1/recurring_invoices/recurring-A":
+						gets++
+						x := b
+						if gets > 1 {
+							x.StatusID = "2"
+						}
+						recurringTestReply(t, w, map[string]any{"data": x})
+					case "POST /api/v1/recurring_invoices/bulk":
+						posts++
+						x := b
+						x.StatusID = "2"
+						recurringTestReply(t, w, map[string]any{"data": []RecurringRecord{x}})
+					default:
+						http.NotFound(w, r)
+					}
+				})
+				c, _ := NewImportedRecurringClient(srv.URL, recurringTestToken, time.Second, 1, 1)
+				c.base.now = func() time.Time { return time.Date(2040, 1, 1, 12, 0, 0, 0, time.Local) }
+				got, err := c.ResumeAuthorized(context.Background(), d, func(context.Context) error { calls++; return nil })
+				if err != nil || got.StatusID != "2" || gets != 2 || posts != 1 || calls != 1 {
+					t.Fatalf("got=%+v err=%v gets=%d posts=%d calls=%d", got, err, gets, posts, calls)
+				}
+			})
 		})
-		c, _ := NewImportedRecurringClient(srv.URL, recurringTestToken, time.Second, 1, 1)
-		c.base.now = func() time.Time { return time.Date(2040, 1, 1, 12, 0, 0, 0, time.Local) }
-		got, err := c.RescheduleAuthorized(context.Background(), d, func(context.Context) error { calls++; return nil })
-		if err != nil || got.NextSendDate != "2040-03-31" || gets != 2 || puts != 1 || calls != 1 {
-			t.Fatalf("got=%+v err=%v gets=%d puts=%d calls=%d", got, err, gets, puts, calls)
-		}
-	})
-	t.Run("resume", func(t *testing.T) {
-		p, b := importedFixture(t, "3")
-		receipt := RecurringReceipt{Amount: b.Amount, NextSendDatetime: b.NextSendDatetime}
-		d, err := PrepareImportedResume(p, b, receipt)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var gets, posts, calls int
-		srv := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method + " " + r.URL.Path {
-			case "GET /api/v1/ping":
-				recurringTestReply(t, w, map[string]any{})
-			case "GET /api/v1/recurring_invoices/recurring-A":
-				gets++
-				x := b
-				if gets > 1 {
-					x.StatusID = "2"
-				}
-				recurringTestReply(t, w, map[string]any{"data": x})
-			case "POST /api/v1/recurring_invoices/bulk":
-				posts++
-				x := b
-				x.StatusID = "2"
-				recurringTestReply(t, w, map[string]any{"data": []RecurringRecord{x}})
-			default:
-				http.NotFound(w, r)
-			}
-		})
-		c, _ := NewImportedRecurringClient(srv.URL, recurringTestToken, time.Second, 1, 1)
-		c.base.now = func() time.Time { return time.Date(2040, 1, 1, 12, 0, 0, 0, time.Local) }
-		got, err := c.ResumeAuthorized(context.Background(), d, func(context.Context) error { calls++; return nil })
-		if err != nil || got.StatusID != "2" || gets != 2 || posts != 1 || calls != 1 {
-			t.Fatalf("got=%+v err=%v gets=%d posts=%d calls=%d", got, err, gets, posts, calls)
-		}
-	})
+	}
 }
 
 func TestImportedPauseAuthorizedAndReceipt(t *testing.T) {
@@ -342,8 +348,6 @@ func TestImportedPauseAuthorizedAndReceipt(t *testing.T) {
 	var gets, writes, calls int
 	srv := recurringTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
-		case "GET /api/v1/ping":
-			recurringTestReply(t, w, map[string]any{})
 		case "GET /api/v1/recurring_invoices/recurring-A":
 			gets++
 			x := b

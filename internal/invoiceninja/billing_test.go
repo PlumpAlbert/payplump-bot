@@ -154,36 +154,31 @@ func TestBillingLookupFailsClosed(t *testing.T) {
 	first := listBody(item, 2, 1, 1, 1, 2)
 	last := listBody(`[{"id":"two","id_number":"42"}]`, 2, 1, 1, 2, 2)
 	for _, tt := range []struct {
-		name       string
-		pages      []string
-		maxPages   int
-		badVersion bool
+		name     string
+		pages    []string
+		maxPages int
 	}{
-		{"duplicate ID", []string{first, strings.Replace(last, `"two"`, `"one"`, 1)}, 2, false},
-		{"changed total", []string{first, listBody(item, 3, 1, 1, 2, 3)}, 3, false},
-		{"changed page size", []string{first, listBody(item, 3, 1, 2, 2, 2)}, 2, false},
-		{"wrong page", []string{first, first}, 2, false},
-		{"page bound", []string{first}, 1, false},
-		{"server clamps page size", []string{listBody(item, 1, 1, 2, 1, 1)}, 2, false},
-		{"malformed metadata", []string{`{"data":[],"meta":{}}`}, 2, false},
-		{"missing data", []string{`{"meta":{"pagination":{}}}`}, 2, false},
-		{"incomplete data", []string{listBody(`[]`, 1, 0, 1, 1, 1)}, 2, false},
-		{"negative total", []string{listBody(`[]`, -1, 0, 1, 1, 0)}, 2, false},
-		{"overflow total", []string{strings.Replace(first, `"total":2`, `"total":999999999999999999999999999`, 1)}, 2, false},
-		{"ignored filter", []string{strings.Replace(first, `"42"`, `"43"`, 1)}, 2, false},
-		{"noncanonical identity", []string{strings.Replace(first, `"42"`, `"042"`, 1)}, 2, false},
-		{"overflow identity", []string{strings.Replace(first, `"42"`, `"9223372036854775808"`, 1)}, 2, false},
-		{"invalid opaque ID", []string{strings.Replace(first, `"one"`, `"../one"`, 1)}, 2, false},
-		{"bad second page version", []string{first, last}, 2, true},
-		{"malformed second response", []string{first, `{`}, 2, false},
+		{"duplicate ID", []string{first, strings.Replace(last, `"two"`, `"one"`, 1)}, 2},
+		{"changed total", []string{first, listBody(item, 3, 1, 1, 2, 3)}, 3},
+		{"changed page size", []string{first, listBody(item, 3, 1, 2, 2, 2)}, 2},
+		{"wrong page", []string{first, first}, 2},
+		{"page bound", []string{first}, 1},
+		{"server clamps page size", []string{listBody(item, 1, 1, 2, 1, 1)}, 2},
+		{"malformed metadata", []string{`{"data":[],"meta":{}}`}, 2},
+		{"missing data", []string{`{"meta":{"pagination":{}}}`}, 2},
+		{"incomplete data", []string{listBody(`[]`, 1, 0, 1, 1, 1)}, 2},
+		{"negative total", []string{listBody(`[]`, -1, 0, 1, 1, 0)}, 2},
+		{"overflow total", []string{strings.Replace(first, `"total":2`, `"total":999999999999999999999999999`, 1)}, 2},
+		{"ignored filter", []string{strings.Replace(first, `"42"`, `"43"`, 1)}, 2},
+		{"noncanonical identity", []string{strings.Replace(first, `"42"`, `"042"`, 1)}, 2},
+		{"overflow identity", []string{strings.Replace(first, `"42"`, `"9223372036854775808"`, 1)}, 2},
+		{"invalid opaque ID", []string{strings.Replace(first, `"one"`, `"../one"`, 1)}, 2},
+		{"malformed second response", []string{first, `{`}, 2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var requests atomic.Int32
 			s := billingServer(t, func(w http.ResponseWriter, r *http.Request) {
 				n := int(requests.Add(1))
-				if tt.badVersion && n == 2 {
-					w.Header().Set("X-APP-VERSION", "5.99.0")
-				}
 				if n > len(tt.pages) {
 					t.Error("exceeded expected page bound")
 					w.WriteHeader(500)
@@ -194,9 +189,6 @@ func TestBillingLookupFailsClosed(t *testing.T) {
 			got, err := billingClientAt(t, s.URL, 1, tt.maxPages).FindCustomers(context.Background(), 42)
 			if !errors.Is(err, invoiceninja.ErrLookupIncomplete) || got != nil || requests.Load() > int32(tt.maxPages) {
 				t.Fatalf("partial inventory escaped: %+v, %v", got, err)
-			}
-			if tt.badVersion && !errors.Is(err, invoiceninja.ErrWriteVersion) {
-				t.Fatalf("version failure lost: %v", err)
 			}
 		})
 	}
@@ -300,24 +292,20 @@ func TestBillingWritesRejectAmbiguousReceiptsAndDoNotReplay(t *testing.T) {
 	}
 }
 
-func TestBillingWriteVersionPreflightRequiresUniqueRawJSON(t *testing.T) {
-	for _, body := range []string{
-		`{"data":[],"DATA":[]}`,
-		`{"data":[],"meta":{"pagination":{"total":0,"TOTAL":1}}}`,
-		`{"data":[],"unknown":{"k":1,"K":2}}`,
-	} {
-		t.Run(body, func(t *testing.T) {
-			var posts atomic.Int32
-			s := billingServer(t, func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == http.MethodPost {
-					posts.Add(1)
-				}
-				_, _ = io.WriteString(w, body)
-			})
-			if _, err := billingClientAt(t, s.URL, 1, 1).CreateCustomer(context.Background(), billingDraft()); err == nil || posts.Load() != 0 {
-				t.Fatalf("ambiguous version preflight authorized a write: %v posts=%d", err, posts.Load())
-			}
-		})
+func TestBillingMutationsDoNotProbeUnrelatedInventory(t *testing.T) {
+	var gets, posts atomic.Int32
+	s := billingServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			gets.Add(1)
+			http.Error(w, "unrelated inventory unavailable", http.StatusForbidden)
+			return
+		}
+		posts.Add(1)
+		_, _ = io.WriteString(w, fixture(t, "billing_customer"))
+	})
+	got, err := billingClientAt(t, s.URL, 1, 1).CreateCustomer(context.Background(), billingDraft())
+	if err != nil || got.ID != "billing-client" || gets.Load() != 0 || posts.Load() != 1 {
+		t.Fatalf("mutation depended on unrelated inventory: %v GETs=%d POSTs=%d", err, gets.Load(), posts.Load())
 	}
 }
 
@@ -348,7 +336,7 @@ func TestBillingInvoiceLookupRechecksFilterAndNumbers(t *testing.T) {
 	}
 }
 
-func TestBillingIndividualReadsIncludeTrashedAndPinVersion(t *testing.T) {
+func TestBillingIndividualReadsIncludeTrashed(t *testing.T) {
 	const id = "opaque?id#%"
 	invoice := billingInvoice(t)
 	invoice.ID, invoice.IsDeleted, invoice.ArchivedAt = id, true, 2200000000
@@ -390,40 +378,73 @@ func TestBillingIndividualReadsIncludeTrashedAndPinVersion(t *testing.T) {
 	}
 }
 
-func TestBillingEveryReadAndMutationRequiresExactVersion(t *testing.T) {
-	for _, versions := range [][]string{nil, {"5.13.46"}, {"5.13.48"}, {"5.99.0"}, {"5.13.47+build"}, {"5.13.47-beta.1"}, {"v5.13.47"}, {"synthetic-private-version"}, {"5.13.47", "5.13.47"}} {
+func TestBillingReadsAndMutationsAcceptReleaseHeaders(t *testing.T) {
+	customerBody := fixture(t, "billing_customer")
+	invoiceBody := fixture(t, "billing_invoice_draft")
+	issuedBody := fixture(t, "billing_invoice_issued")
+	var customer, invoice struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal([]byte(customerBody), &customer) != nil || json.Unmarshal([]byte(invoiceBody), &invoice) != nil {
+		t.Fatal("bad fixtures")
+	}
+	for _, versions := range [][]string{nil, {"5.13.47"}, {"5.13.50"}, {"5.13.46"}, {"5.13.48"}, {"5.99.0"}, {"5.13.47+build"}, {"5.13.47-beta.1"}, {"v5.13.47"}, {"synthetic-private-version"}, {"5.13.47", "5.13.47"}} {
 		t.Run(fmt.Sprint(versions), func(t *testing.T) {
-			var posts atomic.Int32
+			var posts, probes atomic.Int32
 			s := billingServer(t, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Del("X-APP-VERSION")
 				for _, version := range versions {
 					w.Header().Add("X-APP-VERSION", version)
 				}
-				if r.Method == "POST" {
+				body := customerBody
+				switch r.Method + " " + r.URL.Path {
+				case "GET /api/v1/clients/billing-client":
+				case "GET /api/v1/invoices/billing-invoice":
+					body = invoiceBody
+				case "GET /api/v1/clients":
+					if r.URL.Query().Has("id_number") {
+						body = listBody("["+string(customer.Data)+"]", 1, 1, 1, 1, 1)
+					} else {
+						probes.Add(1)
+						body = `{}`
+					}
+				case "GET /api/v1/invoices":
+					body = listBody("["+string(invoice.Data)+"]", 1, 1, 1, 1, 1)
+				case "POST /api/v1/clients":
 					posts.Add(1)
+				case "POST /api/v1/invoices":
+					posts.Add(1)
+					body = invoiceBody
+				case "POST /api/v1/invoices/bulk":
+					posts.Add(1)
+					body = issuedBody
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+					w.WriteHeader(500)
+					return
 				}
-				_, _ = io.WriteString(w, `{}`)
+				_, _ = io.WriteString(w, body)
 			})
 			c := billingClientAt(t, s.URL, 1, 1)
 			calls := []func() error{
-				func() error { _, e := c.GetCustomer(context.Background(), "customer"); return e },
-				func() error { _, e := c.GetInvoice(context.Background(), "invoice"); return e },
-				func() error { _, e := c.FindCustomers(context.Background(), 42); return e },
-				func() error { _, e := c.FindInvoices(context.Background(), "customer"); return e },
+				func() error { _, e := c.GetCustomer(context.Background(), "billing-client"); return e },
+				func() error { _, e := c.GetInvoice(context.Background(), "billing-invoice"); return e },
+				func() error { _, e := c.FindCustomers(context.Background(), 9007199254740993); return e },
+				func() error { _, e := c.FindInvoices(context.Background(), "billing-client"); return e },
 				func() error { _, e := c.CreateCustomer(context.Background(), billingDraft()); return e },
 				func() error { _, e := c.CreateInvoice(context.Background(), billingInvoiceDraft(t)); return e },
 				func() error {
-					_, e := c.IssueInvoice(context.Background(), invoiceninja.IssueDraft{Action: "mark_sent", IDs: []string{"invoice"}})
+					_, e := c.IssueInvoice(context.Background(), invoiceninja.IssueDraft{Action: "mark_sent", IDs: []string{"billing-invoice"}})
 					return e
 				},
 			}
 			for _, call := range calls {
-				if err := call(); !errors.Is(err, invoiceninja.ErrWriteVersion) || strings.Contains(err.Error(), "synthetic-private-version") {
-					t.Fatalf("unsafe version handling: %v", err)
+				if err := call(); err != nil {
+					t.Fatalf("release header gated valid response: %v", err)
 				}
 			}
-			if posts.Load() != 0 {
-				t.Fatal("POST reached mismatched version")
+			if posts.Load() != 3 || probes.Load() != 0 {
+				t.Fatalf("POSTs=%d probes=%d", posts.Load(), probes.Load())
 			}
 		})
 	}
@@ -441,16 +462,13 @@ func TestBillingProductTaxCopyAndMutationContracts(t *testing.T) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		if r.Method == "GET" {
 			if r.URL.Path == "/panel/api/v1/products/billing-product" {
-				// Inherited GetProduct keeps legacy format-only version validation.
+				// Inherited GetProduct keeps diagnostic-only version metadata.
 				w.Header().Set("X-APP-VERSION", "5.99.0")
 				_, _ = io.WriteString(w, productBody)
 				return
 			}
-			want := url.Values{"page": {"1"}, "per_page": {"1"}, "status": {"active,archived,deleted"}}
-			if r.URL.Path != "/panel/api/v1/clients" || !reflect.DeepEqual(r.URL.Query(), want) || r.ContentLength != 0 {
-				t.Errorf("unbounded/wrong version probe: %s", r.URL)
-			}
-			_, _ = io.WriteString(w, `{"data":[]}`)
+			t.Errorf("unexpected GET: %s", r.URL)
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 		if r.Method != "POST" || r.Header.Get("Content-Type") != "application/json" || r.URL.RawQuery != "" {
@@ -490,9 +508,9 @@ func TestBillingProductTaxCopyAndMutationContracts(t *testing.T) {
 	if err != nil || issued.StatusID != "2" || issued.Amount.String() != preciseAmount || issued.Balance.String() != preciseAmount {
 		t.Fatalf("issue invoice: %+v, %v", issued, err)
 	}
-	wantRequests := []string{"GET /panel/api/v1/products/billing-product", "GET /panel/api/v1/clients", "POST /panel/api/v1/clients", "GET /panel/api/v1/clients", "POST /panel/api/v1/invoices", "GET /panel/api/v1/clients", "POST /panel/api/v1/invoices/bulk"}
+	wantRequests := []string{"GET /panel/api/v1/products/billing-product", "POST /panel/api/v1/clients", "POST /panel/api/v1/invoices", "POST /panel/api/v1/invoices/bulk"}
 	if !reflect.DeepEqual(requests, wantRequests) || len(bodies) != 3 {
-		t.Fatalf("each POST must have its own version probe: %v", requests)
+		t.Fatalf("unexpected mutation/resource read sequence: %v", requests)
 	}
 	for n, expected := range []any{billingDraft(), draft, issue} {
 		if bodies[n] != billingJSON(t, expected) {
@@ -591,7 +609,7 @@ func TestBillingInvalidDraftsNeverReachNetwork(t *testing.T) {
 		}
 	}
 	if requests.Load() != 0 {
-		t.Fatal("invalid draft reached network (even a version probe)")
+		t.Fatal("invalid draft reached network")
 	}
 }
 
@@ -732,7 +750,7 @@ func TestBillingIssueRequiresOneUnpaidSentInvoice(t *testing.T) {
 
 func TestBillingUnknownIssuePOSTCalledOnceAndErrorsRedacted(t *testing.T) {
 	issuedBody := fixture(t, "billing_invoice_issued")
-	for _, outcome := range []string{"500", "invalid JSON", "disconnect", "wrong version"} {
+	for _, outcome := range []string{"500", "invalid JSON", "disconnect", "malformed receipt with different release"} {
 		t.Run(outcome, func(t *testing.T) {
 			var posts, gets atomic.Int32
 			s := billingServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -753,7 +771,7 @@ func TestBillingUnknownIssuePOSTCalledOnceAndErrorsRedacted(t *testing.T) {
 					}
 					_ = conn.Close()
 					return
-				case "wrong version":
+				case "malformed receipt with different release":
 					w.Header().Set("X-APP-VERSION", "synthetic-private-version")
 					_, _ = io.WriteString(w, issuedBody)
 					return
@@ -761,11 +779,8 @@ func TestBillingUnknownIssuePOSTCalledOnceAndErrorsRedacted(t *testing.T) {
 				_, _ = io.WriteString(w, `{"message":"synthetic-private-name `+syntheticToken+` `+billingMarker+`"`)
 			})
 			got, err := billingClientAt(t, s.URL+"/synthetic-private-path", 1, 1).IssueInvoice(context.Background(), invoiceninja.IssueDraft{Action: "mark_sent", IDs: []string{"synthetic-private-invoice"}})
-			if err == nil || got.ID != "" || posts.Load() != 1 || gets.Load() != 1 {
+			if err == nil || got.ID != "" || posts.Load() != 1 || gets.Load() != 0 {
 				t.Fatalf("retried/adopted uncertain issue: %+v, %v, POST=%d GET=%d", got, err, posts.Load(), gets.Load())
-			}
-			if outcome == "wrong version" && !errors.Is(err, invoiceninja.ErrWriteVersion) {
-				t.Fatalf("POST version failure lost: %v", err)
 			}
 			for _, secret := range []string{"synthetic-private", syntheticToken, billingMarker, s.URL} {
 				if strings.Contains(err.Error(), secret) {
@@ -776,16 +791,14 @@ func TestBillingUnknownIssuePOSTCalledOnceAndErrorsRedacted(t *testing.T) {
 	}
 }
 
-func TestBillingPostResponseVersionAndFreshProbe(t *testing.T) {
+func TestBillingPostResponseVersionWithoutProbe(t *testing.T) {
 	customerBody := fixture(t, "billing_customer")
-	for _, postVersion := range []string{"", "5.13.48", "5.13.47"} {
+	for _, postVersion := range []string{"", "5.13.50", "5.13.48", "5.13.47"} {
 		var gets, posts atomic.Int32
 		s := billingServer(t, func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == "GET" {
-				if gets.Add(1) > 1 {
-					w.Header().Set("X-APP-VERSION", "5.13.48")
-				}
-				_, _ = io.WriteString(w, `{}`)
+				gets.Add(1)
+				http.Error(w, "unrelated inventory unavailable", http.StatusForbidden)
 				return
 			}
 			posts.Add(1)
@@ -794,14 +807,11 @@ func TestBillingPostResponseVersionAndFreshProbe(t *testing.T) {
 		})
 		c := billingClientAt(t, s.URL, 1, 1)
 		_, err := c.CreateCustomer(context.Background(), billingDraft())
-		if postVersion != "5.13.47" && !errors.Is(err, invoiceninja.ErrWriteVersion) {
-			t.Fatalf("POST version not checked: %v", err)
-		}
-		if postVersion == "5.13.47" && err != nil {
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.CreateCustomer(context.Background(), billingDraft()); !errors.Is(err, invoiceninja.ErrWriteVersion) || posts.Load() != 1 || gets.Load() != 2 {
-			t.Fatalf("cached version allowed second POST: %v", err)
+		if _, err := c.CreateCustomer(context.Background(), billingDraft()); err != nil || posts.Load() != 2 || gets.Load() != 0 {
+			t.Fatalf("mutation probed or release-gated: %v", err)
 		}
 	}
 }

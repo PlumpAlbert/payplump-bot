@@ -50,9 +50,6 @@ func ConfigFromEnvironment(getenv func(string) string, telegramEnabled bool) (Co
 	if getenv("INVOICE_NINJA_TELEGRAM_ID_FIELD") != "id_number" {
 		return Config{}, errors.New("registration writes require INVOICE_NINJA_TELEGRAM_ID_FIELD=id_number")
 	}
-	if version := getenv("INVOICE_NINJA_VERSION"); version != "" && strings.TrimPrefix(version, "v") != "5.13.47" {
-		return Config{}, errors.New("registration writes support Invoice Ninja 5.13.47 only")
-	}
 	if raw := getenv("INVOICE_NINJA_INCLUSIVE_TAXES"); raw != "" {
 		value, err := strconv.ParseBool(raw)
 		if err != nil {

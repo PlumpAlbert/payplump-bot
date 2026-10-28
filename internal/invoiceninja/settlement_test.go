@@ -544,8 +544,8 @@ func TestSettlementEnvelopesAndPaginationPresence(t *testing.T) {
 	}
 }
 
-func TestSettlementVersionPinnedOnEveryReadAndEveryPage(t *testing.T) {
-	for _, versions := range [][]string{nil, {""}, {"5.13.46"}, {"5.13.48"}, {"v5.13.47"}, {"5.13.47+build"}, {"synthetic-private-version"}, {"5.13.47", "5.13.47"}, {"5.13.47,5.13.47"}} {
+func TestSettlementAcceptsReleaseHeadersOnEveryReadAndPage(t *testing.T) {
+	for _, versions := range [][]string{nil, {"5.13.47"}, {"5.13.50"}, {""}, {"5.13.46"}, {"5.13.48"}, {"v5.13.47"}, {"5.13.47+build"}, {"synthetic-private-version"}, {"5.13.47", "5.13.47"}, {"5.13.47,5.13.47"}} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			settlementCheckRequest(t, r)
 			for _, version := range versions {
@@ -565,13 +565,9 @@ func TestSettlementVersionPinnedOnEveryReadAndEveryPage(t *testing.T) {
 		_, paymentsErr := client.ListSettlementPayments(context.Background(), "synthetic-customer")
 		server.Close()
 		for _, err := range []error{customerErr, invoiceErr, paymentsErr} {
-			if !errors.Is(err, invoiceninja.ErrSettlementVersion) {
-				t.Fatalf("unpinned response accepted: %v, %v", versions, err)
+			if err != nil {
+				t.Fatalf("release header gated valid response: %v, %v", versions, err)
 			}
-			settlementRedacted(t, err)
-		}
-		if !errors.Is(paymentsErr, invoiceninja.ErrSettlementIncomplete) {
-			t.Fatal("version-failed inventory is incomplete")
 		}
 	}
 	var calls atomic.Int32
@@ -586,8 +582,8 @@ func TestSettlementVersionPinnedOnEveryReadAndEveryPage(t *testing.T) {
 	}))
 	defer server.Close()
 	payments, err := settlementClientAt(t, server.URL, 1, 2).ListSettlementPayments(context.Background(), "synthetic-customer")
-	if payments != nil || calls.Load() != 2 || !errors.Is(err, invoiceninja.ErrSettlementVersion) || !errors.Is(err, invoiceninja.ErrSettlementIncomplete) {
-		t.Fatalf("version was not checked on later page: %+v, %v", payments, err)
+	if len(payments) != 2 || calls.Load() != 2 || err != nil {
+		t.Fatalf("release change gated later page: %+v, %v", payments, err)
 	}
 }
 

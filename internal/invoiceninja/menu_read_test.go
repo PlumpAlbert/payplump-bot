@@ -106,11 +106,8 @@ func TestMenuReadOnlyMethodsAcceptArbitraryValidSemVer(t *testing.T) {
 			c := clientAt(t, s.URL)
 			customer, customerErr := c.GetCustomer(context.Background(), "synthetic-object")
 			invoice, invoiceErr := c.GetInvoice(context.Background(), "synthetic-object")
-			if customerErr == nil || invoiceErr == nil || customer.ID != "" || invoice.ID != "" {
-				t.Fatal("malformed version header was accepted")
-			}
-			if strings.Contains(customerErr.Error(), version) || strings.Contains(invoiceErr.Error(), version) {
-				t.Fatal("remote version header leaked through error")
+			if customerErr != nil || invoiceErr != nil || customer.ID != "synthetic-object" || invoice.ID != "synthetic-object" {
+				t.Fatal("diagnostic release header gated valid detail response")
 			}
 		})
 	}

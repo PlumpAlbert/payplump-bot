@@ -105,9 +105,6 @@ func loadVerifyConfig(getenv verifyEnvironment) (verifyConfig, error) {
 	if get("INVOICE_NINJA_TELEGRAM_ID_FIELD") != "id_number" {
 		return verifyConfig{}, errors.New("invalid configuration")
 	}
-	if strings.TrimPrefix(get("INVOICE_NINJA_VERSION"), "v") != "5.13.47" || strings.TrimPrefix(get("SUI_VERSION"), "v") != "1.6.4" {
-		return verifyConfig{}, errors.New("invalid configuration")
-	}
 	c.timeout = 3 * time.Second
 	if raw := get("INTEGRATION_HTTP_TIMEOUT"); raw != "" {
 		d, e := time.ParseDuration(raw)

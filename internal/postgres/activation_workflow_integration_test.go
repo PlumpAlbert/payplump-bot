@@ -267,8 +267,6 @@ func (p *activationWorkflowHTTP) serveNinja(w http.ResponseWriter, r *http.Reque
 			}
 			activationWorkflowList(w, rows, len(rows), 1, p.cfg.PageSize)
 			return
-		case "ping":
-			data = map[string]any{}
 		default:
 			if p.recurring == nil || route != "recurring_invoices/"+p.recurring.ID {
 				p.reject(w, "unexpected billing GET or foreign entity")
@@ -361,23 +359,18 @@ func (p *activationWorkflowHTTP) servePanel(w http.ResponseWriter, r *http.Reque
 	reply := func(obj any) { _ = json.NewEncoder(w).Encode(map[string]any{"success": true, "obj": obj}) }
 	if r.Method == http.MethodGet {
 		switch route {
-		case "status":
-			if r.URL.RawQuery != "r=sys" {
-				p.reject(w, "missing panel version scope")
-				return
-			}
-			if p.mode == "unpaid" && p.recurring != nil && !p.panel.Enabled() {
-				// This is the enable adapter's LAST preflight, after its full
-				// ownership reads. Its authorization callback must now re-read
-				// financial evidence, before reserving even a third intent.
-				p.invoice.StatusID, p.invoice.Balance, p.invoice.PaidToDate = "2", "100", "0"
-				p.flipped = true
-			}
-			reply(map[string]any{"sys": map[string]any{"appVersion": "1.6.4"}})
 		case "inbounds":
 			if r.URL.RawQuery != "" {
 				p.reject(w, "unexpected inbound query")
 				return
+			}
+			if p.mode == "unpaid" && p.recurring != nil && !p.panel.Enabled() {
+				// This is the enable adapter's LAST actual preflight GET,
+				// after its ownership reads. The removed version-only status
+				// probe is not an authorization boundary. The callback must
+				// re-read financial evidence before reserving a third intent.
+				p.invoice.StatusID, p.invoice.Balance, p.invoice.PaidToDate = "2", "100", "0"
+				p.flipped = true
 			}
 			reply(map[string]any{"inbounds": []any{map[string]any{"id": 7, "type": "vless"}}})
 		case "clients":

@@ -51,9 +51,12 @@ func TestVerifyConfigUsesExplicitCanonicalPolicy(t *testing.T) {
 	if cfg.policy.BotID != 99 || strings.Join(cfg.policy.PilotIDs, ",") != "42,7" || strings.Join(cfg.policy.ExcludedIDs, ",") != "42,8,9,99" || cfg.policy.MaxRecords != 20 || cfg.policy.MaxInventoryRecords != 1000 {
 		t.Fatal("operator policy defaults or exclusions wrong")
 	}
-	values["INVOICE_NINJA_VERSION"] = "5.13.48"
-	if _, err = loadVerifyConfig(func(k string) string { return values[k] }); err == nil {
-		t.Fatal("unknown source release accepted")
+	for _, version := range []string{"", "5.13.50", "future-release"} {
+		values["INVOICE_NINJA_VERSION"], values["SUI_VERSION"] = version, version
+		updated, err := loadVerifyConfig(func(k string) string { return values[k] })
+		if err != nil || updated.policy.SourceScopeHash != cfg.policy.SourceScopeHash {
+			t.Fatal("release metadata rejected or changed persisted source scope")
+		}
 	}
 }
 

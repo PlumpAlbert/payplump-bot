@@ -212,7 +212,7 @@ func TestLoadImportedRuntimeConfigRejectsRevisionAndDependencyBeforePolicyRead(t
 }
 
 func TestLoadImportedRuntimeConfigRejectsInvalidSourceEnvironmentWithoutHTTP(t *testing.T) {
-	for _, tc := range []struct{ name, key, value string }{{"timezone", "TZ", "Invalid/SecretMarker"}, {"source-version", "INVOICE_NINJA_VERSION", "5.13.48_SECRET"}, {"currency", "PAYMENTS_CURRENCY_ID", ""}} {
+	for _, tc := range []struct{ name, key, value string }{{"timezone", "TZ", "Invalid/SecretMarker"}, {"currency", "PAYMENTS_CURRENCY_ID", ""}} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newImportApplyFixture(t)
 			env := make(map[string]string, len(f.env)+2)

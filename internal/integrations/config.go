@@ -117,13 +117,6 @@ func (c Config) Validate() error {
 	default:
 		return errors.New("INVOICE_NINJA_TELEGRAM_ID_FIELD must be id_number or custom_value1-custom_value4, not id or number")
 	}
-	for _, version := range []struct{ name, value string }{
-		{"INVOICE_NINJA_VERSION", c.InvoiceNinja.ExpectedVersion}, {"SUI_VERSION", c.SUI.DeclaredVersion},
-	} {
-		if version.value != "" && !versionPattern.MatchString(version.value) {
-			return errors.New(version.name + " must be an installed release version such as 1.2.3 or be empty")
-		}
-	}
 	if len(c.SUI.InboundIDs) == 0 || len(c.SUI.InboundIDs) > 100 {
 		return errors.New("SUI_INBOUND_IDS must contain 1-100 unique positive integer IDs")
 	}

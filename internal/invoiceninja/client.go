@@ -75,10 +75,7 @@ func (c *Client) GetProductWithVersion(ctx context.Context, id string) (Product,
 	if err != nil {
 		return Product{}, "", err
 	}
-	version, err := appVersion(headers)
-	if err != nil {
-		return Product{}, "", err
-	}
+	version := appVersion(headers)
 	if envelope.Data == nil || !validProduct(*envelope.Data) || envelope.Data.ID != id {
 		return Product{}, "", errInvalidResponse
 	}
@@ -94,11 +91,8 @@ func (c *Client) GetCustomer(ctx context.Context, id string) (Customer, error) {
 	var envelope struct {
 		Data *Customer `json:"data"`
 	}
-	headers, err := c.transport.Get(ctx, []string{"api", "v1", "clients", id}, nil, &envelope)
+	_, err := c.transport.Get(ctx, []string{"api", "v1", "clients", id}, nil, &envelope)
 	if err != nil {
-		return Customer{}, err
-	}
-	if _, err := appVersion(headers); err != nil {
 		return Customer{}, err
 	}
 	if envelope.Data == nil || !validCustomer(*envelope.Data) || envelope.Data.ID != id {
@@ -114,11 +108,8 @@ func (c *Client) GetInvoice(ctx context.Context, id string) (Invoice, error) {
 	var envelope struct {
 		Data *Invoice `json:"data"`
 	}
-	headers, err := c.transport.Get(ctx, []string{"api", "v1", "invoices", id}, nil, &envelope)
+	_, err := c.transport.Get(ctx, []string{"api", "v1", "invoices", id}, nil, &envelope)
 	if err != nil {
-		return Invoice{}, err
-	}
-	if _, err := appVersion(headers); err != nil {
 		return Invoice{}, err
 	}
 	if envelope.Data == nil || !validInvoice(*envelope.Data) || !validID(envelope.Data.ClientID) || envelope.Data.ID != id {
@@ -172,9 +163,6 @@ func list[T any](ctx context.Context, c *Client, resource string, page, perPage 
 			return Page[T]{}, errInvalidResponse
 		}
 	}
-	version, err := appVersion(headers)
-	if err != nil {
-		return Page[T]{}, err
-	}
+	version := appVersion(headers)
 	return Page[T]{Data: envelope.Data, Pagination: pagination, AppVersion: version}, nil
 }

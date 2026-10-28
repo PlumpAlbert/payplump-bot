@@ -21,7 +21,7 @@ import (
 // 493c3884e4214028bc5970cb41bafbd9c4d96401 (v5.13.47): Client/Invoice
 // controllers, filters, requests, transformers and Invoice markSent service.
 // These are source-verified contracts, NOT live-write contract verification.
-// SupportedWriteVersion is the only app version accepted by billing operations.
+// SupportedWriteVersion records the inspected source baseline, not a runtime gate.
 const SupportedWriteVersion = "5.13.47"
 
 const (
@@ -31,7 +31,8 @@ const (
 )
 
 var (
-	ErrWriteVersion     = errors.New("Invoice Ninja billing requires app version 5.13.47")
+	// ErrWriteVersion is retained for compatibility; release headers no longer gate operations.
+	ErrWriteVersion     = errors.New("Invoice Ninja billing release version mismatch")
 	ErrLookupIncomplete = errors.New("Invoice Ninja billing lookup is incomplete")
 	errBillingDraft     = errors.New("invalid Invoice Ninja billing draft")
 	customerMarker      = regexp.MustCompile(`^payplump:[A-Za-z0-9_-]{20,128}:customer_create$`)
@@ -149,7 +150,7 @@ func billingLookupTemporaryFailure(err error) bool {
 	// The shared transport deliberately exposes only bounded, redacted errors.
 	// These two exact transport outcomes are retryable; malformed/oversized JSON
 	// and all other response-contract errors remain fail-closed.
-	return err != nil && (err.Error() == "integration API connection failed" || err.Error() == "could not read integration API response")
+	return err != nil && (errors.Is(err, integrationhttp.ErrConnection) || err.Error() == "could not read integration API response")
 }
 
 func billingLookupFailure(err error) error {
@@ -220,7 +221,7 @@ func billingLookup[T any](ctx context.Context, c *BillingClient, resource string
 				Pagination *wirePagination `json:"pagination"`
 			} `json:"meta"`
 		}
-		err := getUniqueNinjaJSON(ctx, c.transport, []string{"api", "v1", resource}, query, SupportedWriteVersion, ErrWriteVersion, &envelope)
+		err := getUniqueNinjaJSON(ctx, c.transport, []string{"api", "v1", resource}, query, &envelope)
 		if err != nil {
 			return nil, billingLookupFailure(err)
 		}
@@ -270,7 +271,7 @@ func billingGet[T any](ctx context.Context, c *BillingClient, resource, id strin
 	var envelope struct {
 		Data *T `json:"data"`
 	}
-	err := getUniqueNinjaJSON(ctx, c.transport, []string{"api", "v1", resource, id}, nil, SupportedWriteVersion, ErrWriteVersion, &envelope)
+	err := getUniqueNinjaJSON(ctx, c.transport, []string{"api", "v1", resource, id}, nil, &envelope)
 	if err != nil {
 		if errors.Is(err, errInvalidResponse) || errors.Is(err, integrationhttp.ErrInvalidResponse) {
 			return zero, errors.Join(ErrLookupIncomplete, err)
@@ -283,38 +284,13 @@ func billingGet[T any](ctx context.Context, c *BillingClient, resource, id strin
 	return *envelope.Data, nil
 }
 
-func verifyAppVersion(headers http.Header) error {
-	values := headers.Values("X-APP-VERSION")
-	if len(values) != 1 || values[0] != SupportedWriteVersion {
-		return ErrWriteVersion
-	}
-	return nil
-}
-
-// Revalidate immediately before EVERY POST, even when a prior read or mutation
-// observed the right version. This authenticated GET has bounded transport/body
-// size, timeout and one requested record; it does not enumerate an inventory.
-func (c *BillingClient) verifyVersion(ctx context.Context) error {
-	var body json.RawMessage
-	err := getUniqueNinjaJSON(ctx, c.transport, []string{"api", "v1", "clients"}, url.Values{
-		"page": {"1"}, "per_page": {"1"}, "status": {billingStatuses},
-	}, SupportedWriteVersion, ErrWriteVersion, &body)
-	return err
-}
-
 func (c *BillingClient) CreateCustomer(ctx context.Context, draft CustomerDraft) (Customer, error) {
 	if err := ValidateCustomerDraft(draft); err != nil {
 		return Customer{}, err
 	}
-	if err := c.verifyVersion(ctx); err != nil {
-		return Customer{}, err
-	}
 	var raw json.RawMessage
-	headers, err := c.writer.Post(ctx, []string{"api", "v1", "clients"}, nil, draft, &raw)
+	_, err := c.writer.Post(ctx, []string{"api", "v1", "clients"}, nil, draft, &raw)
 	if err != nil {
-		return Customer{}, err
-	}
-	if err := verifyAppVersion(headers); err != nil {
 		return Customer{}, err
 	}
 	var envelope struct {
@@ -338,17 +314,11 @@ func (c *BillingClient) CreateInvoice(ctx context.Context, draft InvoiceDraft) (
 	if err := ValidateInvoiceDraft(draft); err != nil {
 		return Invoice{}, err
 	}
-	// Snapshot caller-owned slice data before the version check and POST.
+	// Snapshot caller-owned slice data before the POST.
 	draft.LineItems = append([]InvoiceLine(nil), draft.LineItems...)
-	if err := c.verifyVersion(ctx); err != nil {
-		return Invoice{}, err
-	}
 	var raw json.RawMessage
-	headers, err := c.writer.Post(ctx, []string{"api", "v1", "invoices"}, nil, draft, &raw)
+	_, err := c.writer.Post(ctx, []string{"api", "v1", "invoices"}, nil, draft, &raw)
 	if err != nil {
-		return Invoice{}, err
-	}
-	if err := verifyAppVersion(headers); err != nil {
 		return Invoice{}, err
 	}
 	var envelope struct {
@@ -375,15 +345,9 @@ func (c *BillingClient) IssueInvoice(ctx context.Context, draft IssueDraft) (Inv
 		return Invoice{}, errBillingDraft
 	}
 	draft.IDs = append([]string(nil), draft.IDs...)
-	if err := c.verifyVersion(ctx); err != nil {
-		return Invoice{}, err
-	}
 	var raw json.RawMessage
-	headers, err := c.writer.Post(ctx, []string{"api", "v1", "invoices", "bulk"}, nil, draft, &raw)
+	_, err := c.writer.Post(ctx, []string{"api", "v1", "invoices", "bulk"}, nil, draft, &raw)
 	if err != nil {
-		return Invoice{}, err
-	}
-	if err := verifyAppVersion(headers); err != nil {
 		return Invoice{}, err
 	}
 	var envelope struct {

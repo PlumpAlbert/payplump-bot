@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,55 @@ func TestConfigRejectsUnboundedOrAmbiguousScope(t *testing.T) {
 			t.Setenv("INVOICE_NINJA_API_TOKEN", "synthetic-api-token")
 			if _, err := ConfigFromEnv(true, true, "synthetic_payment_webhook_secret_123456", "synthetic_telegram_webhook_secret_123456", "synthetic-telegram-token"); err == nil {
 				t.Fatal("invalid lifecycle scope accepted")
+			}
+		})
+	}
+}
+
+func TestConfigVersionIsInformationalAndWebhookSecretOptional(t *testing.T) {
+	env := map[string]string{
+		"INVOICE_LIFECYCLE_ENABLED": "true", "INVOICE_LIFECYCLE_ALLOWED_TELEGRAM_IDS": "101",
+		"INVOICE_NINJA_BASE_URL": "https://billing.example.test", "INVOICE_NINJA_API_TOKEN": "synthetic-api-token",
+	}
+	for _, version := range []string{"", "5.13.48", "v99.2.1+local", "custom-build"} {
+		for _, value := range []string{"", "short", " spaces and punctuation! ", "секрет", "line\nbreak", strings.Repeat("x", 512)} {
+			env["INVOICE_NINJA_VERSION"], env["INVOICE_LIFECYCLE_WEBHOOK_SECRET"] = version, value
+			cfg, err := ConfigFromEnvironment(func(key string) string { return env[key] }, true, true, "", "", "", false)
+			if err != nil {
+				t.Fatalf("polling config rejected informational version or webhook secret: %v", err)
+			}
+			if cfg.WebhookSecret != value {
+				t.Fatal("webhook secret was not preserved verbatim")
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("direct polling config rejected: %v", err)
+			}
+		}
+	}
+}
+
+func TestConfigErrorsIdentifyAPIField(t *testing.T) {
+	env := map[string]string{
+		"INVOICE_LIFECYCLE_ENABLED": "true", "INVOICE_LIFECYCLE_ALLOWED_TELEGRAM_IDS": "101",
+		"INVOICE_NINJA_BASE_URL": "https://billing.example.test", "INVOICE_NINJA_API_TOKEN": "synthetic-api-token",
+	}
+	base, err := ConfigFromEnvironment(func(key string) string { return env[key] }, true, true, "", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		field string
+		edit  func(*Config)
+	}{
+		{"INVOICE_NINJA_BASE_URL", func(c *Config) { c.BaseURL = "https://user:never-print-me@billing.example.test" }},
+		{"INVOICE_NINJA_API_TOKEN", func(c *Config) { c.Token = "never-print-me\ninvalid" }},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			cfg := base
+			tc.edit(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.field) || strings.Contains(err.Error(), "never-print-me") {
+				t.Fatalf("expected a redacted error identifying %s, got %v", tc.field, err)
 			}
 		})
 	}

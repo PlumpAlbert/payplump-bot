@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -45,7 +44,7 @@ func serviceEnvironment(get func(string) string) (func(string) string, bool, err
 			}
 		}
 	}
-	for _, key := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_IDS", "INVOICE_NINJA_BASE_URL", "INVOICE_NINJA_API_TOKEN", "INVOICE_NINJA_PRODUCT_ID", "INVOICE_NINJA_INCLUSIVE_TAXES", "INVOICE_NINJA_WEBHOOK_SECRET", "INVOICE_LIFECYCLE_WEBHOOK_SECRET", "PAYMENTS_CURRENCY_ID", "PAYMENTS_CURRENCY_CODE", "SUI_BASE_URL", "SUI_API_TOKEN", "SUI_INBOUND_IDS", "SUI_SUBSCRIPTION_BASE_URL", "PAYMENT_PHONE", "TZ"} {
+	for _, key := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_IDS", "INVOICE_NINJA_BASE_URL", "INVOICE_NINJA_API_TOKEN", "INVOICE_NINJA_PRODUCT_ID", "SUI_BASE_URL", "SUI_API_TOKEN", "SUI_INBOUND_IDS", "SUI_SUBSCRIPTION_BASE_URL", "PAYMENT_PHONE", "TZ"} {
 		if get(key) == "" {
 			return nil, false, fmt.Errorf("%s is required for normal service startup", key)
 		}
@@ -53,23 +52,18 @@ func serviceEnvironment(get func(string) string) (func(string) string, bool, err
 	if _, err := time.LoadLocation(get("TZ")); err != nil {
 		return nil, false, errors.New("TZ must name a supported calendar timezone")
 	}
-	for key, supported := range map[string]string{"SUI_VERSION": "1.6.4", "INVOICE_NINJA_VERSION": "5.13.47"} {
-		if value := get(key); value != "" && strings.TrimPrefix(value, "v") != supported {
-			return nil, false, fmt.Errorf("%s does not match the supported API version %s", key, supported)
-		}
-	}
 	if value := get("INVOICE_NINJA_TELEGRAM_ID_FIELD"); value != "" && value != "id_number" {
 		return nil, false, errors.New("INVOICE_NINJA_TELEGRAM_ID_FIELD must be id_number for the supported write profile")
 	}
 	code := get("PAYMENTS_CURRENCY_CODE")
-	if len(code) != 3 || code[0] < 'A' || code[0] > 'Z' || code[1] < 'A' || code[1] > 'Z' || code[2] < 'A' || code[2] > 'Z' {
+	if code != "" && (len(code) != 3 || code[0] < 'A' || code[0] > 'Z' || code[1] < 'A' || code[1] > 'Z' || code[2] < 'A' || code[2] > 'Z') {
 		return nil, false, errors.New("PAYMENTS_CURRENCY_CODE must identify the native currency as three uppercase ASCII letters")
 	}
 	defaults := map[string]string{
 		"TELEGRAM_ENABLED": "true", "ACTIVATION_EXCLUSIVE_WRITER": "true",
 		"INVOICE_OVERDUE_EXCLUSIVE_WRITER": "true", "INVOICE_RENEWAL_EXCLUSIVE_WRITER": "true",
 		"CONFIGURATION_POLICY_REVISION": "1", "BROADCAST_POLICY_REVISION": "1",
-		"INVOICE_NINJA_TELEGRAM_ID_FIELD": "id_number", "INVOICE_NINJA_VERSION": "5.13.47", "SUI_VERSION": "1.6.4",
+		"INVOICE_NINJA_TELEGRAM_ID_FIELD": "id_number",
 	}
 	for _, key := range serviceFeatures {
 		defaults[key] = "true"

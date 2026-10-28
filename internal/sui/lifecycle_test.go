@@ -82,8 +82,6 @@ func TestLifecycleDisableAndCloseExactWireAndFinalAuthorization(t *testing.T) {
 		calls = append(calls, q.Method+" "+q.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case q.Method == "GET" && strings.HasSuffix(q.URL.Path, "/status"):
-			fmt.Fprint(w, `{"success":true,"obj":{"sys":{"appVersion":"1.6.4"}}}`)
 		case q.Method == "GET" && strings.HasSuffix(q.URL.Path, "/clients"):
 			fmt.Fprintf(w, `{"success":true,"obj":{"clients":[%s]}}`, state.Raw())
 		case q.Method == "POST" && strings.HasSuffix(q.URL.Path, "/save"):
@@ -108,7 +106,7 @@ func TestLifecycleDisableAndCloseExactWireAndFinalAuthorization(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c, e := NewManagedClient(srv.URL, "token", "1.6.4", time.Second, 100)
+	c, e := NewManagedClient(srv.URL, "token", "", time.Second, 100)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -123,7 +121,7 @@ func TestLifecycleDisableAndCloseExactWireAndFinalAuthorization(t *testing.T) {
 	if !sameStatic(payload, state, false) || state.Enabled() {
 		t.Fatal("disable changed frozen static fields")
 	}
-	if len(calls) < 4 || !strings.HasSuffix(calls[len(calls)-2], "/save") {
+	if len(calls) != 4 || !strings.HasSuffix(calls[len(calls)-2], "/save") {
 		t.Fatal("unexpected disable flow")
 	}
 	closeDraft, e := PrepareCloseSessions(state, bind)
@@ -138,7 +136,7 @@ func TestLifecycleDisableAndCloseExactWireAndFinalAuthorization(t *testing.T) {
 		}
 		return nil
 	})
-	if e != nil || authorized != 1 || posts != 2 {
+	if e != nil || authorized != 1 || posts != 2 || len(calls) != 8 {
 		t.Fatalf("close: %v", e)
 	}
 	if len(form) != 1 || form.Get("u") != bind.Name || form.Get("u") == fmt.Sprint(bind.ID) {
@@ -331,4 +329,44 @@ func mustMarshalDraft(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestLifecycleFinalFreshRecordRecheckSurvivesVersionProbeRemoval(t *testing.T) {
+	for _, operation := range []string{"disable", "close"} {
+		t.Run(operation, func(t *testing.T) {
+			r := managedTestRecord(t, 123)
+			r.wire.Enable = operation == "disable"
+			binding := Binding{ID: r.ID(), Name: r.Name(), CredentialsHash: r.CredentialsHash()}
+			p, c := newManagedPanel(t, r)
+			reads := 0
+			p.fullHook = func(records []json.RawMessage) []json.RawMessage {
+				reads++
+				if reads == 2 {
+					changed := r
+					changed.wire.Remark = "external static change"
+					return []json.RawMessage{changed.Raw()}
+				}
+				return records
+			}
+			authorized := 0
+			authorize := func(context.Context) error { authorized++; return nil }
+			var err error
+			if operation == "disable" {
+				draft, e := PrepareDisable(r, binding)
+				if e != nil {
+					t.Fatal(e)
+				}
+				_, err = c.DisableAuthorized(context.Background(), draft, authorize)
+			} else {
+				draft, e := PrepareCloseSessions(r, binding)
+				if e != nil {
+					t.Fatal(e)
+				}
+				err = c.CloseSessionsAuthorized(context.Background(), draft, authorize)
+			}
+			if !errors.Is(err, ErrManagedConflict) || authorized != 0 || p.countPosts() != 0 || reads != 2 {
+				t.Fatal("final record drift did not stop authorization and write", err)
+			}
+		})
+	}
 }

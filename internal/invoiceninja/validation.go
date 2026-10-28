@@ -22,15 +22,17 @@ var numberPattern = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[
 // bounded ASCII text, and no arbitrary response header content in Page.
 var versionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$`)
 
-func appVersion(headers http.Header) (string, error) {
+// appVersion exposes only bounded diagnostic metadata. Missing, ambiguous or
+// malformed release headers are omitted, never used to reject a response.
+func appVersion(headers http.Header) string {
 	values := headers.Values("X-APP-VERSION")
 	if len(values) == 0 {
-		return "", nil
+		return ""
 	}
 	if len(values) != 1 || len(values[0]) > 128 || !versionPattern.MatchString(values[0]) {
-		return "", errInvalidResponse
+		return ""
 	}
-	return values[0], nil
+	return values[0]
 }
 
 func validServiceBase(raw string) bool {

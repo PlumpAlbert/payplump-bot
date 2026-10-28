@@ -216,18 +216,14 @@ func check(ctx context.Context, cfg Config, ninja invoiceReader, panel suiReader
 	return report, nil
 }
 
-func recordVersion(current *string, expected, actual string) error {
+func recordVersion(current *string, _, actual string) error {
 	if actual != "" && !versionPattern.MatchString(actual) {
 		return errors.New("API returned an unsupported version header")
 	}
-	actual, expected = strings.TrimPrefix(actual, "v"), strings.TrimPrefix(expected, "v")
-	if expected != "" && actual != expected {
-		return errors.New("Invoice Ninja version could not be verified against INVOICE_NINJA_VERSION")
-	}
+	// Release strings are report metadata, not API compatibility checks. A
+	// rolling upgrade can legitimately produce different versions across reads.
+	actual = strings.TrimPrefix(actual, "v")
 	if actual != "" {
-		if *current != "" && *current != actual {
-			return errors.New("Invoice Ninja version changed during the check")
-		}
 		*current = actual
 	}
 	return nil
