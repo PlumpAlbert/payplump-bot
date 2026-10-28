@@ -44,7 +44,7 @@ Configure Invoice Ninja's **sent_invoice** event to POST to:
 https://<public-host>/invoiceninja/sent-invoice-webhook
 ```
 
-Set the separate `X-Payplump-Webhook-Secret` header to `INVOICE_LIFECYCLE_WEBHOOK_SECRET`. This event-specific route accepts a bounded JSON object only as a wake signal. It ignores all body fields, including IDs and event names, and makes no resource decision from the webhook. Invoice Ninja 5.13.47 has no unique webhook delivery/event-instance ID and no built-in webhook signature/authentication; repeated signals are therefore coalesced by a generation counter, then resolved by canonical API reads and the durable invoice ledger. Do not send payment events to this route; the existing payment verifier has its own event-specific endpoint and secret.
+Set the `X-Payplump-Webhook-Secret` header to `INVOICE_LIFECYCLE_WEBHOOK_SECRET`. This event-specific route accepts a bounded JSON object only as a wake signal. It ignores all body fields, including IDs and event names, and makes no resource decision from the webhook. Invoice Ninja 5.13.47 has no unique webhook delivery/event-instance ID and no built-in webhook signature/authentication; repeated signals are therefore coalesced by a generation counter, then resolved by canonical API reads and the durable invoice ledger. Do not send payment events to this route; the existing payment verifier has its own event-specific endpoint; the two Ninja endpoints may use the same secret.
 
 The worker reads the complete company invoice inventory with bounded pagination and locally selects the managed customer; it then exact-GETs a candidate before recording or notifying. The public Invoice Ninja API read is version-pinned by response header to 5.13.47. No startup API probe is performed.
 
@@ -56,7 +56,7 @@ exclusive-writer из прежнего rollout не нужны при обычн
 
 | Variable | Requirement |
 | --- | --- |
-| `INVOICE_LIFECYCLE_WEBHOOK_SECRET` | Separate 32–256 character ASCII secret; never reuse Telegram, payment-webhook, or API credentials |
+| `INVOICE_LIFECYCLE_WEBHOOK_SECRET` | Non-empty string used as supplied; no length/alphabet restrictions or credential-uniqueness checks; may match the payment-webhook secret |
 | `INVOICE_LIFECYCLE_WORKERS` | 1–4; default 1 |
 | `INVOICE_LIFECYCLE_POLL_INTERVAL` | 100 ms–1 minute; default 1 second |
 | `INVOICE_LIFECYCLE_RECHECK_INTERVAL` | 30 seconds–1 hour; default 5 minutes |

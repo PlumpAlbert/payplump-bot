@@ -28,7 +28,7 @@ webhook в Invoice Ninja автоматически не выполняется.
 | `PAYMENTS_CURRENCY_CODE` | Подтверждённый оператором трёхбуквенный ISO-код родной валюты |
 | `INVOICE_NINJA_BASE_URL`, `INVOICE_NINJA_API_TOKEN` | База API без `/api/v1`, токен с полным чтением платежей компании |
 | `INVOICE_NINJA_TELEGRAM_ID_FIELD` | Только `id_number` |
-| `INVOICE_NINJA_WEBHOOK_SECRET` | Отдельные 32–256 символов `A-Z a-z 0-9 _ -`, не API / Telegram секрет |
+| `INVOICE_NINJA_WEBHOOK_SECRET` | Непустая строка как задана, без ограничений длины и алфавита; допускается общий секрет с lifecycle |
 | `PAYMENTS_CURRENCY_ID` | Обязательный заранее проверенный API ID собственной валюты компании, не `RUB` / `USD` и не код ISO |
 | `PAYMENTS_WORKERS` | По умолчанию `1`, допустимо `1`–`4` |
 | `PAYMENTS_POLL_INTERVAL` | По умолчанию `1s`, допустимо `100ms`–`1m` |
@@ -61,7 +61,7 @@ invoice ID и сохранённым текущим счётом. Подходя
 
 Путь: `POST /invoiceninja/webhook`, `Content-Type: application/json`.
 Завершите HTTPS на доверенном reverse proxy и передавайте заголовок
-`X-Payplump-Webhook-Secret` с отдельным секретом. Сравнение постоянного времени
+`X-Payplump-Webhook-Secret` со значением `INVOICE_NINJA_WEBHOOK_SECRET`. Сравнение постоянного времени
 выполняется до чтения тела и обращения к БД. Это общий секрет в пользовательском
 заголовке, **не HMAC, подпись или встроенный стандарт Invoice Ninja**.
 

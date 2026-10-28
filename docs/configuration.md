@@ -15,7 +15,7 @@
 - Токен Telegram и ID администраторов. По умолчанию используется long polling;
   URL и секрет Telegram webhook нужны только при выборе webhook.
 - URL/token Invoice Ninja, API ID продукта, налоговый режим, поле Telegram ID,
-  секрет webhook Ninja и отдельный секрет webhook обработки счетов.
+  секреты webhook Ninja и обработки счетов (можно указать одно значение).
 - URL/token S-UI, выбранные inbounds и публичную HTTPS-базу URL подписки.
 - `PAYMENTS_CURRENCY_ID`: внутренний ID родной валюты Ninja;
   `PAYMENTS_CURRENCY_CODE`: соответствующий трёхбуквенный ISO-код, например `USD`.

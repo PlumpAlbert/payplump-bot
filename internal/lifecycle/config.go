@@ -48,8 +48,8 @@ func ConfigFromEnvironment(getenv func(string) string, telegramEnabled, payments
 	if version := strings.TrimPrefix(getenv("INVOICE_NINJA_VERSION"), "v"); version != "" && version != "5.13.47" {
 		return Config{}, errors.New("invoice lifecycle supports Invoice Ninja 5.13.47 only")
 	}
-	if cfg.WebhookSecret == paymentSecret || cfg.WebhookSecret == telegramSecret || cfg.WebhookSecret == telegramToken || cfg.WebhookSecret == cfg.Token || !validSecret(cfg.WebhookSecret) {
-		return Config{}, errors.New("INVOICE_LIFECYCLE_WEBHOOK_SECRET must be separate from other credentials")
+	if !validSecret(cfg.WebhookSecret) {
+		return Config{}, errors.New("INVOICE_LIFECYCLE_WEBHOOK_SECRET is required")
 	}
 	if raw := strings.TrimSpace(getenv("INVOICE_LIFECYCLE_ALLOWED_TELEGRAM_IDS")); raw != "" {
 		var err error
@@ -96,7 +96,7 @@ func (c Config) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
-	if integrationhttp.ValidateBaseURL(c.BaseURL) != nil || c.Token == "" || strings.ContainsAny(c.Token, " \r\n\t") || !validSecret(c.WebhookSecret) || c.WebhookSecret == c.Token {
+	if integrationhttp.ValidateBaseURL(c.BaseURL) != nil || c.Token == "" || strings.ContainsAny(c.Token, " \r\n\t") || !validSecret(c.WebhookSecret) {
 		return errors.New("invalid invoice lifecycle API or webhook configuration")
 	}
 	if (!c.ManagedClients && (!validIDs(c.AllowedTelegramIDs, 1, 20) || len(enforcementEffectiveIDs(c.AllowedTelegramIDs, c.ExcludedTelegramIDs)) == 0)) || !validIDs(c.ExcludedTelegramIDs, 0, 1000) {
@@ -145,13 +145,5 @@ func validIDs(ids []int64, min, max int) bool {
 }
 
 func validSecret(secret string) bool {
-	if len(secret) < 32 || len(secret) > 256 {
-		return false
-	}
-	for _, b := range []byte(secret) {
-		if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-') {
-			return false
-		}
-	}
-	return true
+	return secret != ""
 }
