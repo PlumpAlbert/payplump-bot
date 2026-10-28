@@ -211,6 +211,106 @@ jobs:
             exit 1
           fi
 
+  publish-main-image:
+    name: Publish GHCR image after required CI
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'PlumpAlbert/payplump-bot' }}
+    needs: [test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: payplump-main-image
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: true
+      - name: Confirm this commit is still main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main --quiet
+          if [[ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]]; then
+            echo "::notice::A newer main commit exists; this image publish is superseded."
+            echo "This run did not update the GHCR main tag." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+      - name: Prepare isolated Docker credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          config="$RUNNER_TEMP/payplump-ghcr-docker-config"
+          mkdir -m 700 "$config"
+          printf 'DOCKER_CONFIG=%s\n' "$config" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Publish commit-specific image
+        id: publish
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg "VCS_REF=$GITHUB_SHA" \
+            --tag "$image:sha-$GITHUB_SHA" \
+            --metadata-file "$RUNNER_TEMP/payplump-image-metadata.json" \
+            --push .
+          digest=$(python3 - "$RUNNER_TEMP/payplump-image-metadata.json" <<'PY'
+          import json, re, sys
+          with open(sys.argv[1], encoding="utf-8") as stream:
+              metadata = json.load(stream)
+          digest = metadata.get("containerimage.digest")
+          if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+              raise SystemExit("Buildx did not return a valid registry digest")
+          print(digest)
+          PY
+          )
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Container image published to GHCR'
+            echo
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Commit tag: \`${image}:sha-${GITHUB_SHA}\`"
+            echo "- Immutable digest: \`${image}@${digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Confirm commit is still main before moving the channel tag
+        id: current-main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main --quiet
+          if [[ "$(git rev-parse FETCH_HEAD)" == "$GITHUB_SHA" ]]; then
+            echo 'publish_main=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'publish_main=false' >> "$GITHUB_OUTPUT"
+            echo 'A newer main commit exists; preserving the current main image tag.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Update the moving main image channel
+        if: ${{ steps.current-main.outputs.publish_main == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker buildx imagetools create --tag "$image:main" "$image:sha-$GITHUB_SHA"
+          echo "- Main channel: \`${image}:main\` now points to this checked commit." >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove registry credentials
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          expected="$RUNNER_TEMP/payplump-ghcr-docker-config"
+          if [[ -n "${DOCKER_CONFIG:-}" && "$DOCKER_CONFIG" == "$expected" ]]; then
+            rm -rf -- "$expected"
+          fi
+
   validate-postgres-settings:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_neon }}
     runs-on: ubuntu-latest
