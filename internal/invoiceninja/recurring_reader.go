@@ -15,8 +15,7 @@ type RecurringReader struct {
 }
 
 // NewRecurringReader preserves the installed service prefix and normal TLS
-// verification. Each response must claim exactly SupportedRecurringVersion;
-// that claim is not build attestation.
+// verification. Responses are validated by their data, not release claims.
 func NewRecurringReader(base, token string, timeout time.Duration) (*RecurringReader, error) {
 	client, err := New(base, token, timeout)
 	if err != nil {
