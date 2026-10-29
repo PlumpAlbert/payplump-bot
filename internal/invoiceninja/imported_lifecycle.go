@@ -106,8 +106,13 @@ func (p ImportedRecurringProfile) valid() bool {
 	return p.hash != "" && p.hash == p.digest() && importedProfileValid(p.baseline, p.productKey)
 }
 
+// Imported billing terms are opaque source settings. This adapter changes only
+// status or the next schedule, never due_date_days; hashes and before/after
+// comparisons preserve those terms exactly. Inclusive/exclusive tax mode is
+// likewise preserved when every tax rate is zero. Own-created drafts keep their
+// own on-receipt and configured tax policies in ValidateRecurringDraft.
 func importedProfileValid(r RecurringRecord, productKey string) bool {
-	if !validRecurringRecord(r) || (r.StatusID != "2" && r.StatusID != "3") || r.IsDeleted || r.ArchivedAt != 0 || r.ID == "" || productKey == "" || r.FrequencyID != "5" || r.DueDateDays != "on_receipt" || r.AutoBill != "off" || r.AutoBillEnabled || r.RemainingCycles != -1 || r.UsesInclusiveTaxes || !recurringEqual(r.ExchangeRate, "1") || len(r.LineItems) != 1 {
+	if !validRecurringRecord(r) || (r.StatusID != "2" && r.StatusID != "3") || r.IsDeleted || r.ArchivedAt != 0 || r.ID == "" || productKey == "" || r.FrequencyID != "5" || r.AutoBill != "off" || r.AutoBillEnabled || r.RemainingCycles != -1 || !recurringEqual(r.ExchangeRate, "1") || len(r.LineItems) != 1 {
 		return false
 	}
 	a, ok := billingNumber(r.Amount)

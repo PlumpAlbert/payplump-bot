@@ -421,10 +421,12 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 	if err != nil {
 		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("sui_settings", "read", err)
 	}
-	if settings.SubURI == "" || settings.SubURI != s.policy.PublicSubscriptionBase {
+	if settings.SubURI != "" && settings.SubURI != s.policy.PublicSubscriptionBase {
 		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "sui_settings", Check: "subscription_base"}
 	}
-	publicBaseHash := sha256.Sum256([]byte(settings.SubURI))
+	// Use the owner-configured public URL when the panel has no override.
+	// Keep settings itself unchanged so evidence still records the real source.
+	publicBaseHash := sha256.Sum256([]byte(s.policy.PublicSubscriptionBase))
 	record, err := s.providers.Records.GetRecord(ctx, identity.ID())
 	if err != nil {
 		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("sui_record", "read", err)
@@ -655,9 +657,6 @@ func legacyRecurringCheck(r invoiceninja.RecurringRecord, productKey, amount, ex
 	if r.FrequencyID != "5" {
 		return "legacy_frequency"
 	}
-	if r.DueDateDays != "on_receipt" {
-		return "legacy_due_date_days"
-	}
 	if r.AutoBillEnabled || r.AutoBill != "off" {
 		return "legacy_auto_bill"
 	}
@@ -689,7 +688,7 @@ func legacyRecurringCheck(r invoiceninja.RecurringRecord, productKey, amount, ex
 	if !isZero(r.Discount) || !isZero(line.Discount) {
 		return "legacy_discount"
 	}
-	if r.UsesInclusiveTaxes || !isZero(r.TaxRate1) || !isZero(r.TaxRate2) || !isZero(r.TaxRate3) || !isZero(line.TaxRate1) || !isZero(line.TaxRate2) || !isZero(line.TaxRate3) {
+	if !isZero(r.TaxRate1) || !isZero(r.TaxRate2) || !isZero(r.TaxRate3) || !isZero(line.TaxRate1) || !isZero(line.TaxRate2) || !isZero(line.TaxRate3) {
 		return "legacy_tax"
 	}
 	if !isZero(r.CustomSurcharge1) || !isZero(r.CustomSurcharge2) || !isZero(r.CustomSurcharge3) || !isZero(r.CustomSurcharge4) {
