@@ -2,6 +2,7 @@ package importverify
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -305,6 +306,35 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	}
 	line["is_amount_discount"] = false
 	line["tax_id"], line["tax_name1"], line["tax_name2"], line["tax_name3"] = "", "", "", ""
+	// Existing invoice terms are preserved, not forced to the policy used for
+	// newly created subscriptions. They still bind the source/evidence hashes.
+	for _, term := range []string{"0", "1", "7", "30", ""} {
+		recurring["due_date_days"] = term
+		termsResult, termsEvidence, termsErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+		if termsErr != nil || termsResult.Verified != 1 || len(termsEvidence) != 1 {
+			t.Fatalf("existing invoice terms rejected: reasons=%v err=%v", termsResult.Reasons, termsErr)
+		}
+		var saved invoiceninja.RecurringRecord
+		if err := json.Unmarshal(termsEvidence[0].LegacyRecurring, &saved); err != nil || saved.DueDateDays != term {
+			t.Fatalf("existing invoice terms not preserved: %v", err)
+		}
+		if termsResult.EvidenceHash == initialEvidenceHash || termsEvidence[0].ProofHash != evidence[0].ProofHash {
+			t.Fatal("billing terms must bind source evidence without changing payment proof")
+		}
+	}
+	recurring["due_date_days"] = "on_receipt"
+	// With every tax rate zero the existing mode has no monetary effect;
+	// preserve it in source evidence rather than forcing it to false.
+	recurring["uses_inclusive_taxes"] = true
+	modeResult, modeEvidence, modeErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if modeErr != nil || modeResult.Verified != 1 || len(modeEvidence) != 1 {
+		t.Fatalf("existing zero-tax mode rejected: reasons=%v err=%v", modeResult.Reasons, modeErr)
+	}
+	var savedMode invoiceninja.RecurringRecord
+	if err := json.Unmarshal(modeEvidence[0].LegacyRecurring, &savedMode); err != nil || !savedMode.UsesInclusiveTaxes || modeEvidence[0].ProofHash != evidence[0].ProofHash || modeResult.EvidenceHash == initialEvidenceHash {
+		t.Fatalf("zero-tax mode was erased or changed financial proof: %v", err)
+	}
+	recurring["uses_inclusive_taxes"] = false
 	// Read failures expose only the fixed GET stage and safe HTTP classification.
 	for _, tc := range []struct{ path, stage string }{
 		{"/ninja/api/v1/clients", "customers"},
@@ -358,6 +388,21 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		t.Fatal("subscription base mismatch accepted", baseErr)
 	}
 	assertVerificationDiagnostic(t, baseFailure, Diagnostic{Stage: "sui_settings", Check: "subscription_base"})
+	subscriptionBase = "https://subs.invalid/"
+	// An absent panel override does not invalidate an explicitly configured
+	// public base. Preserve the actual empty source setting in the evidence.
+	subscriptionBase = ""
+	fallbackResult, fallbackEvidence, fallbackErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if fallbackErr != nil || fallbackResult.Verified != 1 || len(fallbackEvidence) != 1 {
+		t.Fatalf("configured public base rejected without panel override: reasons=%v err=%v", fallbackResult.Reasons, fallbackErr)
+	}
+	baseHash := sha256.Sum256([]byte(policy.PublicSubscriptionBase))
+	if fallbackEvidence[0].SUISettings.SubURI != "" || fallbackEvidence[0].PublicBaseHash != hex.EncodeToString(baseHash[:]) || fallbackEvidence[0].ProofHash != evidence[0].ProofHash {
+		t.Fatal("fallback fabricated panel settings or lost the configured-base/payment binding")
+	}
+	if fallbackEvidence[0].SourceFactsHash == evidence[0].SourceFactsHash || fallbackResult.EvidenceHash == initialEvidenceHash {
+		t.Fatal("actual empty panel setting is missing from source evidence")
+	}
 	subscriptionBase = "https://subs.invalid/"
 	for _, tc := range []struct{ field, value, check string }{
 		{"inbounds", `[2]`, "inbounds"},
@@ -442,13 +487,11 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		target map[string]any
 	}{
 		{field: "line_items.type_id", value: "2", target: line},
-		{field: "due_date_days", value: "7", target: recurring},
 		{field: "product_key", value: "other-product", target: line},
 		{field: "quantity", value: 2, target: line},
 		{field: "frequency_id", value: "4", target: recurring},
 		{field: "auto_bill", value: "always", target: recurring},
 		{field: "remaining_cycles", value: 1, target: recurring},
-		{field: "uses_inclusive_taxes", value: true, target: recurring},
 		{field: "paid_to_date", value: 1, target: recurring},
 		{field: "balance", value: 99, target: recurring},
 		{field: "discount", value: 1, target: recurring},
@@ -472,8 +515,8 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		}
 		checks := map[string]string{
 			"line_items.type_id": "legacy_product", "product_key": "legacy_product", "quantity": "legacy_quantity",
-			"due_date_days": "legacy_due_date_days", "frequency_id": "legacy_frequency", "auto_bill": "legacy_auto_bill",
-			"remaining_cycles": "legacy_remaining_cycles", "uses_inclusive_taxes": "legacy_tax", "paid_to_date": "legacy_paid_to_date",
+			"frequency_id": "legacy_frequency", "auto_bill": "legacy_auto_bill",
+			"remaining_cycles": "legacy_remaining_cycles", "paid_to_date": "legacy_paid_to_date",
 			"balance": "legacy_balance", "discount": "legacy_discount", "tax_rate1": "legacy_tax",
 			"custom_surcharge1": "legacy_surcharge", "partial": "legacy_partial", "exchange_rate": "legacy_exchange_rate",
 			"next_send_datetime": "schedule_datetime",

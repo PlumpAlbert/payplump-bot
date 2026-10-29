@@ -20,16 +20,17 @@ normal auto-import is now a separate, current implementation that repeats fresh
 provider reads and independently checks source/policy facts. Neither report nor
 private evidence is an admission capability.
 
-The verifier requires an explicit bot ID and pilot/exclusion sets, pinned version
-claims (Invoice Ninja 5.13.47 and S-UI 1.6.4), a trusted lowercase source-scope
-hash (normalized bases, token fingerprints and versions, never raw tokens), native
+The operator verifier requires an explicit bot ID and pilot/exclusion sets, a
+trusted lowercase source-scope hash (normalized bases and token fingerprints,
+never raw tokens), native
 currency ID and ISO code, product key, public subscription base, expected inbound
 IDs, candidate and inventory bounds, retained page/historical-anchor settings and
 evidence TTL. The active path enforces the returned inventory cap; actual paging
 is bounded by each reader's constructor settings. `MaxHistoricalAnchors` is
-validated at 1..20 and enforced without truncation. Version claims are adapter
-checks, not build attestation. The ISO code is an operator acknowledgement: it
-is not inferred from Invoice Ninja. Exclusions win over pilot membership before
+validated at 1..20 and enforced without truncation. Historical release labels
+remain only in the stable serialized provenance contract, not as installed-version
+requirements or build attestation. The operator CLI still takes an explicit ISO
+code; normal startup can discover the currency from Ninja. Exclusions win over pilot membership before
 I/O. Active verification
 requires exactly one live recurring, complete bounded invoices with zero unpaid
 debts, exact native-currency fully allocated cash proof, and matching S-UI
@@ -57,8 +58,9 @@ S-UI name/binding/config fingerprint,
 public-base hash and source-facts hash. Generic JSON/log formatting of evidence is
 redacted; `PrivateJSON` is explicitly sensitive. Never expose its output, store it without access controls,
 or interpret it as a grant. Raw subscription URLs are not requested. S-UI
-settings must match the explicitly configured public base; the personal
-subscription URL is never fetched. Credential fingerprints are compared to the
+settings must match the explicitly configured public base when an override is
+present; an empty override uses the configured base without fabricating source
+settings. The personal subscription URL is never fetched. Credential fingerprints are compared to the
 manifest's explicit hash claim, not treated as authorization.
 
 ## Operator CLI (11a.3)

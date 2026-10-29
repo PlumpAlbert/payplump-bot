@@ -14,6 +14,10 @@ func importedFixture(t *testing.T, status string) (ImportedRecurringProfile, Rec
 	t.Helper()
 	_, r := lifecycleFixture(t, status)
 	r.PrivateNotes = "legacy customer note"
+	// Imported accounts keep existing terms; unlike own drafts these need not
+	// be on_receipt. Exercise every imported mutation with nondefault terms.
+	r.DueDateDays = "30"
+	r.UsesInclusiveTaxes = true // A zero-rate mode is preserved, not normalized away.
 	r.Amount, r.Balance = r.LineItems[0].Cost, r.LineItems[0].Cost
 	r.IsAmountDiscount = true
 	r.LineItems[0].IsAmountDiscount = true
@@ -132,6 +136,8 @@ func TestImportedProfileKeepsLegacyFlagsAndRejectsStaticDrift(t *testing.T) {
 		t.Fatalf("legacy zero-discount flags rejected: %v", err)
 	}
 	for name, change := range map[string]func(*RecurringRecord){
+		"due date terms":        func(x *RecurringRecord) { x.DueDateDays = "7" },
+		"zero-tax mode":         func(x *RecurringRecord) { x.UsesInclusiveTaxes = false },
 		"tax":                   func(x *RecurringRecord) { x.TaxRate1 = "1" },
 		"surcharge":             func(x *RecurringRecord) { x.CustomSurcharge1 = "1" },
 		"line tax":              func(x *RecurringRecord) { x.LineItems[0].TaxRate1 = "1" },
@@ -294,7 +300,7 @@ func TestImportedScheduleAndResumeHappyPaths(t *testing.T) {
 				c, _ := NewImportedRecurringClient(srv.URL, recurringTestToken, time.Second, 1, 1)
 				c.base.now = func() time.Time { return time.Date(2040, 1, 1, 12, 0, 0, 0, time.Local) }
 				got, err := c.RescheduleAuthorized(context.Background(), d, func(context.Context) error { calls++; return nil })
-				if err != nil || got.NextSendDate != "2040-03-31" || gets != 2 || puts != 1 || calls != 1 {
+				if err != nil || got.NextSendDate != "2040-03-31" || got.DueDateDays != b.DueDateDays || gets != 2 || puts != 1 || calls != 1 {
 					t.Fatalf("got=%+v err=%v gets=%d puts=%d calls=%d", got, err, gets, puts, calls)
 				}
 			})
@@ -331,7 +337,7 @@ func TestImportedScheduleAndResumeHappyPaths(t *testing.T) {
 				c, _ := NewImportedRecurringClient(srv.URL, recurringTestToken, time.Second, 1, 1)
 				c.base.now = func() time.Time { return time.Date(2040, 1, 1, 12, 0, 0, 0, time.Local) }
 				got, err := c.ResumeAuthorized(context.Background(), d, func(context.Context) error { calls++; return nil })
-				if err != nil || got.StatusID != "2" || gets != 2 || posts != 1 || calls != 1 {
+				if err != nil || got.StatusID != "2" || got.DueDateDays != b.DueDateDays || gets != 2 || posts != 1 || calls != 1 {
 					t.Fatalf("got=%+v err=%v gets=%d posts=%d calls=%d", got, err, gets, posts, calls)
 				}
 			})
@@ -372,7 +378,7 @@ func TestImportedPauseAuthorizedAndReceipt(t *testing.T) {
 		}
 		return nil
 	})
-	if err != nil || got.StatusID != "3" || gets != 2 || writes != 1 || calls != 1 {
+	if err != nil || got.StatusID != "3" || got.DueDateDays != b.DueDateDays || gets != 2 || writes != 1 || calls != 1 {
 		t.Fatalf("got=%+v err=%v gets=%d writes=%d calls=%d", got, err, gets, writes, calls)
 	}
 }
