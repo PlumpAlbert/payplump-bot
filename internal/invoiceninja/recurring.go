@@ -195,7 +195,16 @@ func (record *RecurringRecord) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 	}
-	if json.Unmarshal(raw, &decoded) != nil || !validRecurringRecord(RecurringRecord(decoded)) {
+	if json.Unmarshal(raw, &decoded) != nil {
+		return errInvalidResponse
+	}
+	// Ninja can serialize its client-calendar date as a SQL midnight datetime.
+	// Normalize this date field only, without parsing it as a timezone/instant.
+	// next_send_datetime and last_sent_date retain their complete wire values.
+	if day, midnight := strings.CutSuffix(decoded.NextSendDate, " 00:00:00"); midnight && billingDate(day) {
+		decoded.NextSendDate = day
+	}
+	if !validRecurringRecord(RecurringRecord(decoded)) {
 		return errInvalidResponse
 	}
 	*record = RecurringRecord(decoded)

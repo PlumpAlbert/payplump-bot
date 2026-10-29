@@ -269,6 +269,15 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		t.Fatal("private journal omitted actual source evidence")
 	}
 	initialEvidenceHash := result.EvidenceHash
+	// Ninja may serialize the same client-calendar date as SQL midnight.
+	// Both the inventory and the exact GET must normalize it identically,
+	// without changing the verified instant, business proof or evidence hash.
+	recurring["next_send_date"] = "2026-04-01 00:00:00"
+	calendarResult, calendarEvidence, calendarErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if calendarErr != nil || calendarResult.Verified != 1 || len(calendarEvidence) != 1 || calendarResult.EvidenceHash != initialEvidenceHash {
+		t.Fatalf("SQL calendar representation changed verification: result=%+v err=%v", calendarResult, calendarErr)
+	}
+	recurring["next_send_date"] = "2026-04-01"
 	// Keep the established active expired-period reason stable.
 	recurring["next_send_date"] = "2026-03-01"
 	expiredClaim := claim
