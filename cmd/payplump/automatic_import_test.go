@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strconv"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/PlumpAlbert/payplump-bot/internal/importadmission"
 	"github.com/PlumpAlbert/payplump-bot/internal/importverify"
+	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/postgres"
@@ -427,3 +430,175 @@ var _ importverify.CustomerInventory = automaticImportFailingInventory{}
 var _ importverify.CustomerReader = automaticImportFailingInventory{}
 var _ importverify.IdentityReader = automaticImportProviderStubs{}
 var _ payments.Reader = automaticImportProviderStubs{}
+
+type automaticImportDiagnosticCustomers struct {
+	importverify.CustomerReader
+	rows                       []invoiceninja.Customer
+	inventoryErr, recurringErr error
+}
+
+func (d automaticImportDiagnosticCustomers) ListCustomers(context.Context) ([]invoiceninja.Customer, error) {
+	return d.rows, d.inventoryErr
+}
+func (d automaticImportDiagnosticCustomers) ListRecurring(ctx context.Context, id string) ([]invoiceninja.RecurringRecord, error) {
+	if d.recurringErr != nil {
+		return nil, d.recurringErr
+	}
+	return d.CustomerReader.ListRecurring(ctx, id)
+}
+
+type automaticImportDiagnosticStore struct {
+	*automaticImportTestStore
+	clockErr, knownErr error
+}
+
+func (s automaticImportDiagnosticStore) AutomaticImportScanStart(ctx context.Context) (time.Time, error) {
+	if s.clockErr != nil {
+		return time.Time{}, s.clockErr
+	}
+	return s.automaticImportTestStore.AutomaticImportScanStart(ctx)
+}
+func (s automaticImportDiagnosticStore) AutomaticImportKnownActors(ctx context.Context) (map[int64]bool, error) {
+	if s.knownErr != nil {
+		return nil, s.knownErr
+	}
+	return s.automaticImportTestStore.AutomaticImportKnownActors(ctx)
+}
+
+func TestAutomaticImporterGlobalFailureStagesAndPartialRows(t *testing.T) {
+	for _, stage := range []string{"db_scan_start", "db_known_actors", "customer_inventory"} {
+		t.Run(stage, func(t *testing.T) {
+			policy := importverify.Policy{Automatic: true, BotID: 9001, SourceScopeHash: strings.Repeat("a", 64), NinjaVersion: "5.13.47", SUIVersion: "1.6.4", NativeCurrencyID: "1", NativeCurrencyCode: "USD", ProductKey: "legacy", PublicSubscriptionBase: "https://subscriptions.invalid/", ExpectedInboundIDs: []int64{1}, MaxRecords: 20, MaxInventoryRecords: 10, MaxPages: 2, MaxHistoricalAnchors: 2, EvidenceTTL: time.Minute}
+			privateErr := fmt.Errorf("private-body private-token https://private.invalid: %w", &integrationhttp.HTTPError{StatusCode: 403})
+			customers := automaticImportDiagnosticCustomers{rows: []invoiceninja.Customer{{ID: "private-customer", IDNumber: "42"}}, inventoryErr: privateErr}
+			stubs := automaticImportProviderStubs{}
+			verifier, err := importverify.New(policy, importverify.Providers{Customers: customers, Recurring: stubs, Invoices: stubs, Payments: stubs, Identities: stubs, Records: stubs, Settings: stubs})
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := &automaticImportTestStore{known: map[int64]bool{}}
+			db := automaticImportDiagnosticStore{automaticImportTestStore: store}
+			if stage == "db_scan_start" {
+				db.clockErr = errors.New("private database error")
+			}
+			if stage == "db_known_actors" {
+				db.knownErr = errors.New("private database error")
+			}
+			var logs bytes.Buffer
+			worker := &automaticImporter{store: db, verifier: verifier, policy: policy, admins: []int64{9002}, logger: slog.New(slog.NewJSONHandler(&logs, nil)), now: time.Now}
+			for i := 0; i < 2; i++ {
+				if err := worker.Scan(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if store.applyCalls != 0 || len(store.issues) != 1 || len(store.notices) != 1 || store.issues[0].actor != 0 || store.issues[0].reason != importverify.ReasonSourceFailure || len(store.resolved) != 0 {
+				t.Fatalf("partial inventory/bootstrap manufactured pairs or duplicate notices: issues=%+v notices=%+v", store.issues, store.notices)
+			}
+			if !strings.Contains(logs.String(), `"stage":"`+stage+`"`) || strings.Count(logs.String(), "\n") != 1 {
+				t.Fatalf("wrong/missing stage or repeated log: %s", logs.String())
+			}
+			if stage == "customer_inventory" && (!strings.Contains(logs.String(), `"http_status":403`) || !strings.Contains(logs.String(), `"category":"http"`)) {
+				t.Fatalf("HTTP evidence lost: %s", logs.String())
+			}
+			if strings.Contains(logs.String(), "private") || strings.Contains(store.issues[0].facts, "private") {
+				t.Fatal("raw remote/database details leaked")
+			}
+		})
+	}
+}
+
+func TestAutomaticImporterPairIssueBesideAPIFailure(t *testing.T) {
+	f := newImportApplyFixture(t)
+	f.automatic.Store(true)
+	cfg, err := loadVerifyConfig(func(key string) string { return f.env[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.policy.Automatic, cfg.policy.PilotIDs = true, nil
+	providers, err := newVerifyProviders(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	store := &automaticImportTestStore{known: map[int64]bool{}}
+	worker := &automaticImporter{store: store, policy: cfg.policy, admins: []int64{9002}, logger: slog.New(slog.NewJSONHandler(&logs, nil)), now: func() time.Time { return f.now }}
+	for _, status := range []int{403, 403, 503} {
+		providers.Customers = automaticImportDiagnosticCustomers{
+			rows:         []invoiceninja.Customer{{ID: "customer-42", IDNumber: "42"}, {ID: "customer-77", IDNumber: "77"}},
+			recurringErr: fmt.Errorf("private-body private-token https://private.invalid: %w", &integrationhttp.HTTPError{StatusCode: status}),
+		}
+		worker.verifier, err = importverify.New(cfg.policy, providers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = worker.Scan(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		wantNotices := 2
+		if status == 503 {
+			wantNotices = 3 // Changed global diagnosis rearms; unchanged pair does not.
+		}
+		if len(store.notices) != wantNotices || store.applyCalls != 0 {
+			t.Fatalf("outage aggregation/rearm: notices=%+v applies=%d", store.notices, store.applyCalls)
+		}
+	}
+	pair := store.issueState[worker.key("customer-77")]
+	candidate := store.issueState[worker.key("customer-42")]
+	global := store.issueState[worker.key("complete-inventory")]
+	if pair.reason != importverify.ReasonAmbiguous || candidate.reason != importverify.ReasonSourceFailure || global.actor != 0 || global.reason != importverify.ReasonSourceFailure {
+		t.Fatalf("wrong holds: pair=%+v candidate=%+v global=%+v", pair, candidate, global)
+	}
+	for _, want := range []string{`"stage":"pairing"`, `"check":"sui_match_missing"`, `"stage":"recurring"`, `"category":"http"`, `"http_status":403`, `"http_status":503`, `"count":0`, `"candidate":"` + worker.key("customer-42") + `"`} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("missing safe diagnostic %s: %s", want, logs.String())
+		}
+	}
+	for _, secret := range []string{"private", "customer-42", "customer-77", "synthetic", `"actor"`, `"telegram_id"`} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("source data leaked in logs: %s", secret)
+		}
+	}
+}
+
+type automaticImportVerificationFailure struct{ importverify.RecurringReader }
+
+func (automaticImportVerificationFailure) Get(context.Context, string) (invoiceninja.RecurringRecord, error) {
+	return invoiceninja.RecurringRecord{}, fmt.Errorf("private-token private-body: %w", &integrationhttp.HTTPError{StatusCode: 403})
+}
+
+func TestAutomaticImporterVerificationFailureStage(t *testing.T) {
+	f := newImportApplyFixture(t)
+	f.automatic.Store(true)
+	cfg, err := loadVerifyConfig(func(key string) string { return f.env[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.policy.Automatic, cfg.policy.PilotIDs = true, nil
+	providers, err := newVerifyProviders(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providers.Customers, err = invoiceninja.NewCustomerInventoryReader(cfg.ninjaBase, cfg.ninjaToken, cfg.timeout, cfg.pageSize, cfg.maxPages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Discovery succeeds, but independent admission verification cannot read
+	// the recurring record. Its public rejection does not retain HTTP details.
+	providers.Recurring = automaticImportVerificationFailure{}
+	verifier, err := importverify.New(cfg.policy, providers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &automaticImportTestStore{known: map[int64]bool{}}
+	var logs bytes.Buffer
+	worker := &automaticImporter{store: store, verifier: verifier, policy: cfg.policy, revision: 1, admins: []int64{9002}, logger: slog.New(slog.NewJSONHandler(&logs, nil)), now: func() time.Time { return f.now }}
+	if err := worker.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.applyCalls != 0 || len(store.notices) != 1 || len(store.issues) != 2 || store.issues[0].reason != importverify.ReasonSourceFailure || !strings.Contains(logs.String(), `"stage":"verification"`) {
+		t.Fatalf("verification failure mislabeled: issues=%+v logs=%s", store.issues, logs.String())
+	}
+	if strings.Contains(logs.String(), "private") {
+		t.Fatal("verification error leaked")
+	}
+}

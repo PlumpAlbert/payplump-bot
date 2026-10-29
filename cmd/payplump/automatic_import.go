@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -103,16 +104,27 @@ func (w *automaticImporter) key(candidate string) string {
 	sum := sha256.Sum256([]byte(w.policy.SourceScopeHash + ":" + candidate))
 	return hex.EncodeToString(sum[:])
 }
-func (w *automaticImporter) report(ctx context.Context, actor int64, key, reason, facts string) error {
-	return w.recordIssue(ctx, actor, key, reason, facts, w.admins)
+func (w *automaticImporter) report(ctx context.Context, actor int64, key, reason, facts string, diagnostic ...importverify.Diagnostic) error {
+	return w.recordIssue(ctx, actor, key, reason, facts, w.admins, diagnostic...)
 }
-func (w *automaticImporter) recordIssue(ctx context.Context, actor int64, key, reason, facts string, admins []int64) error {
+func (w *automaticImporter) recordIssue(ctx context.Context, actor int64, key, reason, facts string, admins []int64, diagnostic ...importverify.Diagnostic) error {
+	// Prepare/admission can replace discovery's diagnosis; rearm on that change too.
+	if len(diagnostic) > 0 {
+		raw, _ := json.Marshal(diagnostic[0])
+		sum := sha256.Sum256(append([]byte(facts), raw...))
+		facts = hex.EncodeToString(sum[:])
+	}
 	changed, e := w.store.RecordAutomaticImportIssue(ctx, w.policy.BotID, actor, key, reason, facts, admins)
 	if e != nil {
 		return e
 	}
 	if changed {
-		w.logger.Error("automatic import candidate not admitted", "candidate", key, "reason", reason)
+		attrs := []any{"candidate", key, "reason", reason}
+		if len(diagnostic) > 0 {
+			d := diagnostic[0]
+			attrs = append(attrs, "stage", d.Stage, "check", d.Check, "category", d.Category, "http_status", d.HTTPStatus, "count", d.Count)
+		}
+		w.logger.Error("automatic import candidate not admitted", attrs...)
 	}
 	return nil
 }
@@ -122,18 +134,24 @@ func (w *automaticImporter) Scan(ctx context.Context) error {
 	global := w.key("complete-inventory")
 	started, e := w.store.AutomaticImportScanStart(ctx)
 	if e != nil {
-		return w.report(ctx, 0, global, importverify.ReasonSourceFailure, global)
+		return w.report(ctx, 0, global, importverify.ReasonSourceFailure, global, importverify.FailureDiagnostic("db_scan_start", "read", e))
 	}
 	known, e := w.store.AutomaticImportKnownActors(ctx)
 	if e != nil {
-		return w.report(ctx, 0, global, importverify.ReasonSourceFailure, global)
+		return w.report(ctx, 0, global, importverify.ReasonSourceFailure, global, importverify.FailureDiagnostic("db_known_actors", "read", e))
 	}
 	discoveries, e := w.verifier.Discover(ctx, w.now().In(time.Local), known)
 	if e != nil {
-		return w.report(ctx, 0, global, importverify.ReasonSourceFailure, global)
+		diagnostic := importverify.FailureDiagnostic("discovery", "read", e)
+		var observation importverify.Diagnostic
+		if errors.As(e, &observation) {
+			diagnostic = observation
+		}
+		return w.report(ctx, 0, global, importverify.ReasonSourceFailure, global, diagnostic)
 	}
 	active := make([]string, 0, len(discoveries)+1)
 	sourceFailure := false
+	var sourceDiagnostic importverify.Diagnostic
 	for _, candidate := range discoveries {
 		if e = ctx.Err(); e != nil {
 			return e
@@ -141,14 +159,17 @@ func (w *automaticImporter) Scan(ctx context.Context) error {
 		key := w.key(candidate.CustomerID)
 		active = append(active, key)
 		reason := candidate.Reason
+		diagnostic := candidate.Diagnostic
 		if reason == "" {
 			plan := importplan.Analyze(importplan.Manifest{Records: []importplan.Record{candidate.Facts}})
 			if plan.Imported != 1 {
 				reason = importverify.ReasonUnsupported
+				diagnostic = importverify.Diagnostic{Stage: "analysis", Check: "unsupported_plan"}
 			} else {
 				prepared, verifyErr := importadmission.Prepare(ctx, w.verifier, plan, plan.Hash, w.revision, w.now().In(time.Local))
 				if verifyErr != nil {
 					reason = importverify.ReasonChanged
+					diagnostic = importverify.FailureDiagnostic("verification", "prepare", verifyErr)
 					var rejection importadmission.VerificationFailure
 					if errors.As(verifyErr, &rejection) {
 						for _, code := range []string{importverify.ReasonSourceFailure, importverify.ReasonAmbiguous, importverify.ReasonUnsupported, importverify.ReasonUnpaid, importverify.ReasonPayment, importverify.ReasonExpired, importverify.ReasonChanged, importverify.ReasonPausedHistory, importverify.ReasonHistoryLimit, importverify.ReasonExcluded} {
@@ -160,6 +181,7 @@ func (w *automaticImporter) Scan(ctx context.Context) error {
 					}
 				} else if _, applyErr := w.store.ApplyVerifiedImport(ctx, prepared); applyErr != nil {
 					reason = "admission_conflict"
+					diagnostic = importverify.FailureDiagnostic("admission", "apply", applyErr)
 				}
 			}
 		}
@@ -168,10 +190,14 @@ func (w *automaticImporter) Scan(ctx context.Context) error {
 			if reason == importverify.ReasonSourceFailure {
 				// One unavailable source must not send one identical API-outage
 				// message per account. Persist each hold, report the outage once.
+				// Choose a stable representative, independent of candidate order.
+				if !sourceFailure || diagnostic.Error() < sourceDiagnostic.Error() {
+					sourceDiagnostic = diagnostic
+				}
 				sourceFailure = true
 				admins = nil
 			}
-			if e = w.recordIssue(ctx, candidate.Actor, key, reason, candidate.FactsHash, admins); e != nil {
+			if e = w.recordIssue(ctx, candidate.Actor, key, reason, candidate.FactsHash, admins, diagnostic); e != nil {
 				return e
 			}
 			continue
@@ -182,7 +208,7 @@ func (w *automaticImporter) Scan(ctx context.Context) error {
 	}
 	if sourceFailure {
 		active = append(active, global)
-		if e = w.report(ctx, 0, global, importverify.ReasonSourceFailure, global); e != nil {
+		if e = w.report(ctx, 0, global, importverify.ReasonSourceFailure, global, sourceDiagnostic); e != nil {
 			return e
 		}
 	} else if e = w.store.ResolveAutomaticImportIssue(ctx, w.policy.BotID, global, started); e != nil {

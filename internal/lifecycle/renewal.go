@@ -108,7 +108,7 @@ func (w *RenewalWorker) Run(ctx context.Context) error {
 		}
 		cancel()
 		if err != nil && ctx.Err() == nil {
-			w.logger.Warn("paid renewal seed deferred")
+			w.logger.Warn("paid renewal seed deferred", "reason", err.Error(), "scope_size", len(allowed))
 		}
 		if ctx.Err() != nil {
 			return nil

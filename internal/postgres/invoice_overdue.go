@@ -22,11 +22,14 @@ import (
 
 func (s *Store) SeedOverdueOperations(ctx context.Context, botID int64, allowed []int64, today string, limit int) (count int, err error) {
 	defer func() { err = invoiceLifecycleStageError("seed invoice overdue actions", err) }()
-	if botID <= 0 || !lifecycleIDs(allowed) || len(allowed) == 0 || limit < 1 || limit > 1000 {
+	if botID <= 0 || !lifecycleIDs(allowed) || limit < 1 || limit > 1000 {
 		return 0, errors.New("invalid invoice overdue seed bounds")
 	}
 	if parsed, parseErr := time.Parse(time.DateOnly, today); parseErr != nil || parsed.Format(time.DateOnly) != today {
 		return 0, errors.New("invalid invoice overdue local date")
+	}
+	if len(allowed) == 0 {
+		return 0, nil
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {

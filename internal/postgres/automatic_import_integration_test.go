@@ -41,6 +41,9 @@ func TestAutomaticImportIssueOutboxDeduplicatesAndRearmsOnChange(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, `SELECT body FROM outbox WHERE bot_id=$1 ORDER BY id LIMIT 1`, bot).Scan(&body); err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(body, "Код диагностики: "+key[:12]+".") {
+		t.Fatal("notification lacks the log correlation code")
+	}
 	if strings.Contains(body, facts) || strings.Contains(body, newFacts) || strings.Contains(body, "synthetic") {
 		t.Fatalf("notification leaked private facts: %q", body)
 	}
