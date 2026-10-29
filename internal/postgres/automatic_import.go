@@ -132,7 +132,7 @@ func (s *Store) RecordAutomaticImportIssue(ctx context.Context, bot, actor int64
 	} else if reason != "source_failure" {
 		subject = "Кандидат " + key[:12]
 	}
-	text := subject + ": автоматический импорт не выполнен. " + explanation
+	text := subject + ": автоматический импорт не выполнен. " + explanation + " Код диагностики: " + key[:12] + "."
 	for _, admin := range admins {
 		if _, e = enqueueOutbox(ctx, tx, queue.Draft{BotID: bot, ChatID: admin, Key: fmt.Sprintf("auto-import:%s:%d:%d", key, generation, admin), Text: text}); e != nil {
 			return false, errors.New("could not enqueue import diagnostic")
@@ -149,8 +149,8 @@ func (s *Store) RecordAutomaticImportIssue(ctx context.Context, bot, actor int64
 
 var importIssueExplanation = map[string]string{
 	"unsupported_profile":          "Проверьте тариф, настройки подписки и заполнение Telegram ID в Invoice Ninja.",
-	"ambiguous_source":             "Нет однозначной пары Invoice Ninja/S-UI либо обнаружены дубли. Проверьте идентификаторы и привязки.",
-	"source_failure":               "Не удалось получить полные актуальные данные API. Проверьте доступность сервисов и права токенов; сверка будет повторена.",
+	"ambiguous_source":             "Не удалось однозначно сопоставить клиентов Invoice Ninja/S-UI, регулярные или текущие счета. Проверьте состояние, идентификаторы и привязки.",
+	"source_failure":               "Не удалось получить полные актуальные данные из API или локальной БД. Проверьте доступность сервисов и БД, права токенов; сверка будет повторена.",
 	"payment_unverified":           "Не удалось однозначно подтвердить полную оплату и расчётный период. Проверьте счета и распределения платежей.",
 	"unpaid_debt":                  "Состояние долга не соответствует поддерживаемому профилю. Проверьте текущий счёт, оплату и состояние доступа.",
 	"active_period_expired":        "Подтверждённый период активной подписки истёк. Проверьте счета и даты.",

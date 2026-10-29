@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
@@ -593,8 +594,15 @@ func invoiceLifecycleStageError(stage string, err error) error {
 		}
 	}
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		return fmt.Errorf("%s: %w", stage, queue.ErrConflict)
+	if errors.As(err, &pgErr) {
+		if pgErr.Code == "23505" {
+			return fmt.Errorf("%s: %w", stage, queue.ErrConflict)
+		}
+		// SQLSTATE is a public error category, unlike Message/Detail/Where,
+		// which can contain SQL parameters and private client data.
+		if len(pgErr.Code) == 5 && strings.Trim(pgErr.Code, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") == "" {
+			return fmt.Errorf("%s: PostgreSQL SQLSTATE %s", stage, pgErr.Code)
+		}
 	}
 	return errors.New(stage)
 }

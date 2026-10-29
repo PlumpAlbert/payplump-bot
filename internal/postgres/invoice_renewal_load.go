@@ -20,8 +20,11 @@ var _ lifecycle.RenewalStore = (*Store)(nil)
 
 func (s *Store) SeedRenewalOperations(ctx context.Context, botID int64, allowed []int64, limit int) (count int, err error) {
 	defer func() { err = invoiceLifecycleStageError("seed paid renewal actions", err) }()
-	if botID <= 0 || !lifecycleIDs(allowed) || len(allowed) == 0 || limit < 1 || limit > 1000 {
+	if botID <= 0 || !lifecycleIDs(allowed) || limit < 1 || limit > 1000 {
 		return 0, errors.New("invalid paid renewal seed bounds")
+	}
+	if len(allowed) == 0 {
+		return 0, nil
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
