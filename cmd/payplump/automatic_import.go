@@ -44,7 +44,7 @@ func serviceVerificationConfig(ctx context.Context, get func(string) string, bot
 	if e != nil {
 		return c, errors.New("invalid normal service tariff reader")
 	}
-	productKey, e := api.ProductKey(ctx, cfg.ProductID)
+	productKey, e := startupProductKey(ctx, api, cfg.ProductID)
 	if e != nil {
 		return c, fmt.Errorf("Invoice Ninja product lookup (INVOICE_NINJA_PRODUCT_ID): %w", e)
 	}
@@ -177,6 +177,9 @@ func (w *automaticImporter) Scan(ctx context.Context) error {
 								reason = code
 								break
 							}
+						}
+						if len(rejection.Diagnostics) > 0 {
+							diagnostic = rejection.Diagnostics[0]
 						}
 					}
 				} else if _, applyErr := w.store.ApplyVerifiedImport(ctx, prepared); applyErr != nil {

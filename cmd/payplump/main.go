@@ -289,7 +289,8 @@ func run(logger *slog.Logger, args []string) error {
 					return err
 				}
 				broadcastConfig.Revision, configurationConfig.Revision = bp.Revision, cp.Revision
-				readCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+				// Budget includes bounded retries of the GET-only product lookup.
+				readCtx, stop := context.WithTimeout(ctx, 30*time.Second)
 				verification, err := serviceVerificationConfig(readCtx, get, botID, activationConfig)
 				stop()
 				if err != nil {

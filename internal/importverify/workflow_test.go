@@ -90,6 +90,11 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	var extraInvoice any
 	var secondExtraInvoice any
 	var anchorFailure bool
+	var failurePath string
+	var failureRecord bool
+	var subscriptionBase = "https://subs.invalid/"
+	var failSecondCustomerRead bool
+	var customerReads atomic.Int32
 	var extraPayments []any
 	var pausedEnabled = true
 	var pausedMode bool
@@ -114,6 +119,11 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 			t.Errorf("Invoice Ninja GET headers missing")
 		}
 		path := r.URL.Path
+		if path == failurePath || (failureRecord && path == "/panel/apiv2/clients" && r.URL.Query().Get("id") == "42") || (path == "/ninja/api/v1/clients" && failSecondCustomerRead && customerReads.Add(1) == 2) {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("private-token secret-error-body"))
+			return
+		}
 		if strings.HasPrefix(path, "/ninja/api/v1/") {
 			w.Header().Set("X-APP-VERSION", "5.13.47")
 		}
@@ -209,7 +219,7 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 			return
 		}
 		if path == "/panel/apiv2/settings" {
-			writeWorkflowJSON(w, map[string]any{"success": true, "obj": map[string]any{"subURI": "https://subs.invalid/", "subPath": suiSubPath, "subPort": "443", "subDomain": ""}})
+			writeWorkflowJSON(w, map[string]any{"success": true, "obj": map[string]any{"subURI": subscriptionBase, "subPath": suiSubPath, "subPort": "443", "subDomain": ""}})
 			if settingsDrift && settingsGets.Add(1) == 1 {
 				suiSubPath = "changed-private-path"
 			}
@@ -268,7 +278,107 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	if err != nil || !strings.Contains(string(private), workflowCustomer) || !strings.Contains(string(private), workflowInvoice) || !strings.Contains(string(private), "historical legacy note") {
 		t.Fatal("private journal omitted actual source evidence")
 	}
+	if result.Diagnostics != nil || strings.Contains(string(mustJSON(t, result)), "diagnostics") {
+		t.Fatal("successful verification must omit diagnostics")
+	}
 	initialEvidenceHash := result.EvidenceHash
+	// Numeric Ninja flags and zero-rate classification labels have no monetary
+	// effect, but must remain frozen in the imported profile and its evidence.
+	line["is_amount_discount"] = 1
+	line["tax_id"], line["tax_name1"], line["tax_name2"], line["tax_name3"] = "legacy-classification", "legacy-tax-label", "legacy-tax-label-two", "legacy-tax-label-three"
+	metadataResult, metadataEvidence, metadataErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if metadataErr != nil || metadataResult.Verified != 1 || len(metadataEvidence) != 1 {
+		t.Fatalf("zero-effect line metadata rejected: reasons=%v err=%v", metadataResult.Reasons, metadataErr)
+	}
+	var frozen invoiceninja.RecurringRecord
+	if err := json.Unmarshal(metadataEvidence[0].LegacyRecurring, &frozen); err != nil {
+		t.Fatal(err)
+	}
+	if !frozen.LineItems[0].IsAmountDiscount || frozen.LineItems[0].TaxID != "legacy-classification" || frozen.LineItems[0].TaxName1 != "legacy-tax-label" || frozen.LineItems[0].TaxName2 != "legacy-tax-label-two" || frozen.LineItems[0].TaxName3 != "legacy-tax-label-three" {
+		t.Fatal("representation metadata was erased from evidence")
+	}
+	if _, err := invoiceninja.NewImportedRecurringProfile(frozen, policy.ProductKey); err != nil {
+		t.Fatal("verified profile incompatible with executor", err)
+	}
+	if metadataResult.EvidenceHash == initialEvidenceHash || metadataEvidence[0].LegacyRecurringHash == evidence[0].LegacyRecurringHash || metadataEvidence[0].SourceFactsHash == evidence[0].SourceFactsHash || metadataEvidence[0].ProofHash != evidence[0].ProofHash {
+		t.Fatal("metadata must change source/evidence hashes without changing payment proof")
+	}
+	line["is_amount_discount"] = false
+	line["tax_id"], line["tax_name1"], line["tax_name2"], line["tax_name3"] = "", "", "", ""
+	// Read failures expose only the fixed GET stage and safe HTTP classification.
+	for _, tc := range []struct{ path, stage string }{
+		{"/ninja/api/v1/clients", "customers"},
+		{"/ninja/api/v1/recurring_invoices", "recurring"},
+		{"/ninja/api/v1/recurring_invoices/" + workflowRecurring, "recurring_record"},
+		{"/panel/apiv2/clients", "sui_inventory"},
+		{"/panel/apiv2/settings", "sui_settings"},
+		{"/ninja/api/v1/invoices", "invoices"},
+		{"/ninja/api/v1/invoices/" + workflowInvoice, "invoice"},
+		{"/ninja/api/v1/clients/" + workflowCustomer, "payments"},
+	} {
+		failurePath = tc.path
+		invoiceGets.Store(0)
+		failed, failedEvidence, verifyErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+		if verifyErr != nil || failed.Verified != 0 || len(failedEvidence) != 0 || failed.Reasons[ReasonSourceFailure] != 1 {
+			t.Fatalf("read failure accepted for %s: reasons=%v err=%v", tc.stage, failed.Reasons, verifyErr)
+		}
+		check := "read"
+		if tc.stage == "payments" {
+			check = "observe"
+		}
+		assertVerificationDiagnostic(t, failed, Diagnostic{Stage: tc.stage, Check: check, Category: "http", HTTPStatus: 403})
+		for _, public := range []string{fmt.Sprint(failed), fmt.Sprintf("%#v", failed), string(mustJSON(t, failed)), fmt.Sprint(failed.Diagnostics), fmt.Sprintf("%#v", failed.Diagnostics)} {
+			for _, secret := range []string{workflowToken, workflowCustomer, workflowRecurring, workflowInvoice, server.URL, "private-token", "secret-error-body"} {
+				if strings.Contains(public, secret) {
+					t.Fatalf("diagnostic leaked private data: %s", public)
+				}
+			}
+		}
+	}
+	failurePath = ""
+	invoiceGets.Store(0)
+	failSecondCustomerRead = true
+	secondFailure, _, secondErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if secondErr != nil || secondFailure.Reasons[ReasonChanged] != 1 || secondFailure.Reasons[ReasonSourceFailure] != 0 {
+		t.Fatal("second-pass failure reason changed", secondFailure.Reasons, secondErr)
+	}
+	assertVerificationDiagnostic(t, secondFailure, Diagnostic{Stage: "customers", Check: "read", Category: "http", HTTPStatus: 403})
+	failSecondCustomerRead = false
+	invoiceGets.Store(0)
+	failureRecord = true
+	recordFailure, _, recordErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if recordErr != nil || recordFailure.Reasons[ReasonSourceFailure] != 1 {
+		t.Fatal("SUI record failure lost", recordErr)
+	}
+	assertVerificationDiagnostic(t, recordFailure, Diagnostic{Stage: "sui_record", Check: "read", Category: "http", HTTPStatus: 403})
+	failureRecord = false
+	subscriptionBase = "https://other.invalid/"
+	baseFailure, _, baseErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if baseErr != nil || baseFailure.Reasons[ReasonUnsupported] != 1 {
+		t.Fatal("subscription base mismatch accepted", baseErr)
+	}
+	assertVerificationDiagnostic(t, baseFailure, Diagnostic{Stage: "sui_settings", Check: "subscription_base"})
+	subscriptionBase = "https://subs.invalid/"
+	for _, tc := range []struct{ field, value, check string }{
+		{"inbounds", `[2]`, "inbounds"},
+		{"volume", `100`, "quotas"},
+		{"enable", `false`, "identity_or_lifecycle"},
+	} {
+		original := suiFields[tc.field]
+		suiFields[tc.field] = json.RawMessage(tc.value)
+		suiRaw = mustJSON(t, suiFields)
+		failed, _, verifyErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+		if verifyErr != nil || failed.Reasons[ReasonUnsupported] != 1 {
+			t.Fatalf("SUI %s mismatch accepted: reasons=%v err=%v", tc.field, failed.Reasons, verifyErr)
+		}
+		assertVerificationDiagnostic(t, failed, Diagnostic{Stage: "sui_record", Check: tc.check})
+		if original == nil {
+			delete(suiFields, tc.field)
+		} else {
+			suiFields[tc.field] = original
+		}
+		suiRaw = mustJSON(t, suiFields)
+	}
 	// Ninja may serialize the same client-calendar date as SQL midnight.
 	// Both the inventory and the exact GET must normalize it identically,
 	// without changing the verified instant, business proof or evidence hash.
@@ -287,6 +397,7 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	if expiredErr != nil || expiredResult.Verified != 0 || expiredResult.Reasons[ReasonExpired] != 1 {
 		t.Fatal("active expired-period reason changed", expiredResult.Reasons, expiredErr)
 	}
+	assertVerificationDiagnostic(t, expiredResult, Diagnostic{Stage: "verification", Check: "active_period_expired"})
 	recurring["next_send_date"] = "2026-04-01"
 	for _, public := range []string{result.String(), result.GoString(), fmt.Sprint(result), string(mustJSON(t, result)), fmt.Sprint(evidence[0]), evidence[0].GoString(), string(mustJSON(t, evidence[0]))} {
 		for _, secret := range []string{workflowCustomer, workflowInvoice, workflowRecurring, workflowToken, server.URL, "historical legacy note"} {
@@ -332,6 +443,21 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	}{
 		{field: "line_items.type_id", value: "2", target: line},
 		{field: "due_date_days", value: "7", target: recurring},
+		{field: "product_key", value: "other-product", target: line},
+		{field: "quantity", value: 2, target: line},
+		{field: "frequency_id", value: "4", target: recurring},
+		{field: "auto_bill", value: "always", target: recurring},
+		{field: "remaining_cycles", value: 1, target: recurring},
+		{field: "uses_inclusive_taxes", value: true, target: recurring},
+		{field: "paid_to_date", value: 1, target: recurring},
+		{field: "balance", value: 99, target: recurring},
+		{field: "discount", value: 1, target: recurring},
+		{field: "tax_rate1", value: 1, target: recurring},
+		{field: "custom_surcharge1", value: 1, target: recurring},
+		{field: "partial", value: 1, target: recurring},
+		{field: "discount", value: 1, target: line},
+		{field: "tax_rate1", value: 1, target: line},
+		{field: "exchange_rate", value: 2, target: recurring},
 		{field: "next_send_datetime", value: "2026-03-10T12:00:00.000000Z", target: recurring},
 	} {
 		key := mutation.field
@@ -344,6 +470,16 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		if err != nil || out.Verified != 0 || out.Manual != 1 || out.Reasons[ReasonUnsupported] != 1 {
 			t.Fatalf("unsupported recurring %s was accepted: reasons=%v err=%v", mutation.field, out.Reasons, err)
 		}
+		checks := map[string]string{
+			"line_items.type_id": "legacy_product", "product_key": "legacy_product", "quantity": "legacy_quantity",
+			"due_date_days": "legacy_due_date_days", "frequency_id": "legacy_frequency", "auto_bill": "legacy_auto_bill",
+			"remaining_cycles": "legacy_remaining_cycles", "uses_inclusive_taxes": "legacy_tax", "paid_to_date": "legacy_paid_to_date",
+			"balance": "legacy_balance", "discount": "legacy_discount", "tax_rate1": "legacy_tax",
+			"custom_surcharge1": "legacy_surcharge", "partial": "legacy_partial", "exchange_rate": "legacy_exchange_rate",
+			"next_send_datetime": "schedule_datetime",
+		}
+		check := checks[mutation.field]
+		assertVerificationDiagnostic(t, out, Diagnostic{Stage: "recurring_record", Check: check})
 		mutation.target[key] = original
 	}
 	// Source ownership, live recurring ambiguity, and additional debt cannot be authorized by manifest claims.
@@ -477,6 +613,7 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	if err != nil || driftedSettings.Verified != 0 || driftedSettings.Reasons[ReasonChanged] != 1 {
 		t.Fatal("between-pass S-UI settings drift was accepted", driftedSettings.Reasons, err)
 	}
+	assertVerificationDiagnostic(t, driftedSettings, Diagnostic{Stage: "verification", Check: "second_read_changed"})
 	settingsDrift = false
 	suiSubPath = "private-subpath"
 	currentInvoiceGets.Store(0)
@@ -526,6 +663,7 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	if err != nil || sourceFailure.Verified != 0 || sourceFailure.Reasons[ReasonSourceFailure] != 1 {
 		t.Fatal("historical source failure was skipped", sourceFailure.Reasons, err)
 	}
+	assertVerificationDiagnostic(t, sourceFailure, Diagnostic{Stage: "historical_invoice", Check: "read", Category: "http", HTTPStatus: 503})
 	anchorFailure = false
 	// Current and historical invoice ownership is checked against source inventory, not claims.
 	for _, ownedInvoice := range []map[string]any{invoice, extraInvoice.(map[string]any)} {
@@ -632,4 +770,11 @@ func writeWorkflowJSON(w http.ResponseWriter, value any) {
 }
 func writeWorkflowPage(w http.ResponseWriter, rows []any, total, page int) {
 	writeWorkflowJSON(w, map[string]any{"data": rows, "meta": map[string]any{"pagination": map[string]any{"total": total, "count": len(rows), "per_page": 10, "current_page": page, "total_pages": 1, "links": map[string]string{"next": "https://never-follow.invalid"}}}})
+}
+
+func assertVerificationDiagnostic(t *testing.T, result Result, want Diagnostic) {
+	t.Helper()
+	if len(result.Diagnostics) != 1 || result.Diagnostics[0] != want {
+		t.Fatalf("diagnostics=%+v want=%+v", result.Diagnostics, want)
+	}
 }
