@@ -1,7 +1,9 @@
 package importadmission
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,6 +11,8 @@ import (
 
 	"github.com/PlumpAlbert/payplump-bot/internal/importplan"
 	"github.com/PlumpAlbert/payplump-bot/internal/importverify"
+	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
+	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 )
 
 func TestPreparedPlanIsOpaqueAndZeroValueInvalid(t *testing.T) {
@@ -154,4 +158,57 @@ func mustJSON(t *testing.T, value any) []byte {
 
 func slogValueString(row AdmissionRow) string {
 	return row.LogValue().String()
+}
+
+// Only the first GET may be reached. Promoted nil readers panic if preparation
+// proceeds past this source failure, so no downstream read or write is possible.
+type rejectedAdmissionReaders struct {
+	importverify.CustomerReader
+	importverify.RecurringReader
+	importverify.InvoiceReader
+	importverify.PaymentReader
+	importverify.IdentityReader
+	importverify.RecordReader
+	importverify.SettingsReader
+	reads int
+}
+
+func (r *rejectedAdmissionReaders) FindCustomers(context.Context, int64) ([]invoiceninja.Customer, error) {
+	r.reads++
+	return nil, fmt.Errorf("secret-token https://private.invalid/customer-private: %w", &integrationhttp.HTTPError{StatusCode: 403})
+}
+
+func TestPreparePreservesSafeVerificationDiagnostic(t *testing.T) {
+	fixture := preparedFixture(t)
+	policy := importverify.Policy{
+		BotID: 9, SourceScopeHash: strings.Repeat("a", 64), PilotIDs: []string{"42"},
+		NinjaVersion: invoiceninja.SupportedRecurringVersion, SUIVersion: "1.6.4",
+		NativeCurrencyID: "1", NativeCurrencyCode: "USD", ProductKey: "legacy",
+		PublicSubscriptionBase: "https://subs.invalid/", ExpectedInboundIDs: []int64{1},
+		MaxRecords: 10, MaxInventoryRecords: 100, MaxPages: 2, MaxHistoricalAnchors: 10, EvidenceTTL: time.Minute,
+	}
+	readers := &rejectedAdmissionReaders{}
+	service, err := importverify.New(policy, importverify.Providers{
+		Customers: readers, Recurring: readers, Invoices: readers, Payments: readers,
+		Identities: readers, Records: readers, Settings: readers,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := Prepare(context.Background(), service, fixture.Plan(), fixture.PlanHash(), 1, fixture.VerifiedAt())
+	var failure VerificationFailure
+	if !errors.As(err, &failure) || prepared.RowCount() != 0 || readers.reads != 1 || failure.Reasons[importverify.ReasonSourceFailure] != 1 {
+		t.Fatal("preparation did not fail closed with the original reason", err)
+	}
+	want := importverify.Diagnostic{Stage: "customers", Check: "read", Category: "http", HTTPStatus: 403}
+	if len(failure.Diagnostics) != 1 || failure.Diagnostics[0] != want {
+		t.Fatalf("preparation lost GET failure diagnostic: %+v", failure.Diagnostics)
+	}
+	for _, public := range []string{err.Error(), fmt.Sprint(failure), fmt.Sprintf("%#v", failure), string(mustJSON(t, failure)), fmt.Sprint(failure.Diagnostics)} {
+		for _, secret := range []string{"secret-token", "private.invalid", "customer-private"} {
+			if strings.Contains(public, secret) {
+				t.Fatalf("verification failure disclosed source data: %s", public)
+			}
+		}
+	}
 }

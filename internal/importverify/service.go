@@ -14,6 +14,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/billing"
@@ -140,6 +141,7 @@ type Result struct {
 	PlanHash     string         `json:"plan_hash"`
 	EvidenceHash string         `json:"evidence_hash"`
 	Reasons      map[string]int `json:"reasons"`
+	Diagnostics  []Diagnostic   `json:"diagnostics,omitempty"`
 }
 
 func (r Result) String() string {
@@ -270,31 +272,39 @@ func (s *Service) Verify(ctx context.Context, plan importplan.Plan, expectedHash
 		r := candidate.Facts
 		if r.Excluded || r.TelegramID == strconv.FormatInt(s.policy.BotID, 10) || slices.Contains(s.policy.ExcludedIDs, r.TelegramID) || (!s.policy.Automatic && !slices.Contains(s.policy.PilotIDs, r.TelegramID)) {
 			result.Reasons[ReasonExcluded]++
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Stage: "verification", Check: "excluded"})
 			continue
 		}
 		if !canonicalPositive(r.TelegramID) || !canonicalPositive(r.SUIID) {
 			result.Reasons[ReasonUnsupported]++
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Stage: "verification", Check: "invalid_identity"})
 			continue
 		}
 		if r.Lifecycle != "active" && r.Lifecycle != "paused" {
 			result.Reasons[ReasonUnsupported]++
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Stage: "verification", Check: "unsupported_lifecycle"})
 			continue
 		}
-		reason, evidence := s.verifyCandidate(ctx, candidate, calendarToday, verifiedAt, policyHash, plan.Hash)
+		reason, evidence, diagnostic := s.verifyCandidate(ctx, candidate, calendarToday, verifiedAt, policyHash, plan.Hash)
 		if err := ctx.Err(); err != nil {
 			return Result{}, nil, err
 		}
 		if reason == "" {
-			secondReason, second := s.verifyCandidate(ctx, candidate, calendarToday, verifiedAt, policyHash, plan.Hash)
+			secondReason, second, secondDiagnostic := s.verifyCandidate(ctx, candidate, calendarToday, verifiedAt, policyHash, plan.Hash)
 			if err := ctx.Err(); err != nil {
 				return Result{}, nil, err
 			}
 			if secondReason != "" || evidence.ProofHash != second.ProofHash || evidence.SourceFactsHash != second.SourceFactsHash || evidence.CustomerID != second.CustomerID || evidence.RecurringID != second.RecurringID || evidence.CurrentInvoiceID != second.CurrentInvoiceID || evidence.PaidAnchorInvoiceID != second.PaidAnchorInvoiceID || evidence.SUIID != second.SUIID {
 				reason = ReasonChanged
+				diagnostic = secondDiagnostic
+				if secondReason == "" {
+					diagnostic = Diagnostic{Stage: "verification", Check: "second_read_changed"}
+				}
 			}
 		}
 		if reason != "" {
 			result.Reasons[reason]++
+			result.Diagnostics = append(result.Diagnostics, diagnostic)
 			continue
 		}
 		result.Verified++
@@ -309,31 +319,31 @@ func (s *Service) Verify(ctx context.Context, plan importplan.Plan, expectedHash
 	return result, reportEvidence, nil
 }
 
-func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, calendarToday string, verifiedAt time.Time, policyHash, planHash string) (string, PrivateEvidence) {
+func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, calendarToday string, verifiedAt time.Time, policyHash, planHash string) (string, PrivateEvidence, Diagnostic) {
 	r := c.Facts
 	tg := mustInt(r.TelegramID)
 	customers, err := s.providers.Customers.FindCustomers(ctx, tg)
 	if err != nil {
-		return ReasonSourceFailure, PrivateEvidence{}
+		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("customers", "read", err)
 	}
 	if len(customers) != 1 || customers[0].ID != r.InvoiceCustomerID || !customers[0].Active() || customers[0].IDNumber != r.TelegramID {
-		return ReasonAmbiguous, PrivateEvidence{}
+		return ReasonAmbiguous, PrivateEvidence{}, Diagnostic{Stage: "customers", Check: "customer_match", Count: len(customers)}
 	}
 	customer := customers[0]
 
 	recurrings, err := s.providers.Customers.ListRecurring(ctx, customer.ID)
 	if err != nil {
-		return ReasonSourceFailure, PrivateEvidence{}
+		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("recurring", "read", err)
 	}
 	if len(recurrings) > s.policy.MaxInventoryRecords {
-		return ReasonUnsupported, PrivateEvidence{}
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "recurring", Check: "inventory_limit", Count: len(recurrings)}
 	}
 	sort.Slice(recurrings, func(i, j int) bool { return recurrings[i].ID < recurrings[j].ID })
 	live := make([]invoiceninja.RecurringRecord, 0, 1)
 	seenRecurring := map[string]bool{}
 	for _, x := range recurrings {
 		if x.ID == "" || seenRecurring[x.ID] || x.ClientID != customer.ID {
-			return ReasonAmbiguous, PrivateEvidence{}
+			return ReasonAmbiguous, PrivateEvidence{}, Diagnostic{Stage: "recurring", Check: "invalid_duplicate_or_foreign_record"}
 		}
 		seenRecurring[x.ID] = true
 		if !x.IsDeleted && x.ArchivedAt == 0 {
@@ -345,40 +355,43 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 		expectedRecurringStatus = "3"
 	}
 	if len(live) != 1 || live[0].ID != r.RecurringID || live[0].StatusID != expectedRecurringStatus {
-		return ReasonAmbiguous, PrivateEvidence{}
+		return ReasonAmbiguous, PrivateEvidence{}, Diagnostic{Stage: "recurring", Check: "live_recurring_match", Count: len(live)}
 	}
 	recurring, err := s.providers.Recurring.Get(ctx, r.RecurringID)
 	if err != nil {
-		return ReasonSourceFailure, PrivateEvidence{}
+		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("recurring_record", "read", err)
 	}
 	if recurring.ID != live[0].ID || recurring.ClientID != customer.ID {
-		return ReasonChanged, PrivateEvidence{}
+		return ReasonChanged, PrivateEvidence{}, Diagnostic{Stage: "recurring_record", Check: "identity_changed"}
 	}
 	inventoryJSON, _ := json.Marshal(live[0])
 	directJSON, _ := json.Marshal(recurring)
 	if string(inventoryJSON) != string(directJSON) {
-		return ReasonChanged, PrivateEvidence{}
+		return ReasonChanged, PrivateEvidence{}, Diagnostic{Stage: "recurring_record", Check: "inventory_changed"}
 	}
-	if !supportedLegacyRecurring(recurring, s.policy.ProductKey, r.Amount, expectedRecurringStatus) || (r.Lifecycle == "active" && recurring.NextSendDate != r.PeriodEnd) {
-		return ReasonUnsupported, PrivateEvidence{}
+	if check := legacyRecurringCheck(recurring, s.policy.ProductKey, r.Amount, expectedRecurringStatus); check != "" {
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "recurring_record", Check: check}
+	}
+	if r.Lifecycle == "active" && recurring.NextSendDate != r.PeriodEnd {
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "recurring_record", Check: "schedule_date"}
 	}
 	if recurring.NextSendDatetime != "" {
 		scheduled, parseErr := invoiceninja.ParseRecurringUTC(recurring.NextSendDatetime)
 		if parseErr != nil || (r.Lifecycle == "active" && !scheduled.After(verifiedAt)) {
-			return ReasonUnsupported, PrivateEvidence{}
+			return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "recurring_record", Check: "schedule_datetime"}
 		}
 	} else if r.Lifecycle == "active" {
-		return ReasonUnsupported, PrivateEvidence{}
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "recurring_record", Check: "schedule_missing"}
 	}
 	recurringJSON, _ := json.Marshal(recurring)
 	recurringHash := sha256.Sum256(recurringJSON)
 
 	identities, err := s.providers.Identities.ListIdentities(ctx, s.policy.MaxInventoryRecords)
 	if err != nil {
-		return ReasonSourceFailure, PrivateEvidence{}
+		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("sui_inventory", "read", err)
 	}
 	if len(identities) > s.policy.MaxInventoryRecords {
-		return ReasonUnsupported, PrivateEvidence{}
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "sui_inventory", Check: "inventory_limit", Count: len(identities)}
 	}
 	sort.Slice(identities, func(i, j int) bool {
 		if identities[i].ID() == identities[j].ID() {
@@ -391,45 +404,51 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 	for i := range identities {
 		id, name := identities[i].ID(), identities[i].Name()
 		if id <= 0 || name == "" || seenIdentityIDs[id] || seenIdentityNames[name] {
-			return ReasonAmbiguous, PrivateEvidence{}
+			return ReasonAmbiguous, PrivateEvidence{}, Diagnostic{Stage: "sui_inventory", Check: "invalid_or_duplicate_identity"}
 		}
 		seenIdentityIDs[id], seenIdentityNames[name] = true, true
 		if id == mustInt(r.SUIID) || name == r.SUIName {
 			if identity != nil {
-				return ReasonAmbiguous, PrivateEvidence{}
+				return ReasonAmbiguous, PrivateEvidence{}, Diagnostic{Stage: "sui_inventory", Check: "identity_match_ambiguous"}
 			}
 			identity = &identities[i]
 		}
 	}
 	if identity == nil || identity.ID() != mustInt(r.SUIID) || identity.Name() != r.SUIName || r.SUIName != r.TelegramID {
-		return ReasonAmbiguous, PrivateEvidence{}
+		return ReasonAmbiguous, PrivateEvidence{}, Diagnostic{Stage: "sui_inventory", Check: "identity_match"}
 	}
 	settings, err := s.providers.Settings.GetSettings(ctx)
 	if err != nil {
-		return ReasonSourceFailure, PrivateEvidence{}
+		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("sui_settings", "read", err)
 	}
 	if settings.SubURI == "" || settings.SubURI != s.policy.PublicSubscriptionBase {
-		return ReasonUnsupported, PrivateEvidence{}
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "sui_settings", Check: "subscription_base"}
 	}
 	publicBaseHash := sha256.Sum256([]byte(settings.SubURI))
 	record, err := s.providers.Records.GetRecord(ctx, identity.ID())
 	if err != nil {
-		return ReasonSourceFailure, PrivateEvidence{}
+		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("sui_record", "read", err)
 	}
-	if record.ID() != identity.ID() || record.Name() != identity.Name() || record.Enabled() != identity.Enabled() || record.Name() != r.SUIName || record.Enabled() != (r.Lifecycle == "active") || !slices.Equal(sorted(record.InboundIDs()), s.policy.ExpectedInboundIDs) {
-		return ReasonUnsupported, PrivateEvidence{}
+	if record.ID() != identity.ID() || record.Name() != identity.Name() || record.Enabled() != identity.Enabled() || record.Name() != r.SUIName || record.Enabled() != (r.Lifecycle == "active") {
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "sui_record", Check: "identity_or_lifecycle"}
+	}
+	if !slices.Equal(sorted(record.InboundIDs()), s.policy.ExpectedInboundIDs) {
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "sui_record", Check: "inbounds"}
 	}
 	credentialHash := record.CredentialsHash()
-	if hex.EncodeToString(credentialHash[:]) != r.ConfigHash || !unlimitedRecord(record) {
-		return ReasonUnsupported, PrivateEvidence{}
+	if hex.EncodeToString(credentialHash[:]) != r.ConfigHash {
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "sui_record", Check: "credentials"}
+	}
+	if !unlimitedRecord(record) {
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "sui_record", Check: "quotas"}
 	}
 
 	invoices, err := s.providers.Invoices.ListInvoices(ctx, customer.ID)
 	if err != nil {
-		return ReasonSourceFailure, PrivateEvidence{}
+		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("invoices", "read", err)
 	}
 	if len(invoices) > s.policy.MaxInventoryRecords {
-		return ReasonUnsupported, PrivateEvidence{}
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "invoices", Check: "inventory_limit", Count: len(invoices)}
 	}
 	sort.Slice(invoices, func(i, j int) bool { return invoices[i].ID < invoices[j].ID })
 	unpaid := 0
@@ -441,7 +460,7 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 	for i := range invoices {
 		iv := &invoices[i]
 		if iv.ID == "" || seenInvoices[iv.ID] || iv.ClientID != customer.ID {
-			return ReasonAmbiguous, PrivateEvidence{}
+			return ReasonAmbiguous, PrivateEvidence{}, Diagnostic{Stage: "invoices", Check: "invalid_duplicate_or_foreign_record"}
 		}
 		seenInvoices[iv.ID] = true
 		invoiceIDs = append(invoiceIDs, iv.ID)
@@ -453,7 +472,7 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 			case "1", "5": // Draft and cancelled records are not current issued invoices.
 			case "2", "3", "4":
 				if !canonicalDate(iv.Date) {
-					return ReasonUnsupported, PrivateEvidence{}
+					return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "invoices", Check: "issued_date"}
 				}
 				if iv.Date > latestIssuedDate {
 					latestIssuedDate, latestIssuedID, latestIssuedCount = iv.Date, iv.ID, 1
@@ -464,53 +483,53 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 					historical = append(historical, *iv)
 				}
 			default:
-				return ReasonUnsupported, PrivateEvidence{}
+				return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "invoices", Check: "issued_status"}
 			}
 		}
 		if iv.ID == r.CurrentInvoiceID && iv.RecurringID == r.RecurringID && !iv.IsDeleted && iv.ArchivedAt == 0 {
 			if current != nil {
-				return ReasonAmbiguous, PrivateEvidence{}
+				return ReasonAmbiguous, PrivateEvidence{}, Diagnostic{Stage: "invoices", Check: "current_invoice_duplicate"}
 			}
 			current = iv
 		}
 	}
 	slices.Sort(invoiceIDs)
 	if latestIssuedCount != 1 || latestIssuedID != r.CurrentInvoiceID {
-		return ReasonAmbiguous, PrivateEvidence{}
+		return ReasonAmbiguous, PrivateEvidence{}, Diagnostic{Stage: "invoices", Check: "latest_invoice_match", Count: latestIssuedCount}
 	}
 	if current == nil || r.Currency != s.policy.NativeCurrencyCode {
-		return ReasonUnsupported, PrivateEvidence{}
+		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "invoices", Check: "current_invoice_or_currency"}
 	}
 	if r.Lifecycle == "active" {
 		if unpaid != r.UnpaidInvoices || unpaid != 0 {
-			return ReasonUnpaid, PrivateEvidence{}
+			return ReasonUnpaid, PrivateEvidence{}, Diagnostic{Stage: "invoices", Check: "active_unpaid_count", Count: unpaid}
 		}
 		if current.StatusID != "4" || !isZero(current.Balance) || !amountStringEqual(current.Amount.String(), r.Amount) {
-			return ReasonUnsupported, PrivateEvidence{}
+			return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "invoice", Check: "active_paid_amount"}
 		}
 		if r.PeriodEnd <= calendarToday {
-			return ReasonExpired, PrivateEvidence{}
+			return ReasonExpired, PrivateEvidence{}, Diagnostic{Stage: "verification", Check: "active_period_expired"}
 		}
 	} else {
 		if unpaid != r.UnpaidInvoices || unpaid != 1 || r.UnpaidInvoices != 1 || r.InvoiceStatus != "sent" || current.StatusID != "2" || current.Date != r.PeriodEnd || r.PeriodEnd > calendarToday || current.Date == "" {
-			return ReasonUnpaid, PrivateEvidence{}
+			return ReasonUnpaid, PrivateEvidence{}, Diagnostic{Stage: "invoices", Check: "paused_debt", Count: unpaid}
 		}
 		if len(historical) > s.policy.MaxHistoricalAnchors {
-			return ReasonHistoryLimit, PrivateEvidence{}
+			return ReasonHistoryLimit, PrivateEvidence{}, Diagnostic{Stage: "invoices", Check: "historical_anchor_limit", Count: len(historical)}
 		}
 		if !canonicalDate(r.PeriodStart) || !canonicalDate(r.PeriodEnd) || r.PeriodEnd <= r.PeriodStart || current.Date <= r.PeriodStart {
-			return ReasonPausedHistory, PrivateEvidence{}
+			return ReasonPausedHistory, PrivateEvidence{}, Diagnostic{Stage: "invoices", Check: "paused_period"}
 		}
 		if !amountStringEqual(current.Amount.String(), r.Amount) || !amountStringEqual(current.Balance.String(), r.Amount) || !isZero(current.PaidToDate) || !amountStringEqual(current.ExchangeRate.String(), "1") {
-			return ReasonUnpaid, PrivateEvidence{}
+			return ReasonUnpaid, PrivateEvidence{}, Diagnostic{Stage: "invoice", Check: "paused_debt_amount"}
 		}
 	}
 	fresh, err := s.providers.Invoices.GetInvoice(ctx, current.ID)
 	if err != nil {
-		return ReasonSourceFailure, PrivateEvidence{}
+		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("invoice", "read", err)
 	}
 	if !sameInvoice(fresh, *current) {
-		return ReasonChanged, PrivateEvidence{}
+		return ReasonChanged, PrivateEvidence{}, Diagnostic{Stage: "invoice", Check: "inventory_changed"}
 	}
 	// Observe is read-only; ID 1 is structural only and is never persisted here.
 	observeInvoice := current
@@ -522,24 +541,24 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 		snapshot := payments.Snapshot{ClientID: 1, TelegramID: tg, ChatID: tg, BotID: s.policy.BotID, CustomerID: customer.ID, InvoiceID: current.ID, RecurringID: recurring.ID}
 		decision, err := payments.Observe(ctx, s.providers.Payments, snapshot, s.policy.NativeCurrencyID, calendarToday)
 		if err != nil {
-			return ReasonSourceFailure, PrivateEvidence{}
+			return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("payments", "observe", err)
 		}
 		if decision.Kind != payments.Verified || decision.Proof == nil || !amountStringEqual(decision.Proof.Amount, r.Amount) || decision.Proof.PaymentDate != r.PeriodStart || decision.Proof.NextInvoiceDate != r.PeriodEnd {
-			return ReasonPayment, PrivateEvidence{}
+			return ReasonPayment, PrivateEvidence{}, Diagnostic{Stage: "payments", Check: "active_proof"}
 		}
 		proof = decision.Proof
 	} else {
 		if len(historical) == 0 {
-			return ReasonPayment, PrivateEvidence{}
+			return ReasonPayment, PrivateEvidence{}, Diagnostic{Stage: "payments", Check: "historical_anchor_missing"}
 		}
 		matches := 0
 		for _, anchor := range historical {
 			anchorFresh, getErr := s.providers.Invoices.GetInvoice(ctx, anchor.ID)
 			if getErr != nil {
-				return ReasonSourceFailure, PrivateEvidence{}
+				return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("historical_invoice", "read", getErr)
 			}
 			if !sameInvoice(anchorFresh, anchor) {
-				return ReasonChanged, PrivateEvidence{}
+				return ReasonChanged, PrivateEvidence{}, Diagnostic{Stage: "historical_invoice", Check: "inventory_changed"}
 			}
 			if !amountStringEqual(anchor.Amount.String(), r.Amount) || !isZero(anchor.Balance) || !amountStringEqual(anchor.PaidToDate.String(), r.Amount) || !amountStringEqual(anchor.ExchangeRate.String(), "1") {
 				continue
@@ -547,10 +566,10 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 			snapshot := payments.Snapshot{ClientID: 1, TelegramID: tg, ChatID: tg, BotID: s.policy.BotID, CustomerID: customer.ID, InvoiceID: anchor.ID, RecurringID: recurring.ID}
 			decision, observeErr := payments.Observe(ctx, s.providers.Payments, snapshot, s.policy.NativeCurrencyID, calendarToday)
 			if observeErr != nil {
-				return ReasonSourceFailure, PrivateEvidence{}
+				return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("historical_payments", "observe", observeErr)
 			}
 			if decision.Kind != payments.Verified || decision.Proof == nil || !amountStringEqual(decision.Proof.Amount, r.Amount) {
-				return ReasonPayment, PrivateEvidence{}
+				return ReasonPayment, PrivateEvidence{}, Diagnostic{Stage: "historical_payments", Check: "anchor_proof"}
 			}
 			if decision.Proof.PaymentDate != r.PeriodStart || decision.Proof.NextInvoiceDate != r.PeriodEnd {
 				continue
@@ -559,10 +578,10 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 			proof = decision.Proof
 		}
 		if matches > 1 {
-			return ReasonAmbiguous, PrivateEvidence{}
+			return ReasonAmbiguous, PrivateEvidence{}, Diagnostic{Stage: "historical_payments", Check: "anchor_match_ambiguous", Count: matches}
 		}
 		if matches != 1 || proof == nil {
-			return ReasonPayment, PrivateEvidence{}
+			return ReasonPayment, PrivateEvidence{}, Diagnostic{Stage: "historical_payments", Check: "anchor_match_missing", Count: matches}
 		}
 	}
 	identityFacts := make([]struct {
@@ -603,13 +622,13 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 	}
 	currentInvoiceJSON, err := json.Marshal(fresh)
 	if err != nil {
-		return ReasonSourceFailure, PrivateEvidence{}
+		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("evidence", "invoice_encoding", err)
 	}
 	debtAmount := ""
 	if r.Lifecycle == "paused" {
 		debtAmount = current.Amount.String()
 	}
-	return "", PrivateEvidence{SourceScope: s.policy.SourceScopeHash, PolicyHash: policyHash, BotID: s.policy.BotID, PlanHash: planHash, CandidateIndex: c.Index, VerifiedAt: verifiedAt, NotAfter: verifiedAt.Add(s.policy.EvidenceTTL), CustomerID: customer.ID, RecurringID: recurring.ID, CurrentInvoiceID: current.ID, CurrentInvoice: currentInvoiceJSON, SUISettings: settings, Lifecycle: r.Lifecycle, CurrentInvoiceStatus: current.StatusID, DebtAmount: debtAmount, SUIID: record.ID(), ProofHash: hex.EncodeToString(proof.Hash[:]), SourceFactsHash: hex.EncodeToString(factsHash[:]), LegacyRecurring: recurringJSON, LegacyRecurringHash: hex.EncodeToString(recurringHash[:]), HistoricalInvoiceIDs: invoiceIDs, InvoiceWatermark: invoiceWatermark, PaidAnchorInvoiceID: proof.InvoiceID, SUIName: record.Name(), PublicBaseHash: hex.EncodeToString(publicBaseHash[:]), ConfigHash: hex.EncodeToString(credentialHash[:]), InboundIDs: sorted(record.InboundIDs()), Proof: proof.JSON}
+	return "", PrivateEvidence{SourceScope: s.policy.SourceScopeHash, PolicyHash: policyHash, BotID: s.policy.BotID, PlanHash: planHash, CandidateIndex: c.Index, VerifiedAt: verifiedAt, NotAfter: verifiedAt.Add(s.policy.EvidenceTTL), CustomerID: customer.ID, RecurringID: recurring.ID, CurrentInvoiceID: current.ID, CurrentInvoice: currentInvoiceJSON, SUISettings: settings, Lifecycle: r.Lifecycle, CurrentInvoiceStatus: current.StatusID, DebtAmount: debtAmount, SUIID: record.ID(), ProofHash: hex.EncodeToString(proof.Hash[:]), SourceFactsHash: hex.EncodeToString(factsHash[:]), LegacyRecurring: recurringJSON, LegacyRecurringHash: hex.EncodeToString(recurringHash[:]), HistoricalInvoiceIDs: invoiceIDs, InvoiceWatermark: invoiceWatermark, PaidAnchorInvoiceID: proof.InvoiceID, SUIName: record.Name(), PublicBaseHash: hex.EncodeToString(publicBaseHash[:]), ConfigHash: hex.EncodeToString(credentialHash[:]), InboundIDs: sorted(record.InboundIDs()), Proof: proof.JSON}, Diagnostic{}
 }
 func unlimitedRecord(record sui.ClientRecord) bool {
 	var limits struct {
@@ -623,20 +642,66 @@ func unlimitedRecord(record sui.ClientRecord) bool {
 	return json.Unmarshal(record.Raw(), &limits) == nil && limits.Volume == 0 && limits.Expiry == 0 && !limits.DelayStart && !limits.AutoReset && limits.ResetDays == 0 && limits.NextReset == 0
 }
 
-func supportedLegacyRecurring(r invoiceninja.RecurringRecord, productKey, amount, expectedStatus string) bool {
-	if r.IsDeleted || r.ArchivedAt != 0 || r.StatusID != expectedStatus || r.FrequencyID != "5" || r.AutoBillEnabled || r.AutoBill != "off" || r.RemainingCycles != -1 || !amountStringEqual(r.Amount.String(), amount) || len(r.LineItems) != 1 || r.LineItems[0].TypeID != "1" || r.LineItems[0].ProductKey != productKey || !amountStringEqual(r.LineItems[0].Cost.String(), amount) || !amountStringEqual(r.LineItems[0].Quantity.String(), "1") {
-		return false
+// The executor owns acceptance. These checks only explain a rejected profile;
+// they must never authorize a profile that NewImportedRecurringProfile rejects.
+func legacyRecurringCheck(r invoiceninja.RecurringRecord, productKey, amount, expectedStatus string) string {
+	_, err := invoiceninja.NewImportedRecurringProfile(r, productKey)
+	if err == nil && r.StatusID == expectedStatus && amountStringEqual(r.Amount.String(), amount) {
+		return ""
 	}
-	for _, n := range []json.Number{r.Discount, r.TaxRate1, r.TaxRate2, r.TaxRate3, r.CustomSurcharge1, r.CustomSurcharge2, r.CustomSurcharge3, r.CustomSurcharge4, r.Partial, r.PaidToDate} {
-		if !isZero(n) {
-			return false
-		}
+	if r.IsDeleted || r.ArchivedAt != 0 || r.StatusID != expectedStatus {
+		return "legacy_status"
+	}
+	if r.FrequencyID != "5" {
+		return "legacy_frequency"
+	}
+	if r.DueDateDays != "on_receipt" {
+		return "legacy_due_date_days"
+	}
+	if r.AutoBillEnabled || r.AutoBill != "off" {
+		return "legacy_auto_bill"
+	}
+	if r.RemainingCycles != -1 {
+		return "legacy_remaining_cycles"
+	}
+	if !amountStringEqual(r.Amount.String(), amount) || isZero(r.Amount) || strings.HasPrefix(r.Amount.String(), "-") {
+		return "legacy_amount"
+	}
+	if !amountEqual(r.Balance, r.Amount) {
+		return "legacy_balance"
+	}
+	if !amountStringEqual(r.ExchangeRate.String(), "1") {
+		return "legacy_exchange_rate"
+	}
+	if len(r.LineItems) != 1 {
+		return "legacy_line_count"
 	}
 	line := r.LineItems[0]
-	if line.IsAmountDiscount || !isZero(line.Discount) || !isZero(line.TaxRate1) || !isZero(line.TaxRate2) || !isZero(line.TaxRate3) || line.TaxID != "" || line.TaxName1 != "" || line.TaxName2 != "" || line.TaxName3 != "" {
-		return false
+	if line.ProductKey != productKey || line.TypeID != "1" {
+		return "legacy_product"
 	}
-	return !r.UsesInclusiveTaxes && r.DueDateDays == "on_receipt" && amountStringEqual(r.ExchangeRate.String(), "1")
+	if !amountStringEqual(line.Quantity.String(), "1") {
+		return "legacy_quantity"
+	}
+	if !amountEqual(line.Cost, r.Amount) {
+		return "legacy_line_cost"
+	}
+	if !isZero(r.Discount) || !isZero(line.Discount) {
+		return "legacy_discount"
+	}
+	if r.UsesInclusiveTaxes || !isZero(r.TaxRate1) || !isZero(r.TaxRate2) || !isZero(r.TaxRate3) || !isZero(line.TaxRate1) || !isZero(line.TaxRate2) || !isZero(line.TaxRate3) {
+		return "legacy_tax"
+	}
+	if !isZero(r.CustomSurcharge1) || !isZero(r.CustomSurcharge2) || !isZero(r.CustomSurcharge3) || !isZero(r.CustomSurcharge4) {
+		return "legacy_surcharge"
+	}
+	if !isZero(r.Partial) {
+		return "legacy_partial"
+	}
+	if !isZero(r.PaidToDate) {
+		return "legacy_paid_to_date"
+	}
+	return "legacy_profile_invalid"
 }
 func normalizedAmount(value json.Number) (string, bool) {
 	formatted, err := billing.FormatAmount(value)

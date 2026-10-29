@@ -165,8 +165,16 @@ func (s *Service) discoverRecord(ctx context.Context, c invoiceninja.Customer, i
 	case recurring.StatusID == "3" && !id.Enabled():
 		r.Lifecycle = "paused"
 		r.InvoiceStatus = "sent"
+	case recurring.StatusID == "2":
+		return r, ReasonUnsupported, Diagnostic{Stage: "recurring", Check: "active_recurring_sui_disabled"}
+	case recurring.StatusID == "3":
+		return r, ReasonUnsupported, Diagnostic{Stage: "recurring", Check: "paused_recurring_sui_enabled"}
+	case recurring.StatusID == "1":
+		return r, ReasonUnsupported, Diagnostic{Stage: "recurring", Check: "recurring_draft"}
+	case recurring.StatusID == "4":
+		return r, ReasonUnsupported, Diagnostic{Stage: "recurring", Check: "recurring_completed"}
 	default:
-		return r, ReasonUnsupported, Diagnostic{Stage: "recurring", Check: "lifecycle_mismatch"}
+		return r, ReasonUnsupported, Diagnostic{Stage: "recurring", Check: "recurring_status_unsupported"}
 	}
 	record, e := s.providers.Records.GetRecord(ctx, id.ID())
 	if e != nil {

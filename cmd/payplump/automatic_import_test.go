@@ -583,7 +583,7 @@ func TestAutomaticImporterVerificationFailureStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Discovery succeeds, but independent admission verification cannot read
-	// the recurring record. Its public rejection does not retain HTTP details.
+	// the recurring record. Its safe source stage/status must survive Prepare.
 	providers.Recurring = automaticImportVerificationFailure{}
 	verifier, err := importverify.New(cfg.policy, providers)
 	if err != nil {
@@ -595,7 +595,7 @@ func TestAutomaticImporterVerificationFailureStage(t *testing.T) {
 	if err := worker.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if store.applyCalls != 0 || len(store.notices) != 1 || len(store.issues) != 2 || store.issues[0].reason != importverify.ReasonSourceFailure || !strings.Contains(logs.String(), `"stage":"verification"`) {
+	if store.applyCalls != 0 || len(store.notices) != 1 || len(store.issues) != 2 || store.issues[0].reason != importverify.ReasonSourceFailure || !strings.Contains(logs.String(), `"stage":"recurring_record"`) || !strings.Contains(logs.String(), `"check":"read"`) || !strings.Contains(logs.String(), `"category":"http"`) || !strings.Contains(logs.String(), `"http_status":403`) {
 		t.Fatalf("verification failure mislabeled: issues=%+v logs=%s", store.issues, logs.String())
 	}
 	if strings.Contains(logs.String(), "private") {
