@@ -63,6 +63,7 @@ var manifest = map[string][]string{
 	"import/active_period_expired":          {},
 	"import/admission_conflict":             {},
 	"import/ambiguous_source":               {},
+	"import/billing_paused":                 {"ActorID", "NextInvoiceDate"},
 	"import/excluded":                       {},
 	"import/historical_anchor_limit":        {},
 	"import/invalid_policy":                 {},

@@ -9,6 +9,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/importadmission"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -26,7 +27,7 @@ func enqueueImportedBillingPauseAdvisory(ctx context.Context, tx pgx.Tx, bot int
 	// This is a successful-import observation, not an ownership/financial hold.
 	// The immutable origin and notice are committed together; replayed origins
 	// skip this path, and the stable outbox key also deduplicates administrator IDs.
-	text := fmt.Sprintf("Клиент Telegram ID %s импортирован.\nВ Invoice Ninja выставление счетов по расписанию на паузе, а доступ S-UI включён.\nОплаченный период подтверждён до %s. При импорте состояния сервисов не менялись.\nПроверьте, нужно ли оставлять выставление счетов на паузе.", row.TelegramID, row.NextInvoiceDate)
+	text := templates.Render("import/billing_paused", templates.Data{ActorID: row.TelegramID, NextInvoiceDate: row.NextInvoiceDate})
 	for _, admin := range admins {
 		draft := queue.Draft{BotID: bot, ChatID: admin, Key: fmt.Sprintf("import-advisory:%s:billing-paused:%d", row.StableHash, admin), Text: text}
 		if _, err := enqueueOutbox(ctx, tx, draft); err != nil {
