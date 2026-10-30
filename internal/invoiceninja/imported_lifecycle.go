@@ -35,6 +35,22 @@ func (p ImportedRecurringProfile) digest() string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
+
+// BaselinePaused reports an observed billing pause, not an access entitlement
+// or permission to resume. The observation remains part of the frozen hash.
+func (p ImportedRecurringProfile) BaselinePaused() bool {
+	return p.valid() && p.baseline.StatusID == "3"
+}
+
+// ValidateImportedRecurringBaseline requires the original source snapshot,
+// including its independent billing status and possibly absent schedule.
+func ValidateImportedRecurringBaseline(record RecurringRecord, profile ImportedRecurringProfile) error {
+	if !profile.valid() || !lifecycleSameImportedFields(record, profile.baseline) {
+		return ErrRecurringReceipt
+	}
+	return nil
+}
+
 func (p ImportedRecurringProfile) Hash() string         { return p.hash }
 func (p ImportedRecurringProfile) String() string       { return "ImportedRecurringProfile[redacted]" }
 func (p ImportedRecurringProfile) GoString() string     { return p.String() }
@@ -148,7 +164,7 @@ func (d ImportedScheduleDraft) ProfileHash() string { return d.profile.Hash() }
 func (d ImportedResumeDraft) ProfileHash() string   { return d.profile.Hash() }
 
 func (d ImportedPauseDraft) MarshalJSON() ([]byte, error) {
-	if !d.profile.valid() || !importedSame(d.profile, d.before, "2") {
+	if !importedPauseBeforeValid(d.profile, d.before) {
 		return nil, ErrRecurringReceipt
 	}
 	return json.Marshal(struct {
@@ -252,8 +268,12 @@ func ValidateImportedRecurringForProfile(record RecurringRecord, profile Importe
 	return nil
 }
 
+func importedPauseBeforeValid(p ImportedRecurringProfile, r RecurringRecord) bool {
+	return (r.StatusID == "2" || r.StatusID == "3" && p.BaselinePaused()) && importedSame(p, r, r.StatusID)
+}
+
 func PrepareImportedPause(p ImportedRecurringProfile, r RecurringRecord) (ImportedPauseDraft, error) {
-	if !p.valid() || !importedSame(p, r, "2") {
+	if !importedPauseBeforeValid(p, r) {
 		return ImportedPauseDraft{}, ErrRecurringReceipt
 	}
 	return ImportedPauseDraft{p, cloneLifecycleRecord(r)}, nil
@@ -312,7 +332,7 @@ func (c *ImportedRecurringClient) Get(ctx context.Context, id string) (Recurring
 }
 func (c *ImportedRecurringClient) PauseAuthorized(ctx context.Context, d ImportedPauseDraft, authorize func(context.Context) error) (RecurringRecord, error) {
 	b := d.before
-	if authorize == nil || !d.profile.valid() || !importedSame(d.profile, b, "2") {
+	if authorize == nil || !importedPauseBeforeValid(d.profile, b) {
 		return RecurringRecord{}, errRecurringDraft
 	}
 	if e := c.preflight(ctx, b, d.profile); e != nil {
@@ -323,6 +343,11 @@ func (c *ImportedRecurringClient) PauseAuthorized(ctx context.Context, d Importe
 	}
 	if e := ctx.Err(); e != nil {
 		return RecurringRecord{}, errors.Join(ErrRecurringUnknown, e)
+	}
+	if b.StatusID == "3" {
+		// The source was already paused when adopted: confirm the desired state
+		// under the usual fresh authorization without issuing a redundant write.
+		return c.confirm(ctx, d.profile, b, "3", b.NextSendDate)
 	}
 	x, e := c.base.lifecyclePost(ctx, b.ID, "stop")
 	if e != nil {

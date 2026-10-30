@@ -96,6 +96,24 @@ func equalImportBytes(a, b []byte) bool {
 // imported identities/subscriptions plus immutable provenance. It makes no
 // external calls and creates no operations or capability journals.
 func (s *Store) ApplyVerifiedImport(ctx context.Context, prepared importadmission.PreparedPlan) (ImportAdmissionResult, error) {
+	return s.applyVerifiedImport(ctx, prepared, nil)
+}
+
+// ApplyVerifiedImportWithAdvisories commits informational administrator notices
+// with a successful admission. Notices never create a blocking import issue.
+func (s *Store) ApplyVerifiedImportWithAdvisories(ctx context.Context, prepared importadmission.PreparedPlan, admins []int64) (ImportAdmissionResult, error) {
+	if len(admins) > 99 {
+		return ImportAdmissionResult{}, errors.New("invalid import advisory administrators")
+	}
+	for _, admin := range admins {
+		if admin <= 0 {
+			return ImportAdmissionResult{}, errors.New("invalid import advisory administrator")
+		}
+	}
+	return s.applyVerifiedImport(ctx, prepared, admins)
+}
+
+func (s *Store) applyVerifiedImport(ctx context.Context, prepared importadmission.PreparedPlan, admins []int64) (ImportAdmissionResult, error) {
 	if ctx == nil || prepared.Validate() != nil {
 		return ImportAdmissionResult{}, errors.New("invalid prepared import")
 	}
@@ -267,6 +285,9 @@ func (s *Store) ApplyVerifiedImport(ctx context.Context, prepared importadmissio
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO verified_import_origins(client_id,bot_id,configuration_revision_at_admission,admission_revision,plan_hash,source_index,policy_hash,source_scope_hash,stable_hash,source_facts_hash,evidence,customer_id,recurring_id,current_invoice_id,paid_anchor_invoice_id,sui_id,sui_name,credentials_hash,lifecycle,historical_invoice_ids,invoice_watermark,template,proof,amount,currency,payment_date,next_invoice_date) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22::jsonb,$23::jsonb,$24::numeric,$25,$26::date,$27::date)`, clientID, prepared.BotID(), admissionConfigRevision, prepared.Revision(), planHash, r.SourceIndex, ph, sh, stable, sourceFacts, r.Evidence, r.CustomerID, r.RecurringID, r.CurrentInvoiceID, r.PaidAnchorInvoiceID, r.SUIID, r.SUIName, credential, r.Lifecycle, history, r.InvoiceWatermark, r.Template, r.Proof, r.Amount, r.Currency, r.PaymentDate, r.NextInvoiceDate); err != nil {
 			return ImportAdmissionResult{}, errors.New("could not persist verified import origin")
+		}
+		if err = enqueueImportedBillingPauseAdvisory(ctx, tx, prepared.BotID(), r, admins); err != nil {
+			return ImportAdmissionResult{}, err
 		}
 	}
 	if err = tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow); err != nil || prepared.VerifiedAt().After(dbNow) || !prepared.NotAfter().After(dbNow) {

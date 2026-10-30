@@ -159,7 +159,7 @@ func (s *Service) discoverRecord(ctx context.Context, c invoiceninja.Customer, i
 	recurring := live[0]
 	r.RecurringID = recurring.ID
 	switch {
-	case recurring.StatusID == "2" && id.Enabled():
+	case (recurring.StatusID == "2" || recurring.StatusID == "3") && id.Enabled():
 		r.Lifecycle = "active"
 		r.InvoiceStatus = "paid"
 	case recurring.StatusID == "3" && !id.Enabled():
@@ -167,8 +167,6 @@ func (s *Service) discoverRecord(ctx context.Context, c invoiceninja.Customer, i
 		r.InvoiceStatus = "sent"
 	case recurring.StatusID == "2":
 		return r, ReasonUnsupported, Diagnostic{Stage: "recurring", Check: "active_recurring_sui_disabled"}
-	case recurring.StatusID == "3":
-		return r, ReasonUnsupported, Diagnostic{Stage: "recurring", Check: "paused_recurring_sui_enabled"}
 	case recurring.StatusID == "1":
 		return r, ReasonUnsupported, Diagnostic{Stage: "recurring", Check: "recurring_draft"}
 	case recurring.StatusID == "4":

@@ -30,91 +30,103 @@ import (
 // provider fakes. It never starts PostgreSQL itself; activationTestStore uses
 // the repository's integration-test database fixture.
 func TestImportedOverdueWorkflowLoopback(t *testing.T) {
-	t.Run("effect gate defaults off then imported overdue completes", func(t *testing.T) {
-		trig := newImportedOverdueRig(t, false)
-		ctx := trig.ctx
-		prepared, err := trig.prepare(time.Now().UTC().Add(-time.Second))
-		if err != nil {
-			t.Fatal(err)
-		}
-		botID := prepared.BotID()
-		if _, err = trig.s.pool.Exec(ctx, `INSERT INTO telegram_bots(bot_id) VALUES($1) ON CONFLICT DO NOTHING`, botID); err != nil {
-			t.Fatal(err)
-		}
-		if err = trig.s.SyncImportAdmissionPolicy(ctx, botID, prepared.Revision(), prepared.PolicyHash(), prepared.SourceScopeHash(), true); err != nil {
-			t.Fatal(err)
-		}
-		if _, err = trig.s.ApplyVerifiedImport(ctx, prepared); err != nil {
-			t.Fatal(err)
-		}
-		if err = trig.s.SyncImportedRuntimePermission(ctx, botID, 1, prepared.PolicyHash(), prepared.SourceScopeHash(), true); err != nil {
-			t.Fatal(err)
-		}
+	for _, billingPaused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "effect gate defaults off then imported overdue completes", true: "already-paused billing confirms without another stop"}[billingPaused], func(t *testing.T) {
+			trig := newImportedOverdueRigWithHandler(t, false, func(src *importedOverdueSource) http.Handler {
+				if billingPaused {
+					src.recurring["status_id"] = "3"
+					src.recurring["next_send_date"], src.recurring["next_send_datetime"] = "", ""
+				}
+				return src
+			})
+			ctx := trig.ctx
+			prepared, err := trig.prepare(time.Now().UTC().Add(-time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			botID := prepared.BotID()
+			if _, err = trig.s.pool.Exec(ctx, `INSERT INTO telegram_bots(bot_id) VALUES($1) ON CONFLICT DO NOTHING`, botID); err != nil {
+				t.Fatal(err)
+			}
+			if err = trig.s.SyncImportAdmissionPolicy(ctx, botID, prepared.Revision(), prepared.PolicyHash(), prepared.SourceScopeHash(), true); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = trig.s.ApplyVerifiedImport(ctx, prepared); err != nil {
+				t.Fatal(err)
+			}
+			if err = trig.s.SyncImportedRuntimePermission(ctx, botID, 1, prepared.PolicyHash(), prepared.SourceScopeHash(), true); err != nil {
+				t.Fatal(err)
+			}
 
-		if n, e := trig.s.SeedPaymentChecks(ctx, botID); e != nil || n != 1 {
-			t.Fatalf("seed baseline payment proof: %d %v", n, e)
-		}
-		claim, snap := claimSinglePayment(t, trig.s, ctx, botID)
-		decision, e := payments.Observe(ctx, trig.settlement, snap, "1", time.Now().In(time.Local).Format(time.DateOnly))
-		if e != nil || decision.Kind != payments.Verified || decision.Proof == nil {
-			t.Fatalf("baseline payment observation: %+v %v", decision, e)
-		}
-		if e = trig.s.FinishPaymentCheck(ctx, claim, snap, decision, payments.Notices{}, time.Minute); e != nil {
-			t.Fatal(e)
-		}
+			if n, e := trig.s.SeedPaymentChecks(ctx, botID); e != nil || n != 1 {
+				t.Fatalf("seed baseline payment proof: %d %v", n, e)
+			}
+			claim, snap := claimSinglePayment(t, trig.s, ctx, botID)
+			decision, e := payments.Observe(ctx, trig.settlement, snap, "1", time.Now().In(time.Local).Format(time.DateOnly))
+			if e != nil || decision.Kind != payments.Verified || decision.Proof == nil {
+				t.Fatalf("baseline payment observation: %+v %v", decision, e)
+			}
+			if e = trig.s.FinishPaymentCheck(ctx, claim, snap, decision, payments.Notices{}, time.Minute); e != nil {
+				t.Fatal(e)
+			}
 
-		trig.source.setFreshOverdueInvoice()
-		if e = trig.s.RecordInvoiceLifecycleWake(ctx, botID); e != nil {
-			t.Fatal(e)
-		}
-		observed := &observedImportedLifecycleStore{Store: trig.s, finished: make(chan error, 2)}
-		lcfg := lifecycle.Config{Enabled: true, BaseURL: trig.ninjaBase, Token: importedOverdueNinjaToken, WebhookSecret: "synthetic-imported-overdue-secret-012345", AllowedTelegramIDs: []int64{42}, Workers: 1, PageSize: 10, MaxPages: 2, MaxAccounts: 10, PollInterval: 100 * time.Millisecond, RecheckInterval: 30 * time.Second, HTTPTimeout: time.Second}
-		lw, e := lifecycle.New(observed, trig.cycle, botID, []int64{9001}, lcfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
-		if e != nil {
-			t.Fatal(e)
-		}
-		runLifecycleOnce(t, ctx, lw, observed.finished)
-		yesterday := time.Now().In(time.Local).AddDate(0, 0, -1).Format(time.DateOnly)
-		paymentSQL(t, trig.s, ctx, `SELECT current_invoice_id='invoice-imported-new' AND first_invoice_id IS NULL AND state='active' AND desired_access FROM subscriptions WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`)
-		paymentSQL(t, trig.s, ctx, `SELECT count(*)=1 FROM invoice_lifecycle_invoices WHERE invoice_id='invoice-imported-new' AND status='sent' AND sent_date=$1::date`, yesterday)
-		paymentSQL(t, trig.s, ctx, `SELECT count(*)=0 FROM invoice_lifecycle_invoices WHERE invoice_id IN ($1,'invoice-older-42')`, admissionFixtureInv)
-		if n, e := trig.s.SeedOverdueOperations(ctx, botID, []int64{42}, time.Now().In(time.Local).Format(time.DateOnly), 10); e != nil || n != 0 {
-			t.Fatalf("runtime permission alone seeded imported overdue work: %d %v", n, e)
-		}
-		if err = trig.s.SyncImportedEffectPermission(ctx, botID, 1, prepared.PolicyHash(), prepared.SourceScopeHash(), true); err != nil {
-			t.Fatal(err)
-		}
-		if n, e := trig.s.SeedOverdueOperations(ctx, botID, []int64{42}, time.Now().In(time.Local).Format(time.DateOnly), 10); e != nil || n != 1 {
-			t.Fatalf("seed imported overdue action: %d %v", n, e)
-		}
-		trig.source.onCloseBeforeResponse = func(callbackCtx context.Context) error {
-			bounded, cancel := context.WithTimeout(callbackCtx, 2*time.Second)
-			defer cancel()
-			return trig.s.SyncImportedEffectPermission(bounded, botID, 1, prepared.PolicyHash(), prepared.SourceScopeHash(), false)
-		}
+			trig.source.setFreshOverdueInvoice()
+			if e = trig.s.RecordInvoiceLifecycleWake(ctx, botID); e != nil {
+				t.Fatal(e)
+			}
+			observed := &observedImportedLifecycleStore{Store: trig.s, finished: make(chan error, 2)}
+			lcfg := lifecycle.Config{Enabled: true, BaseURL: trig.ninjaBase, Token: importedOverdueNinjaToken, WebhookSecret: "synthetic-imported-overdue-secret-012345", AllowedTelegramIDs: []int64{42}, Workers: 1, PageSize: 10, MaxPages: 2, MaxAccounts: 10, PollInterval: 100 * time.Millisecond, RecheckInterval: 30 * time.Second, HTTPTimeout: time.Second}
+			lw, e := lifecycle.New(observed, trig.cycle, botID, []int64{9001}, lcfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if e != nil {
+				t.Fatal(e)
+			}
+			runLifecycleOnce(t, ctx, lw, observed.finished)
+			yesterday := time.Now().In(time.Local).AddDate(0, 0, -1).Format(time.DateOnly)
+			paymentSQL(t, trig.s, ctx, `SELECT current_invoice_id='invoice-imported-new' AND first_invoice_id IS NULL AND state='active' AND desired_access FROM subscriptions WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`)
+			paymentSQL(t, trig.s, ctx, `SELECT count(*)=1 FROM invoice_lifecycle_invoices WHERE invoice_id='invoice-imported-new' AND status='sent' AND sent_date=$1::date`, yesterday)
+			paymentSQL(t, trig.s, ctx, `SELECT count(*)=0 FROM invoice_lifecycle_invoices WHERE invoice_id IN ($1,'invoice-older-42')`, admissionFixtureInv)
+			if n, e := trig.s.SeedOverdueOperations(ctx, botID, []int64{42}, time.Now().In(time.Local).Format(time.DateOnly), 10); e != nil || n != 0 {
+				t.Fatalf("runtime permission alone seeded imported overdue work: %d %v", n, e)
+			}
+			if err = trig.s.SyncImportedEffectPermission(ctx, botID, 1, prepared.PolicyHash(), prepared.SourceScopeHash(), true); err != nil {
+				t.Fatal(err)
+			}
+			if n, e := trig.s.SeedOverdueOperations(ctx, botID, []int64{42}, time.Now().In(time.Local).Format(time.DateOnly), 10); e != nil || n != 1 {
+				t.Fatalf("seed imported overdue action: %d %v", n, e)
+			}
+			trig.source.onCloseBeforeResponse = func(callbackCtx context.Context) error {
+				bounded, cancel := context.WithTimeout(callbackCtx, 2*time.Second)
+				defer cancel()
+				return trig.s.SyncImportedEffectPermission(bounded, botID, 1, prepared.PolicyHash(), prepared.SourceScopeHash(), false)
+			}
 
-		worker := trig.newEnforcement(t, false)
-		runImportedOverdueUntil(t, ctx, worker, trig.s, trig.source, "completed")
-		assertImportedOverdueComplete(t, trig)
-		posts := trig.source.postSnapshot()
-		if !reflect.DeepEqual(posts, []string{"pause_recurring", "disable_sui", "close_sessions"}) {
-			t.Fatalf("provider mutation order=%v", posts)
-		}
-		trig.source.mu.Lock()
-		paused := trig.source.recurring["status_id"] == "3" && trig.source.recurring["private_notes"] == "historical legacy note" && trig.source.recurring["amount"] == 100
-		line, _ := trig.source.recurring["line_items"].([]any)
-		if len(line) != 1 {
-			paused = false
-		} else if item, ok := line[0].(map[string]any); !ok || item["cost"] != 100 || item["notes"] != "legacy monthly" {
-			paused = false
-		}
-		panel := trig.source.panel
-		trig.source.mu.Unlock()
-		if !paused || panel.ID() != 42 || panel.Enabled() || !importedOverdueSameSUIExceptEnable(trig.source.suiRaw, panel) {
-			t.Fatalf("source recurring/SUI identity changed beyond pause and disable")
-		}
-		paymentSQL(t, trig.s, ctx, `SELECT revision=1 AND enabled=false FROM imported_effect_permissions WHERE bot_id=$1`, admissionFixtureBotID)
-	})
+			worker := trig.newEnforcement(t, false)
+			runImportedOverdueUntil(t, ctx, worker, trig.s, trig.source, "completed")
+			assertImportedOverdueComplete(t, trig)
+			posts := trig.source.postSnapshot()
+			expectedPosts := []string{"pause_recurring", "disable_sui", "close_sessions"}
+			if billingPaused {
+				expectedPosts = []string{"disable_sui", "close_sessions"}
+			}
+			if !reflect.DeepEqual(posts, expectedPosts) {
+				t.Fatalf("provider mutation order=%v", posts)
+			}
+			trig.source.mu.Lock()
+			paused := trig.source.recurring["status_id"] == "3" && trig.source.recurring["private_notes"] == "historical legacy note" && trig.source.recurring["amount"] == 100
+			line, _ := trig.source.recurring["line_items"].([]any)
+			if len(line) != 1 {
+				paused = false
+			} else if item, ok := line[0].(map[string]any); !ok || item["cost"] != 100 || item["notes"] != "legacy monthly" {
+				paused = false
+			}
+			panel := trig.source.panel
+			trig.source.mu.Unlock()
+			if !paused || panel.ID() != 42 || panel.Enabled() || !importedOverdueSameSUIExceptEnable(trig.source.suiRaw, panel) {
+				t.Fatalf("source recurring/SUI identity changed beyond pause and disable")
+			}
+			paymentSQL(t, trig.s, ctx, `SELECT revision=1 AND enabled=false FROM imported_effect_permissions WHERE bot_id=$1`, admissionFixtureBotID)
+		})
+	}
 
 	t.Run("mutate then 503 pins guard and restart never replays", func(t *testing.T) {
 		trig := newImportedOverdueRig(t, true)

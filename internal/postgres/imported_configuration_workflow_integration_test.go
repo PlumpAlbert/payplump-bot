@@ -78,6 +78,12 @@ func TestImportedConfigurationFromOriginalPaidBaseline(t *testing.T) {
 	runImportedBaselineConfiguration(t, "basic")
 }
 
+func TestImportedConfigurationWithPausedBilling(t *testing.T) {
+	for _, schedule := range []string{"future", "stale", "empty"} {
+		t.Run(schedule, func(t *testing.T) { runImportedBaselineConfiguration(t, "paused_billing_"+schedule) })
+	}
+}
+
 func TestImportedConfigurationRuntimePermissionABABeforeSend(t *testing.T) {
 	runImportedBaselineConfiguration(t, "runtime_aba")
 }
@@ -90,6 +96,16 @@ func runImportedBaselineConfiguration(t *testing.T, scenario string) {
 	t.Helper()
 	var providerGETs atomic.Int64
 	rig := newImportedOverdueRigWithHandler(t, false, func(src *importedOverdueSource) http.Handler {
+		if strings.HasPrefix(scenario, "paused_billing_") {
+			src.recurring["status_id"] = "3"
+			switch scenario {
+			case "paused_billing_stale":
+				stale := time.Now().AddDate(0, -2, 0).Format(time.DateOnly)
+				src.recurring["next_send_date"], src.recurring["next_send_datetime"] = stale, stale+"T00:00:00Z"
+			case "paused_billing_empty":
+				src.recurring["next_send_date"], src.recurring["next_send_datetime"] = "", ""
+			}
+		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet && (strings.HasPrefix(r.URL.Path, "/ninja/") || strings.HasPrefix(r.URL.Path, "/panel/")) {
 				providerGETs.Add(1)
@@ -566,6 +582,14 @@ func runImportedBaselineConfiguration(t *testing.T, scenario string) {
 	paymentSQL(t, rig.s, ctx, `SELECT d.kind='denial' AND d.outcome='sent' AND o.status='sent' FROM configuration_dispatches d JOIN outbox o ON o.id=d.outbox_id WHERE o.id=$1`, changedID)
 	if posts := rig.source.postSnapshot(); len(posts) != 0 {
 		t.Fatalf("GET-only configuration workflow performed provider writes: %v", posts)
+	}
+	if strings.HasPrefix(scenario, "paused_billing_") {
+		rig.source.mu.Lock()
+		status := rig.source.recurring["status_id"]
+		rig.source.mu.Unlock()
+		if status != "3" {
+			t.Fatal("import/configuration delivery resumed paused billing")
+		}
 	}
 	paymentSQL(t, rig.s, ctx, `SELECT count(*)=0 FROM invoice_renewal_actions WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`)
 	paymentSQL(t, rig.s, ctx, `SELECT count(*)=0 FROM invoice_lifecycle_invoices WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`)

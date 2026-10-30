@@ -126,7 +126,7 @@ func (e Entitlement) validateImported() error {
 
 	if e.Period == ImportedBaselinePeriod {
 		if e.Renewal != (RenewalAudit{}) || c.ImportedBaselineProofHash != b.ProofHash || b.Lifecycle != "active" ||
-			b.NextSendUTC.IsZero() || c.InvoiceID != b.InvoiceID || p.Validate() != nil || p.Hash != b.ProofHash ||
+			b.NextSendUTC.IsZero() && !b.Profile.BaselinePaused() || c.InvoiceID != b.InvoiceID || p.Validate() != nil || p.Hash != b.ProofHash ||
 			p.InvoiceID != b.InvoiceID || p.CustomerID != c.CustomerID || p.PaymentDate != c.PaymentDate || p.NextInvoiceDate != c.NextInvoiceDate {
 			return ErrDenied
 		}
@@ -274,7 +274,8 @@ func (e Entitlement) Deadline() (time.Time, error) {
 		if err != nil {
 			return time.Time{}, ErrDenied
 		}
-		if instant.Before(deadline) {
+		// A paused billing schedule is not the end of a verified paid period.
+		if !(e.Period == ImportedBaselinePeriod && e.Imported.Profile.BaselinePaused()) && instant.Before(deadline) {
 			deadline = instant
 		}
 		return deadline, nil

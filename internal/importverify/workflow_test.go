@@ -335,6 +335,50 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		t.Fatalf("zero-tax mode was erased or changed financial proof: %v", err)
 	}
 	recurring["uses_inclusive_taxes"] = false
+	// Billing pause and paid access are independent. Adoption is observational,
+	// even when the paused template has no usable future billing schedule.
+	recurring["status_id"] = "3"
+	inventoryForPause, inventoryErr := invoiceninja.NewCustomerInventoryReader(server.URL+"/ninja", workflowToken, time.Second, 10, 2)
+	if inventoryErr != nil {
+		t.Fatal(inventoryErr)
+	}
+	pausePolicy, pauseProviders := policy, providers
+	pausePolicy.Automatic, pausePolicy.PilotIDs = true, nil
+	pauseProviders.Customers = inventoryForPause
+	pauseDiscovery, discoveryErr := New(pausePolicy, pauseProviders)
+	if discoveryErr != nil {
+		t.Fatal(discoveryErr)
+	}
+	for _, schedule := range [][2]string{{"2026-04-01", "2026-04-01T00:00:00.000000Z"}, {"2026-02-01", "2026-02-01T00:00:00.000000Z"}, {"", ""}} {
+		recurring["next_send_date"], recurring["next_send_datetime"] = schedule[0], schedule[1]
+		// Discovery has settlement-only reads; reset this fixture's alternating
+		// cycle/settlement response phase before a complete verification pass.
+		invoiceGets.Store(0)
+		pausedBillingResult, pausedBillingEvidence, pausedBillingErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+		if pausedBillingErr != nil || pausedBillingResult.Verified != 1 || len(pausedBillingEvidence) != 1 || pausedBillingEvidence[0].Lifecycle != "active" || pausedBillingEvidence[0].ProofHash != evidence[0].ProofHash {
+			t.Fatalf("billing pause blocked independently paid access: schedule=%v reasons=%v diagnostics=%+v err=%v", schedule, pausedBillingResult.Reasons, pausedBillingResult.Diagnostics, pausedBillingErr)
+		}
+		var savedPaused invoiceninja.RecurringRecord
+		if err := json.Unmarshal(pausedBillingEvidence[0].LegacyRecurring, &savedPaused); err != nil || savedPaused.StatusID != "3" || savedPaused.NextSendDate != schedule[0] || savedPaused.NextSendDatetime != schedule[1] {
+			t.Fatalf("billing pause/schedule fabricated in evidence: %v", err)
+		}
+		discovered, err := pauseDiscovery.Discover(context.Background(), time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC), nil)
+		if err != nil || len(discovered) != 1 || discovered[0].Reason != "" || discovered[0].Facts.Lifecycle != "active" || recurring["status_id"] != "3" {
+			t.Fatalf("automatic discovery coupled billing pause to access: discoveries=%+v err=%v", discovered, err)
+		}
+	}
+	invoiceGets.Store(0)
+	expiredPause, _, expiredPauseErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 4, 2, 12, 0, 0, 0, time.UTC))
+	if expiredPauseErr != nil || expiredPause.Verified != 0 || expiredPause.Reasons[ReasonExpired] != 1 {
+		t.Fatal("billing pause bypassed paid-period expiration", expiredPause.Reasons, expiredPauseErr)
+	}
+	invoice["status_id"], invoice["balance"], invoice["paid_to_date"] = "2", 100, 0
+	unpaidPause, _, unpaidPauseErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if unpaidPauseErr != nil || unpaidPause.Verified != 0 || unpaidPause.Reasons[ReasonUnpaid] != 1 {
+		t.Fatal("billing pause bypassed current invoice payment", unpaidPause.Reasons, unpaidPauseErr)
+	}
+	invoice["status_id"], invoice["balance"], invoice["paid_to_date"] = "4", 0, 100
+	recurring["status_id"], recurring["next_send_date"], recurring["next_send_datetime"] = "2", "2026-04-01", "2026-04-01T00:00:00.000000Z"
 	// Read failures expose only the fixed GET stage and safe HTTP classification.
 	for _, tc := range []struct{ path, stage string }{
 		{"/ninja/api/v1/clients", "customers"},

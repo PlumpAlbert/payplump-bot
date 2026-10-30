@@ -393,7 +393,14 @@ func (w *RenewalWorker) observe(ctx context.Context, s RenewalSnapshot) (payment
 	return d, err
 }
 
-// Own-overdue provenance is captured durably by the store; only this explicit marker allows restoration.
+// ImportedBillingWasPaused reports the immutable source billing status, not
+// payment proof or permission to write.
+func ImportedBillingWasPaused(s RenewalSnapshot) bool {
+	return s.ImportedOrigin.Valid() && s.ImportedRecurringProfile.BaselinePaused()
+}
+
+// Own-overdue provenance and the immutable imported billing baseline distinguish
+// managed pauses from unproven manual pauses.
 func validRenewalExternalState(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.ClientRecord) int {
 	validRecord := validRenewalRecurringRecord(r, s.RecurringDraft)
 	notes := s.RecurringDraft.PrivateNotes
@@ -418,7 +425,7 @@ func validRenewalExternalState(s RenewalSnapshot, r invoiceninja.RecurringRecord
 		_, resumed := s.Steps[RenewalResume]
 		ownRenewalPause := s.Plan != nil && s.Plan.Pause && paused && pause.Confirmed
 		ownedOverduePause := hasConfirmedOverduePausePrefix(s) && !paused
-		if r.StatusID == "3" && !resumed && (ownRenewalPause || ownedOverduePause) {
+		if r.StatusID == "3" && !resumed && (ownRenewalPause || ownedOverduePause || ImportedBillingWasPaused(s)) {
 			return 0
 		}
 		return ReviewRenewalExternalState
@@ -485,12 +492,13 @@ func makeRenewalPlan(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.Cl
 		plan.Pause = r.StatusID == "2"
 		plan.Resume = true
 	}
-	if s.ImportedInitialPaused {
+	pausedBaseline := ImportedBillingWasPaused(s) && r.StatusID == "3"
+	if s.ImportedInitialPaused || pausedBaseline {
 		when, parseErr := invoiceninja.ParseRecurringUTC(r.NextSendDatetime)
 		plan.Schedule = r.NextSendDate != target || parseErr != nil || !when.After(now)
 		plan.Resume = true
 	}
-	if s.State == "active" && r.StatusID != "2" && !(r.StatusID == "3" && hasConfirmedOverduePausePrefix(s)) {
+	if s.State == "active" && r.StatusID != "2" && !(r.StatusID == "3" && (hasConfirmedOverduePausePrefix(s) || pausedBaseline)) {
 		return RenewalPlan{}, nil, ReviewRenewalExternalState
 	}
 	if s.State == "overdue" && (r.StatusID != "3" || p.Enabled() || !s.ImportedInitialPaused && !hasConfirmedOverduePrefix(s)) {
@@ -504,13 +512,13 @@ func makeRenewalPlan(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.Cl
 		return RenewalPlan{}, nil, ReviewRenewalExternalState
 	}
 	if r.StatusID == "3" {
-		if s.State == "active" && !hasConfirmedOverduePausePrefix(s) || s.State != "active" && s.State != "overdue" {
+		if s.State == "active" && !hasConfirmedOverduePausePrefix(s) && !pausedBaseline || s.State != "active" && s.State != "overdue" {
 			return RenewalPlan{}, nil, ReviewRenewalExternalState
 		}
 		plan.Resume = true
 	}
 	when, e := invoiceninja.ParseRecurringUTC(r.NextSendDatetime)
-	if r.NextSendDatetime == "" && s.ImportedInitialPaused && plan.Schedule {
+	if r.NextSendDatetime == "" && (s.ImportedInitialPaused || pausedBaseline) && plan.Schedule {
 		e = nil
 	} else if e != nil || !plan.Schedule && !when.After(now) {
 		return RenewalPlan{}, nil, ReviewRenewalTarget

@@ -64,21 +64,22 @@ func (s *Store) FreezeRenewalPlan(ctx context.Context, claim queue.Operation, bo
 		return lifecycle.ErrRenewalTargetExpired
 	}
 	baselineWhen, baselineErr := invoiceninja.ParseRecurringUTC(facts.NextSendDatetime)
-	shouldSchedule := facts.NextSendDate != next || actual.ImportedInitialPaused && (baselineErr != nil || !baselineWhen.After(time.Now()))
-	if baselineErr != nil && !(actual.ImportedInitialPaused && shouldSchedule) || !shouldSchedule && !baselineWhen.After(time.Now()) {
+	pausedBaseline := lifecycle.ImportedBillingWasPaused(actual) && facts.StatusID == "3"
+	shouldSchedule := facts.NextSendDate != next || (actual.ImportedInitialPaused || pausedBaseline) && (baselineErr != nil || !baselineWhen.After(time.Now()))
+	if baselineErr != nil && !(facts.NextSendDatetime == "" && (actual.ImportedInitialPaused || pausedBaseline) && shouldSchedule) || !shouldSchedule && !baselineWhen.After(time.Now()) {
 		return lifecycle.ErrRenewalTargetExpired
 	}
 	shouldEnable := actual.State == "overdue"
 	shouldPause := shouldSchedule && facts.StatusID == "2"
-	shouldResume := shouldSchedule || shouldEnable || facts.StatusID == "3" && actual.State == "active" && hasRenewalOverduePausePrefix(actual)
+	shouldResume := shouldSchedule || shouldEnable || facts.StatusID == "3" && actual.State == "active" && (hasRenewalOverduePausePrefix(actual) || pausedBaseline)
 	if plan.Schedule != shouldSchedule || plan.Enable != shouldEnable || plan.Pause != shouldPause || plan.Resume != shouldResume || facts.SUIEnabled == shouldEnable || facts.StatusID != "2" && facts.StatusID != "3" {
 		return queue.ErrConflict
 	}
-	if actual.State == "active" && (!facts.SUIEnabled || facts.StatusID != "2" && !(facts.StatusID == "3" && hasRenewalOverduePausePrefix(actual))) || actual.State == "overdue" && (facts.StatusID != "3" || facts.SUIEnabled || !actual.ImportedInitialPaused && !hasRenewalOverduePrefix(actual)) {
+	if actual.State == "active" && (!facts.SUIEnabled || facts.StatusID != "2" && !(facts.StatusID == "3" && (hasRenewalOverduePausePrefix(actual) || pausedBaseline))) || actual.State == "overdue" && (facts.StatusID != "3" || facts.SUIEnabled || !actual.ImportedInitialPaused && !hasRenewalOverduePrefix(actual)) {
 		return queue.ErrConflict
 	}
 	when, parseErr := invoiceninja.ParseRecurringUTC(facts.NextSendDatetime)
-	if actual.ImportedInitialPaused && shouldSchedule && facts.NextSendDatetime == "" {
+	if (actual.ImportedInitialPaused || pausedBaseline) && shouldSchedule && facts.NextSendDatetime == "" {
 		parseErr = nil
 	} else if parseErr != nil || !shouldSchedule && !when.After(time.Now()) {
 		return lifecycle.ErrRenewalTargetExpired

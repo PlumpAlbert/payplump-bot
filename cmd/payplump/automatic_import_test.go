@@ -102,7 +102,7 @@ func (s *automaticImportTestStore) AutomaticImportScanStart(context.Context) (ti
 func (s *automaticImportTestStore) AutomaticImportKnownActors(context.Context) (map[int64]bool, error) {
 	return s.known, nil
 }
-func (s *automaticImportTestStore) ApplyVerifiedImport(_ context.Context, prepared importadmission.PreparedPlan) (postgres.ImportAdmissionResult, error) {
+func (s *automaticImportTestStore) ApplyVerifiedImportWithAdvisories(_ context.Context, prepared importadmission.PreparedPlan, _ []int64) (postgres.ImportAdmissionResult, error) {
 	s.applyCalls++
 	if err := prepared.Validate(); err != nil {
 		return postgres.ImportAdmissionResult{}, err

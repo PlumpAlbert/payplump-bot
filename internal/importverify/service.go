@@ -351,7 +351,7 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 		}
 	}
 	expectedRecurringStatus := "2"
-	if r.Lifecycle == "paused" {
+	if r.Lifecycle == "paused" || r.Lifecycle == "active" && len(live) == 1 && live[0].StatusID == "3" {
 		expectedRecurringStatus = "3"
 	}
 	if len(live) != 1 || live[0].ID != r.RecurringID || live[0].StatusID != expectedRecurringStatus {
@@ -372,15 +372,15 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 	if check := legacyRecurringCheck(recurring, s.policy.ProductKey, r.Amount, expectedRecurringStatus); check != "" {
 		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "recurring_record", Check: check}
 	}
-	if r.Lifecycle == "active" && recurring.NextSendDate != r.PeriodEnd {
+	if r.Lifecycle == "active" && recurring.StatusID == "2" && recurring.NextSendDate != r.PeriodEnd {
 		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "recurring_record", Check: "schedule_date"}
 	}
 	if recurring.NextSendDatetime != "" {
 		scheduled, parseErr := invoiceninja.ParseRecurringUTC(recurring.NextSendDatetime)
-		if parseErr != nil || (r.Lifecycle == "active" && !scheduled.After(verifiedAt)) {
+		if parseErr != nil || (r.Lifecycle == "active" && recurring.StatusID == "2" && !scheduled.After(verifiedAt)) {
 			return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "recurring_record", Check: "schedule_datetime"}
 		}
-	} else if r.Lifecycle == "active" {
+	} else if r.Lifecycle == "active" && recurring.StatusID == "2" {
 		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "recurring_record", Check: "schedule_missing"}
 	}
 	recurringJSON, _ := json.Marshal(recurring)

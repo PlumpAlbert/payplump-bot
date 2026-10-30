@@ -151,7 +151,7 @@ func readImportedConfigurationEntitlement(ctx context.Context, tx pgx.Tx, botID,
 	}
 	nextSend, err := invoiceninja.ParseRecurringUTC(template.NextSendDatetime)
 	var dbNow time.Time
-	if err != nil || tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow) != nil || !nextSend.After(dbNow) {
+	if err != nil && !(profile.BaselinePaused() && template.NextSendDatetime == "") || tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow) != nil || !profile.BaselinePaused() && !nextSend.After(dbNow) {
 		return e, configdelivery.ErrDenied
 	}
 	current := payments.Snapshot{ClientID: clientID, TelegramID: telegramID, ChatID: chatID, BotID: botID, CustomerID: customer,

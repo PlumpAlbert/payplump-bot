@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/billing"
 	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/importverify"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
@@ -293,7 +294,8 @@ func deliveryFutureImported(e Entitlement, r Request, deadline, now time.Time) b
 	if e.Period == RenewalPeriod {
 		instant = e.Renewal.NextSendUTC
 	}
-	return !now.Before(r.CreatedAt) && now.Before(r.ExpiresAt) && now.Before(deadline) && e.Current.NextInvoiceDate > now.In(time.Local).Format(time.DateOnly) && instant.After(now)
+	scheduleFuture := instant.After(now) || e.Period == ImportedBaselinePeriod && e.Imported.Profile.BaselinePaused()
+	return !now.Before(r.CreatedAt) && now.Before(r.ExpiresAt) && now.Before(deadline) && e.Current.NextInvoiceDate > now.In(time.Local).Format(time.DateOnly) && scheduleFuture
 }
 
 func (s *Service) readImportedBound(ctx context.Context, e Entitlement) Decision {
@@ -309,7 +311,19 @@ func (s *Service) readImportedBound(ctx context.Context, e Entitlement) Decision
 	if err != nil {
 		return deny(DeniedUnavailable)
 	}
-	if recurring.ID != e.Current.RecurringID || recurring.ClientID != e.Current.CustomerID || recurring.StatusID != "2" || recurring.IsDeleted || recurring.ArchivedAt != 0 || recurring.NextSendDate != e.CurrentProof.NextInvoiceDate || invoiceninja.ValidateImportedRecurringForProfile(recurring, b.Profile) != nil {
+	if recurring.ID != e.Current.RecurringID || recurring.ClientID != e.Current.CustomerID || recurring.IsDeleted || recurring.ArchivedAt != 0 || invoiceninja.ValidateImportedRecurringForProfile(recurring, b.Profile) != nil {
+		return deny(DeniedRecurring)
+	}
+	if e.Period == ImportedBaselinePeriod && b.Profile.BaselinePaused() && recurring.StatusID == "3" {
+		// No billing action is inferred from the access entitlement. Bind the
+		// unchanged paused source, but expire access by the independently paid period.
+		amount, amountErr := billing.FormatAmount(recurring.Amount)
+		if invoiceninja.ValidateImportedRecurringBaseline(recurring, b.Profile) != nil || amountErr != nil || amount != e.CurrentProof.Amount {
+			return deny(DeniedRecurring)
+		}
+		return Decision{Kind: Secret}
+	}
+	if recurring.StatusID != "2" || recurring.NextSendDate != e.CurrentProof.NextInvoiceDate {
 		return deny(DeniedRecurring)
 	}
 	amount, instant, normalizeErr := activation.NormalizeRecurringFacts(recurring.Amount, recurring.NextSendDatetime)
