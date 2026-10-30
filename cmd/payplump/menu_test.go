@@ -9,6 +9,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/clientmenu"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 type menuStoreFake struct {
@@ -101,7 +102,7 @@ func TestMenuConfigHonorsExclusionsWithoutRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared, err := gateway.service.Prepare(context.Background(), clientmenu.Request{BotID: 77, UpdateID: 1, TelegramID: 42, ChatID: 42, Action: clientmenu.Home}, clientmenu.Snapshot{})
-	if err != nil || !strings.Contains(prepared.Text, "исключён") {
+	if err != nil || prepared.Text != templates.Render("clientmenu/excluded", templates.Data{}) {
 		t.Fatal("disabled billing discarded menu exclusion policy")
 	}
 	for _, value := range []string{"042", "42,42", "0", "42,"} {
