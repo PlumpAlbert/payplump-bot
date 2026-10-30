@@ -315,7 +315,7 @@ func (s *Service) readImportedBound(ctx context.Context, e Entitlement) Decision
 	if recurring.ID != e.Current.RecurringID || recurring.ClientID != e.Current.CustomerID || recurring.IsDeleted || recurring.ArchivedAt != 0 || invoiceninja.ValidateImportedRecurringForProfile(recurring, b.Profile) != nil {
 		return deny(DeniedRecurring)
 	}
-	if e.Period == ImportedBaselinePeriod && b.Profile.BaselinePaused() && recurring.StatusID == "3" {
+	if e.Period == ImportedBaselinePeriod && b.Profile.BaselinePaused() {
 		// No billing action is inferred from the access entitlement. Bind the
 		// unchanged paused source, but expire access by the independently paid period.
 		amount, amountErr := billing.FormatAmount(recurring.Amount)

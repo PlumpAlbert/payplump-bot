@@ -33,7 +33,7 @@ func TestImportedBillingPauseAdvisoryIsAtomicAndDeduplicated(t *testing.T) {
 			if err = rig.s.SyncImportAdmissionPolicy(rig.ctx, bot, prepared.Revision(), prepared.PolicyHash(), prepared.SourceScopeHash(), true); err != nil {
 				t.Fatal(err)
 			}
-			admins := []int64{9001, 9002, 9001}
+			admins := []int64{42, 9001, 9002, 9001}
 			result, err := rig.s.ApplyVerifiedImportWithAdvisories(rig.ctx, prepared, admins)
 			if err != nil || result.Admitted != 1 {
 				t.Fatalf("advisory blocked valid admission: result=%+v err=%v", result, err)
@@ -52,10 +52,10 @@ func TestImportedBillingPauseAdvisoryIsAtomicAndDeduplicated(t *testing.T) {
 			wg.Wait()
 			want := 0
 			if status == "3" {
-				want = 2
+				want = 3
 			}
 			var notices int
-			if err = rig.s.pool.QueryRow(rig.ctx, `SELECT count(*) FROM outbox WHERE bot_id=$1 AND chat_id IN (9001,9002) AND message_key LIKE 'import-advisory:%'`, bot).Scan(&notices); err != nil || notices != want {
+			if err = rig.s.pool.QueryRow(rig.ctx, `SELECT count(*) FROM outbox WHERE bot_id=$1 AND chat_id IN (42,9001,9002) AND message_key LIKE 'import-advisory:%'`, bot).Scan(&notices); err != nil || notices != want {
 				t.Fatalf("wrong private advisory count: got=%d want=%d err=%v", notices, want, err)
 			}
 			paymentSQL(t, rig.s, rig.ctx, `SELECT NOT EXISTS(SELECT 1 FROM automatic_import_issues WHERE NOT resolved)`)
@@ -63,6 +63,12 @@ func TestImportedBillingPauseAdvisoryIsAtomicAndDeduplicated(t *testing.T) {
 			paymentSQL(t, rig.s, rig.ctx, `SELECT state='active' AND desired_access FROM subscriptions WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`)
 			if len(rig.source.postSnapshot()) != 0 {
 				t.Fatal("admission/advisory changed provider state")
+			}
+			if _, err := rig.s.EnqueueOutbox(rig.ctx, queue.Draft{BotID: bot, ChatID: 42, Key: "synthetic-managed-workflow", Text: "synthetic workflow message"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := rig.s.ApplyVerifiedImportWithAdvisories(rig.ctx, prepared, admins); err == nil {
+				t.Fatal("ordinary managed workflow message was wrongly exempted as an advisory")
 			}
 		})
 	}

@@ -36,7 +36,8 @@ func TestEmbeddedCatalog(t *testing.T) {
 func TestInvalidEditsFailAtLoad(t *testing.T) {
 	for name, body := range map[string]string{
 		"empty": "", "whitespace": " \n\t\n", "invalid UTF8": "\xff", "NUL": "text\x00",
-		"malformed": "{{.Amount", "unknown field": "{{.Unknown}}", "unavailable field": "{{.SubscriptionURL}}",
+		"too long literal": strings.Repeat("я", 4097),
+		"malformed":        "{{.Amount", "unknown field": "{{.Unknown}}", "unavailable field": "{{.SubscriptionURL}}",
 		"nested field": "{{.Amount.String}}", "method": "{{.String}}", "function": "{{print .Amount}}",
 		"pipeline": "{{.Amount | printf \"%s\"}}", "if": "{{if .Amount}}yes{{end}}", "range": "{{range .Amount}}yes{{end}}",
 		"with": "{{with .Amount}}yes{{end}}", "variable": "{{$a := .Amount}}{{$a}}", "root": "{{.}}", "root variable": "{{$.Amount}}",
@@ -63,6 +64,16 @@ func TestInvalidEditsFailAtLoad(t *testing.T) {
 				t.Fatal("missing or unknown file accepted")
 			}
 		})
+	}
+}
+
+func TestStaticTextLengthUsesTelegramCharacterBoundary(t *testing.T) {
+	for _, count := range []int{4096, 4097} {
+		source := fstest.MapFS{"group/message.tmpl": {Data: []byte(strings.Repeat("я", count) + "\n")}}
+		_, err := load(source, map[string][]string{"group/message": {}})
+		if (err != nil) != (count > 4096) {
+			t.Fatalf("literal Telegram length=%d: err=%v", count, err)
+		}
 	}
 }
 

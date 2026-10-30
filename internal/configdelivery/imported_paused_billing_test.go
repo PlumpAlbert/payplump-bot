@@ -48,10 +48,14 @@ func TestImportedPaidAccessDoesNotDependOnPausedBillingSchedule(t *testing.T) {
 }
 
 func TestImportedPausedBillingDoesNotBypassPaymentOrSourceChecks(t *testing.T) {
-	for _, change := range []string{"unpaid", "source schedule changed", "source resumed", "period expired"} {
+	for _, change := range []string{"unpaid", "source schedule changed", "source resumed", "source resumed with matching future schedule", "period expired"} {
 		t.Run(change, func(t *testing.T) {
 			f := newDeliveryFixture(t)
-			preparePausedBillingBaseline(t, f, "", "")
+			date, instant := "", ""
+			if change == "source resumed with matching future schedule" {
+				date, instant = "2040-02-29", "2040-02-29T12:00:00Z"
+			}
+			preparePausedBillingBaseline(t, f, date, instant)
 			expected := DeniedRecurring
 			switch change {
 			case "unpaid":
@@ -59,7 +63,7 @@ func TestImportedPausedBillingDoesNotBypassPaymentOrSourceChecks(t *testing.T) {
 				expected = DeniedPayment
 			case "source schedule changed":
 				f.rec.record.NextSendDate = "2040-02-29"
-			case "source resumed":
+			case "source resumed", "source resumed with matching future schedule":
 				f.rec.record.StatusID = "2"
 			case "period expired":
 				deadline, err := f.store.view.Entitlement.Deadline()

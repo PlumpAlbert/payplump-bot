@@ -470,7 +470,7 @@ func runImportedBaselineConfiguration(t *testing.T, scenario string) {
 		}
 		return
 	}
-	if scenario != "basic" {
+	if scenario != "basic" && !strings.HasPrefix(scenario, "paused_billing_") {
 		t.Fatalf("unknown imported configuration scenario %q", scenario)
 	}
 

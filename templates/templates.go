@@ -80,9 +80,11 @@ func load(source fs.FS, known map[string][]string) (catalog, error) {
 			fields[name] = f.Index[0]
 		}
 		parts := []part{}
+		literalRunes := 0
 		for _, node := range t.Tree.Root.Nodes {
 			switch n := node.(type) {
 			case *parse.TextNode:
+				literalRunes += utf8.RuneCount(n.Text)
 				parts = append(parts, part{text: string(n.Text), field: -1})
 			case *parse.ActionNode:
 				p := n.Pipe
@@ -101,6 +103,9 @@ func load(source fs.FS, known map[string][]string) (catalog, error) {
 			default:
 				return fmt.Errorf("restricted action in message template: %s", path)
 			}
+		}
+		if literalRunes > 4096 {
+			return fmt.Errorf("message template exceeds Telegram text limit: %s", path)
 		}
 		c[id] = parts
 		return nil

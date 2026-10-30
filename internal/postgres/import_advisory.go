@@ -13,6 +13,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func importedBillingPauseAdvisoryKey(stable string, admin int64) string {
+	return fmt.Sprintf("import-advisory:%s:billing-paused:%d", stable, admin)
+}
+
 func enqueueImportedBillingPauseAdvisory(ctx context.Context, tx pgx.Tx, bot int64, row importadmission.AdmissionRow, admins []int64) error {
 	if row.Lifecycle != "active" || len(admins) == 0 {
 		return nil
@@ -29,7 +33,7 @@ func enqueueImportedBillingPauseAdvisory(ctx context.Context, tx pgx.Tx, bot int
 	// skip this path, and the stable outbox key also deduplicates administrator IDs.
 	text := templates.Render("import/billing_paused", templates.Data{ActorID: row.TelegramID, NextInvoiceDate: row.NextInvoiceDate})
 	for _, admin := range admins {
-		draft := queue.Draft{BotID: bot, ChatID: admin, Key: fmt.Sprintf("import-advisory:%s:billing-paused:%d", row.StableHash, admin), Text: text}
+		draft := queue.Draft{BotID: bot, ChatID: admin, Key: importedBillingPauseAdvisoryKey(row.StableHash, admin), Text: text}
 		if _, err := enqueueOutbox(ctx, tx, draft); err != nil {
 			return errors.New("could not enqueue imported billing advisory")
 		}
