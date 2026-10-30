@@ -8,21 +8,25 @@ import (
 	"fmt"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 type Action string
 
 const (
-	Start              Action = "start"
-	Home               Action = "menu"
-	Invoice            Action = "invoice"
-	Status             Action = "status"
-	Configuration      Action = "config"
-	Help               Action = "help"
-	InvoiceLabel              = "Текущий счёт и реквизиты"
-	StatusLabel               = "Состояние подписки"
-	ConfigurationLabel        = "Моя конфигурация"
-	HelpLabel                 = "Инструкция подключения"
+	Start         Action = "start"
+	Home          Action = "menu"
+	Invoice       Action = "invoice"
+	Status        Action = "status"
+	Configuration Action = "config"
+	Help          Action = "help"
+)
+
+var (
+	InvoiceLabel       = templates.Render("clientmenu/label_invoice", templates.Data{})
+	StatusLabel        = templates.Render("clientmenu/label_status", templates.Data{})
+	ConfigurationLabel = templates.Render("clientmenu/label_configuration", templates.Data{})
+	HelpLabel          = templates.Render("clientmenu/label_help", templates.Data{})
 )
 
 func (a Action) Valid() bool {
@@ -56,9 +60,9 @@ type Snapshot struct {
 	CanonicalSentDate            string
 }
 
-// ConfigurationUnavailableText is deliberately fixed: an ordinary outbox
-// message must never accept a rendered personal URL from prepared text.
-const ConfigurationUnavailableText = "Персональная конфигурация доступна только после полной проверенной оплаты и завершённой настройки доступа. Сейчас безопасная выдача недоступна. Если вы ещё не зарегистрированы, отправьте /start. Проверьте /status или обратитесь к администратору. Инструкция: /help. Ранее выданную подписку не удаляйте."
+// ConfigurationUnavailableText is compiled public copy, not request data: an
+// ordinary outbox message must never accept a personal URL from prepared text.
+var ConfigurationUnavailableText = templates.Render("clientmenu/configuration_unavailable", templates.Data{})
 
 type Prepared struct {
 	Request                     Request

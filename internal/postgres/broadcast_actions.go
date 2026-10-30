@@ -5,10 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
-	"fmt"
+	"strconv"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/broadcast"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -31,7 +32,7 @@ func policyContains(p broadcast.Policy, id int64) bool {
 }
 func (s *Store) applyBroadcastAction(ctx context.Context, tx pgx.Tx, bot int64, identity telegram.Identity, cmd broadcast.Command, current, supplied broadcast.Policy) (string, error) {
 	if !current.Enabled || !current.Equal(supplied) || !policyContains(current, identity.TelegramID) {
-		return "Настройки рассылки изменились или доступ отключён. Обратитесь к владельцу бота.", nil
+		return templates.Render("broadcast/policy_changed", templates.Data{}), nil
 	}
 	if err := recordBroadcastMembership(ctx, tx, bot, identity.TelegramID); err != nil {
 		return "", err
@@ -39,12 +40,12 @@ func (s *Store) applyBroadcastAction(ctx context.Context, tx pgx.Tx, bot int64, 
 	switch cmd.Name {
 	case "/broadcast":
 		if cmd.Argument == "" {
-			return "Создайте текст командой /broadcast_text <текст>. Перед отправкой появится предпросмотр и подтверждение.", nil
+			return templates.Render("broadcast/instructions", templates.Data{}), nil
 		}
 	case "/broadcast_text":
 		body := cmd.Argument
 		if broadcast.ValidateBody(body) != nil {
-			return "Текст должен содержать от 1 до 3000 байт. Переводы строк и табуляция разрешены.", nil
+			return templates.Render("broadcast/invalid_body", templates.Data{}), nil
 		}
 		tok, e := broadcast.NewToken()
 		if e != nil {
@@ -60,7 +61,7 @@ func (s *Store) applyBroadcastAction(ctx context.Context, tx pgx.Tx, bot int64, 
 		if _, e = tx.Exec(ctx, `INSERT INTO broadcast_drafts(bot_id,actor_id,chat_id,policy_revision,policy_hash,body,token_hash,state,expires_at) VALUES($1,$2,$2,$3,$4,$5,$6,'text',clock_timestamp()+interval '15 minutes')`, bot, identity.TelegramID, current.Revision, current.Hash[:], body, h[:]); e != nil {
 			return "", e
 		}
-		return "Предпросмотр рассылки:\n\n" + body + "\n\nТокен: " + tok + "\nДля заморозки получателей: /broadcast_all " + tok, nil
+		return templates.Render("broadcast/preview", templates.Data{Body: body, Token: tok}), nil
 	case "/broadcast_all":
 		h, ok := tokenHash(cmd.Argument)
 		if ok {
@@ -81,16 +82,16 @@ func (s *Store) applyBroadcastAction(ctx context.Context, tx pgx.Tx, bot int64, 
 			return "", e
 		}
 		if tag.RowsAffected() == 0 {
-			return "Черновик не найден или срок его действия истёк.", nil
+			return templates.Render("broadcast/draft_expired", templates.Data{}), nil
 		}
-		return "Черновик рассылки отменён.", nil
+		return templates.Render("broadcast/cancelled", templates.Data{}), nil
 	case "/broadcast_status":
 		h, ok := tokenHash(cmd.Argument)
 		if ok {
 			return broadcastStatus(ctx, tx, bot, identity.TelegramID, h)
 		}
 	}
-	return "Команда или токен указаны неверно. Проверьте формат и попробуйте снова.", nil
+	return templates.Render("broadcast/invalid_command", templates.Data{}), nil
 }
 
 type draftSnapshot struct {
@@ -109,13 +110,13 @@ func findDraft(ctx context.Context, tx pgx.Tx, bot, actor int64, h [32]byte) (dr
 func freezeBroadcastAudience(ctx context.Context, tx pgx.Tx, bot, actor int64, p broadcast.Policy, h [32]byte) (string, error) {
 	d, e := findDraft(ctx, tx, bot, actor, h)
 	if errors.Is(e, pgx.ErrNoRows) {
-		return "Черновик не найден.", nil
+		return templates.Render("broadcast/draft_missing", templates.Data{}), nil
 	}
 	if e != nil {
 		return "", e
 	}
 	if d.state != "text" || !d.valid || d.rev != p.Revision || !equalBytes(d.hash, p.Hash[:]) {
-		return "Черновик истёк или настройки рассылки изменились.", nil
+		return templates.Render("broadcast/draft_changed", templates.Data{}), nil
 	}
 	tok, e := broadcast.NewToken()
 	if e != nil {
@@ -136,7 +137,7 @@ func freezeBroadcastAudience(ctx context.Context, tx pgx.Tx, bot, actor int64, p
 		if _, e = tx.Exec(ctx, `DELETE FROM broadcast_recipients WHERE draft_id=$1`, d.id); e != nil {
 			return "", e
 		}
-		return "Число получателей превышает разрешённый предел. Черновик не изменён.", nil
+		return templates.Render("broadcast/audience_limit", templates.Data{}), nil
 	}
 	tag, e := tx.Exec(ctx, `UPDATE broadcast_drafts SET state='audience',token_hash=$2 WHERE id=$1 AND state='text' AND expires_at>clock_timestamp()`, d.id, nh[:])
 	if e != nil {
@@ -145,7 +146,7 @@ func freezeBroadcastAudience(ctx context.Context, tx pgx.Tx, bot, actor int64, p
 	if tag.RowsAffected() != 1 {
 		return "", broadcast.ErrExpired
 	}
-	return fmt.Sprintf("Получателей: %d. Для подтверждения отправки: /broadcast_confirm %s", count, tok), nil
+	return templates.Render("broadcast/confirm_audience", templates.Data{Count: strconv.Itoa(count), Token: tok}), nil
 }
 func equalBytes(a, b []byte) bool {
 	if len(a) != len(b) {
@@ -161,7 +162,7 @@ func equalBytes(a, b []byte) bool {
 func confirmBroadcast(ctx context.Context, tx pgx.Tx, bot, actor int64, p broadcast.Policy, h [32]byte) (string, error) {
 	d, e := findDraft(ctx, tx, bot, actor, h)
 	if errors.Is(e, pgx.ErrNoRows) {
-		return "Черновик не найден.", nil
+		return templates.Render("broadcast/draft_missing", templates.Data{}), nil
 	}
 	if e != nil {
 		return "", e
@@ -170,7 +171,7 @@ func confirmBroadcast(ctx context.Context, tx pgx.Tx, bot, actor int64, p broadc
 		return reportBroadcast(ctx, tx, d.id)
 	}
 	if d.state != "audience" || !d.valid || d.rev != p.Revision || !equalBytes(d.hash, p.Hash[:]) {
-		return "Черновик истёк или настройки рассылки изменились.", nil
+		return templates.Render("broadcast/draft_changed", templates.Data{}), nil
 	}
 	var job int64
 	e = tx.QueryRow(ctx, `INSERT INTO broadcasts(draft_id,bot_id,creator_id,policy_revision,policy_hash,state) VALUES($1,$2,$3,$4,$5,'pending') RETURNING id`, d.id, bot, actor, p.Revision, p.Hash[:]).Scan(&job)
@@ -195,20 +196,20 @@ func reportBroadcast(ctx context.Context, tx pgx.Tx, draft int64) (string, error
 	if e != nil {
 		return "", e
 	}
-	return fmt.Sprintf("Статус: ожидают %d, в очереди %d, доставлено %d, ошибок %d, пропущено %d.", pending, enqueued, sent, failed, skipped), nil
+	return templates.Render("broadcast/status", templates.Data{Pending: strconv.Itoa(pending), Enqueued: strconv.Itoa(enqueued), Sent: strconv.Itoa(sent), Failed: strconv.Itoa(failed), Skipped: strconv.Itoa(skipped)}), nil
 }
 func broadcastStatus(ctx context.Context, tx pgx.Tx, bot, actor int64, h [32]byte) (string, error) {
 	var id int64
 	var state string
 	e := tx.QueryRow(ctx, `SELECT id,state FROM broadcast_drafts WHERE bot_id=$1 AND actor_id=$2 AND chat_id=$2 AND token_hash=$3`, bot, actor, h[:]).Scan(&id, &state)
 	if errors.Is(e, pgx.ErrNoRows) {
-		return "Черновик или рассылка не найдены.", nil
+		return templates.Render("broadcast/missing", templates.Data{}), nil
 	}
 	if e != nil {
 		return "", e
 	}
 	if state != "confirmed" {
-		return "Статус доступен после подтверждения рассылки.", nil
+		return templates.Render("broadcast/status_unconfirmed", templates.Data{}), nil
 	}
 	return reportBroadcast(ctx, tx, id)
 }

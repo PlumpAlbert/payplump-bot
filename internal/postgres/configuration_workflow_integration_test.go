@@ -23,6 +23,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 type configurationWorkflowRoundTrip func(*http.Request) (*http.Response, error)
@@ -225,7 +226,7 @@ func TestConfigurationWorkflowWithSyntheticHTTP(t *testing.T) {
 	var unknown bool
 	var secrets, denials, chats, ordinary int
 	var permitVisible = true
-	const denialBody = "Не удалось подтвердить безопасную выдачу конфигурации по этому запросу. Проверьте /status или обратитесь к администратору. Ранее выданную подписку не удаляйте."
+	var denialBody = templates.Render("configdelivery/denied", templates.Data{})
 	p.mu.Lock()
 	bindingName := p.panel.Name()
 	p.mu.Unlock()
@@ -269,12 +270,9 @@ func TestConfigurationWorkflowWithSyntheticHTTP(t *testing.T) {
 			}
 			if secret {
 				secrets++
-				lines := strings.Split(text, "\n")
-				validURI := false
-				if len(lines) > 1 {
-					u, err := url.Parse(lines[1])
-					validURI = err == nil && u.Scheme == "https" && u.Host == "subscription.example.test" && u.EscapedPath() == "/prefix/"+url.PathEscape(bindingName) && u.RawQuery == "format=json" && u.Fragment == "" && u.User == nil
-				}
+				expectedURI := "https://subscription.example.test/prefix/" + url.PathEscape(bindingName) + "?format=json"
+				u, parseErr := url.Parse(expectedURI)
+				validURI := strings.Contains(text, expectedURI) && text == templates.Render("configdelivery/subscription", templates.Data{SubscriptionURL: expectedURI}) && parseErr == nil && u.Scheme == "https" && u.Host == "subscription.example.test" && u.EscapedPath() == "/prefix/"+url.PathEscape(bindingName) && u.RawQuery == "format=json" && u.Fragment == "" && u.User == nil
 				if !validURI {
 					t.Error("configuration URI changed its saved single-segment binding or public prefix")
 				}

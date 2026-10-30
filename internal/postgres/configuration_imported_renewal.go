@@ -296,10 +296,20 @@ func readImportedRenewalAudit(ctx context.Context, tx pgx.Tx, clientID, botID in
 		return audit, configdelivery.ErrDenied
 	}
 	oldPastAtFreeze := oldErr == nil && (!oldInstant.After(planFrozenAt) || frozen.NextSendDate <= planFrozenAt.In(time.Local).Format(time.DateOnly))
-	shouldSchedule := frozen.NextSendDate != target || mode == "imported_initial_paused" && (oldErr != nil || !oldInstant.After(planFrozenAt))
+	pausedBaseline := frozen.StatusID == "3" && profile.BaselinePaused()
+	repairableBaseline := mode == "imported_initial_paused" || pausedBaseline
+	shouldSchedule := frozen.NextSendDate != target || repairableBaseline && (oldErr != nil || !oldInstant.After(planFrozenAt))
+	// An absent original UTC value is evidence of a schedule to repair, never
+	// a replacement for the independently confirmed final schedule receipt.
+	if pausedBaseline {
+		originalAmount, amountErr := billing.FormatAmount(frozen.Amount)
+		if amountErr != nil || originalAmount == "0" {
+			return audit, configdelivery.ErrDenied
+		}
+	}
 	if finalErr != nil || finalAmount != audit.Amount || finalUTC != parsed.Format(time.RFC3339Nano) ||
-		(mode == "ledger" && (!oldDateOK || oldErr != nil || oldPastAtFreeze)) ||
-		(mode == "imported_initial_paused" && ((!oldDateOK && frozen.NextSendDate != "") || (oldErr != nil && frozen.NextSendDatetime != "") || ((!oldDateOK || oldErr != nil || frozen.NextSendDate == "" || frozen.NextSendDatetime == "" || oldPastAtFreeze) && !shouldSchedule))) ||
+		(mode == "ledger" && !pausedBaseline && (!oldDateOK || oldErr != nil || oldPastAtFreeze)) ||
+		(repairableBaseline && ((!oldDateOK && frozen.NextSendDate != "") || (oldErr != nil && frozen.NextSendDatetime != "") || ((!oldDateOK || oldErr != nil || frozen.NextSendDate == "" || frozen.NextSendDatetime == "" || oldPastAtFreeze) && !shouldSchedule))) ||
 		flags[1] != shouldSchedule || flags[0] != (shouldSchedule && frozen.StatusID == "2") || flags[3] != (shouldSchedule || flags[2] || frozen.StatusID == "3") ||
 		(mode == "imported_initial_paused" && (flags[0] || !flags[2] || !flags[3] || frozen.StatusID != "3" || frozen.SUIEnabled)) {
 		return audit, configdelivery.ErrDenied

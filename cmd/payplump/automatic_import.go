@@ -83,7 +83,7 @@ func serviceVerificationConfig(ctx context.Context, get func(string) string, bot
 type automaticImportStore interface {
 	AutomaticImportScanStart(context.Context) (time.Time, error)
 	AutomaticImportKnownActors(context.Context) (map[int64]bool, error)
-	ApplyVerifiedImport(context.Context, importadmission.PreparedPlan) (postgres.ImportAdmissionResult, error)
+	ApplyVerifiedImportWithAdvisories(context.Context, importadmission.PreparedPlan, []int64) (postgres.ImportAdmissionResult, error)
 	RecordAutomaticImportIssue(context.Context, int64, int64, string, string, string, []int64) (bool, error)
 	ResolveAutomaticImportIssue(context.Context, int64, string, time.Time) error
 	ReconcileAutomaticImportIssues(context.Context, int64, []string, time.Time) error
@@ -182,7 +182,7 @@ func (w *automaticImporter) Scan(ctx context.Context) error {
 							diagnostic = rejection.Diagnostics[0]
 						}
 					}
-				} else if _, applyErr := w.store.ApplyVerifiedImport(ctx, prepared); applyErr != nil {
+				} else if _, applyErr := w.store.ApplyVerifiedImportWithAdvisories(ctx, prepared, w.admins); applyErr != nil {
 					reason = "admission_conflict"
 					diagnostic = importverify.FailureDiagnostic("admission", "apply", applyErr)
 				}

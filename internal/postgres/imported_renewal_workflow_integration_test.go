@@ -34,10 +34,17 @@ func TestImportedPaidRenewalFromNewLedgerInvoice(t *testing.T) {
 type importedRenewalCompletionHook func(*importedOverdueRig, importadmission.PreparedPlan, int64)
 
 func runImportedPaidRenewalHappy(t *testing.T, late, unknownSchedule bool, hooks ...importedRenewalCompletionHook) {
+	runImportedPaidRenewalWithSource(t, late, unknownSchedule, nil, hooks...)
+}
+
+func runImportedPaidRenewalWithSource(t *testing.T, late, unknownSchedule bool, sourceFactory func(*importedOverdueSource), hooks ...importedRenewalCompletionHook) {
 	var newPayment map[string]any
 	var renewalPosts, providerOrder []string
 	var afterResumeMutation func(context.Context) error
 	trig := newImportedOverdueRigWithHandler(t, false, func(src *importedOverdueSource) http.Handler {
+		if sourceFactory != nil {
+			sourceFactory(src)
+		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p := strings.TrimPrefix(r.URL.Path, "/ninja/api/v1/")
 			if strings.HasPrefix(r.URL.Path, "/ninja/api/v1/") {
@@ -185,6 +192,7 @@ func runImportedPaidRenewalHappy(t *testing.T, late, unknownSchedule bool, hooks
 		})
 	})
 	ctx := trig.ctx
+	billingPaused := trig.source.recurring["status_id"] == "3"
 	prepared, err := trig.prepare(time.Now().UTC().Add(-time.Second))
 	if err != nil {
 		t.Fatal(err)
@@ -213,8 +221,16 @@ func runImportedPaidRenewalHappy(t *testing.T, late, unknownSchedule bool, hooks
 	if e = trig.s.FinishPaymentCheck(ctx, claim, snap, decision, payments.Notices{}, time.Minute); e != nil {
 		t.Fatal(e)
 	}
+	if billingPaused {
+		if e = trig.s.SyncImportedEffectPermission(ctx, botID, 1, prepared.PolicyHash(), prepared.SourceScopeHash(), true); e != nil {
+			t.Fatal(e)
+		}
+	}
 	if n, e := trig.s.SeedRenewalOperations(ctx, botID, []int64{42}, 10); e != nil || n != 0 {
 		t.Fatalf("baseline seeded renewal: %d %v", n, e)
+	}
+	if len(trig.source.postSnapshot()) != 0 || len(renewalPosts) != 0 {
+		t.Fatal("admission or baseline payment performed provider writes")
 	}
 
 	trig.source.setFreshOverdueInvoice()
@@ -257,7 +273,14 @@ func runImportedPaidRenewalHappy(t *testing.T, late, unknownSchedule bool, hooks
 		}
 	}
 	paidDate := time.Now().In(time.Local).Format(time.DateOnly)
+	paidTarget, e := billing.NextBillingDate(paidDate)
+	if e != nil {
+		t.Fatal(e)
+	}
 	trig.source.mu.Lock()
+	beforeUTC, _ := trig.source.recurring["next_send_datetime"].(string)
+	beforeWhen, beforeErr := invoiceninja.ParseRecurringUTC(beforeUTC)
+	needsSchedule := trig.source.recurring["next_send_date"] != paidTarget || billingPaused && (beforeErr != nil || !beforeWhen.After(time.Now()))
 	trig.source.freshInvoice["status_id"], trig.source.freshInvoice["balance"], trig.source.freshInvoice["paid_to_date"] = "4", 0, 100
 	newPayment = map[string]any{"id": "payment-new-42", "client_id": admissionFixtureCust, "date": paidDate, "status_id": "4", "currency_id": "1", "exchange_currency_id": "", "amount": 100, "refunded": 0, "applied": 100, "exchange_rate": 1, "is_manual": true, "is_deleted": false, "archived_at": 0, "paymentables": []any{map[string]any{"id": "allocation-new-42", "invoice_id": "invoice-imported-new", "payment_id": "payment-new-42", "amount": 100, "refunded": 0, "archived_at": 0}}, "invoices": []any{}}
 	trig.source.mu.Unlock()
@@ -269,7 +292,7 @@ func runImportedPaidRenewalHappy(t *testing.T, late, unknownSchedule bool, hooks
 	if e = trig.s.FinishPaymentCheck(ctx, claim, snap, decision, payments.Notices{}, time.Minute); e != nil {
 		t.Fatal(e)
 	}
-	if !late {
+	if !late && !billingPaused {
 		if n, e := trig.s.SeedRenewalOperations(ctx, botID, []int64{42}, 10); e != nil || n != 0 {
 			t.Fatalf("effects-absent seed=%d err=%v", n, e)
 		}
@@ -344,7 +367,14 @@ func runImportedPaidRenewalHappy(t *testing.T, late, unknownSchedule bool, hooks
 	}
 	paymentSQL(t, trig.s, ctx, `SELECT current_invoice_id='invoice-imported-new' AND first_invoice_id IS NULL AND state='active' AND desired_access AND payment_date=$1::date AND next_invoice_date=$2::date FROM subscriptions WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`, paidDate, wantEnd)
 	paymentSQL(t, trig.s, ctx, `SELECT count(*)=1 FROM invoice_renewal_actions a JOIN operations o ON o.id=a.operation_id WHERE a.invoice_id='invoice-imported-new' AND a.outcome='completed' AND o.status='completed'`)
-	paymentSQL(t, trig.s, ctx, `SELECT count(*)=3 AND count(*) FILTER(WHERE step IN ('pause_recurring','schedule_recurring','resume_recurring','enable_sui') AND confirmed_at IS NOT NULL)=3 FROM invoice_renewal_steps WHERE operation_id=(SELECT operation_id FROM invoice_renewal_actions WHERE invoice_id='invoice-imported-new')`)
+	wantSteps := 3
+	if billingPaused && !late {
+		wantSteps = 2
+		if !needsSchedule {
+			wantSteps = 1
+		}
+	}
+	paymentSQL(t, trig.s, ctx, `SELECT count(*)=$1 AND count(*) FILTER(WHERE step IN ('pause_recurring','schedule_recurring','resume_recurring','enable_sui') AND confirmed_at IS NOT NULL)=$1 FROM invoice_renewal_steps WHERE operation_id=(SELECT operation_id FROM invoice_renewal_actions WHERE invoice_id='invoice-imported-new')`, wantSteps)
 	paymentSQL(t, trig.s, ctx, `SELECT revision=1 AND enabled=false FROM imported_effect_permissions WHERE bot_id=$1`, botID)
 	paymentSQL(t, trig.s, ctx, `SELECT operation_id IS NULL AND step IS NULL FROM activation_write_guard WHERE id=1`)
 	trig.source.mu.Lock()
@@ -357,6 +387,13 @@ func runImportedPaidRenewalHappy(t *testing.T, late, unknownSchedule bool, hooks
 	trig.source.mu.Unlock()
 	wantPosts := []string{"pause_recurring", "schedule_recurring", "resume_recurring"}
 	wantOrder := wantPosts
+	if billingPaused && !late {
+		wantPosts = []string{"schedule_recurring", "resume_recurring"}
+		if !needsSchedule {
+			wantPosts = []string{"resume_recurring"}
+		}
+		wantOrder = wantPosts
+	}
 	if late {
 		wantPosts = []string{"schedule_recurring", "enable_sui", "resume_recurring"}
 		wantOrder = []string{"overdue_pause", "overdue_disable", "overdue_close_sessions", "schedule_recurring", "enable_sui", "resume_recurring"}

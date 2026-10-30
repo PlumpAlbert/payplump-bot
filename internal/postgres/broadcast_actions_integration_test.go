@@ -4,12 +4,12 @@ package postgres
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/broadcast"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 func broadcastUpdate(id int64, text string) telegram.Update {
@@ -61,16 +61,16 @@ func TestBroadcastAdminActionsAreBoundToPrivateDraft(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, `SELECT body FROM outbox WHERE bot_id=123 AND message_key='broadcast-admin:123:2'`).Scan(&preview); err != nil {
 		t.Fatal("missing preview")
 	}
-	tokenA := strings.Split(strings.Split(preview, "Токен: ")[1], "\n")[0]
+	tokenA := broadcastResponseToken(t, preview, "/broadcast_all ")
 	apply(3, "/broadcast_all "+tokenA)
 	var freeze string
 	if err := s.pool.QueryRow(ctx, `SELECT body FROM outbox WHERE bot_id=123 AND message_key='broadcast-admin:123:3'`).Scan(&freeze); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(freeze, "Получателей: 2") {
+	if freeze != templates.Render("broadcast/confirm_audience", templates.Data{Count: "2", Token: broadcastResponseToken(t, freeze, "/broadcast_confirm ")}) {
 		t.Fatalf("unexpected audience summary")
 	}
-	tokenB := strings.TrimPrefix(strings.Split(freeze, "/broadcast_confirm ")[1], "")
+	tokenB := broadcastResponseToken(t, freeze, "/broadcast_confirm ")
 	apply(4, "/broadcast_confirm "+tokenB)
 	var jobs int
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM broadcasts WHERE bot_id=123`).Scan(&jobs); err != nil || jobs != 1 {

@@ -161,7 +161,7 @@ func TestBroadcastWorkflowWithSyntheticHTTP(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, `SELECT body FROM outbox WHERE message_key=$1`, `broadcast-admin:`+formatIDs(bot, 2)).Scan(&preview); err != nil {
 		t.Fatal("preview missing")
 	}
-	tokenA := broadcastResponseToken(t, preview, "Токен: ")
+	tokenA := broadcastResponseToken(t, preview, "/broadcast_all ")
 	command(3, "/broadcast_all "+tokenA)
 	var freeze string
 	if err := s.pool.QueryRow(ctx, `SELECT body FROM outbox WHERE message_key=$1`, `broadcast-admin:`+formatIDs(bot, 3)).Scan(&freeze); err != nil {
@@ -183,7 +183,7 @@ func TestBroadcastWorkflowWithSyntheticHTTP(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, `SELECT body FROM outbox WHERE message_key=$1`, `broadcast-admin:`+formatIDs(bot, 7)).Scan(&preview2); err != nil {
 		t.Fatal(err)
 	}
-	tokenC := broadcastResponseToken(t, preview2, "Токен: ")
+	tokenC := broadcastResponseToken(t, preview2, "/broadcast_all ")
 	command(8, "/broadcast_cancel "+tokenC)
 	var logBuffer bytes.Buffer
 	bw, err := broadcast.New(s, bot, cfg, slog.New(slog.NewJSONHandler(&logBuffer, nil)))

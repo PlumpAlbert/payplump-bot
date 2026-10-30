@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math/big"
 	"slices"
@@ -22,6 +21,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 var (
@@ -393,7 +393,14 @@ func (w *RenewalWorker) observe(ctx context.Context, s RenewalSnapshot) (payment
 	return d, err
 }
 
-// Own-overdue provenance is captured durably by the store; only this explicit marker allows restoration.
+// ImportedBillingWasPaused reports the immutable source billing status, not
+// payment proof or permission to write.
+func ImportedBillingWasPaused(s RenewalSnapshot) bool {
+	return s.ImportedOrigin.Valid() && s.ImportedRecurringProfile.BaselinePaused()
+}
+
+// Own-overdue provenance and the immutable imported billing baseline distinguish
+// managed pauses from unproven manual pauses.
 func validRenewalExternalState(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.ClientRecord) int {
 	validRecord := validRenewalRecurringRecord(r, s.RecurringDraft)
 	notes := s.RecurringDraft.PrivateNotes
@@ -418,7 +425,7 @@ func validRenewalExternalState(s RenewalSnapshot, r invoiceninja.RecurringRecord
 		_, resumed := s.Steps[RenewalResume]
 		ownRenewalPause := s.Plan != nil && s.Plan.Pause && paused && pause.Confirmed
 		ownedOverduePause := hasConfirmedOverduePausePrefix(s) && !paused
-		if r.StatusID == "3" && !resumed && (ownRenewalPause || ownedOverduePause) {
+		if r.StatusID == "3" && !resumed && (ownRenewalPause || ownedOverduePause || ImportedBillingWasPaused(s)) {
 			return 0
 		}
 		return ReviewRenewalExternalState
@@ -485,12 +492,13 @@ func makeRenewalPlan(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.Cl
 		plan.Pause = r.StatusID == "2"
 		plan.Resume = true
 	}
-	if s.ImportedInitialPaused {
+	pausedBaseline := ImportedBillingWasPaused(s) && r.StatusID == "3"
+	if s.ImportedInitialPaused || pausedBaseline {
 		when, parseErr := invoiceninja.ParseRecurringUTC(r.NextSendDatetime)
 		plan.Schedule = r.NextSendDate != target || parseErr != nil || !when.After(now)
 		plan.Resume = true
 	}
-	if s.State == "active" && r.StatusID != "2" && !(r.StatusID == "3" && hasConfirmedOverduePausePrefix(s)) {
+	if s.State == "active" && r.StatusID != "2" && !(r.StatusID == "3" && (hasConfirmedOverduePausePrefix(s) || pausedBaseline)) {
 		return RenewalPlan{}, nil, ReviewRenewalExternalState
 	}
 	if s.State == "overdue" && (r.StatusID != "3" || p.Enabled() || !s.ImportedInitialPaused && !hasConfirmedOverduePrefix(s)) {
@@ -504,13 +512,13 @@ func makeRenewalPlan(s RenewalSnapshot, r invoiceninja.RecurringRecord, p sui.Cl
 		return RenewalPlan{}, nil, ReviewRenewalExternalState
 	}
 	if r.StatusID == "3" {
-		if s.State == "active" && !hasConfirmedOverduePausePrefix(s) || s.State != "active" && s.State != "overdue" {
+		if s.State == "active" && !hasConfirmedOverduePausePrefix(s) && !pausedBaseline || s.State != "active" && s.State != "overdue" {
 			return RenewalPlan{}, nil, ReviewRenewalExternalState
 		}
 		plan.Resume = true
 	}
 	when, e := invoiceninja.ParseRecurringUTC(r.NextSendDatetime)
-	if r.NextSendDatetime == "" && s.ImportedInitialPaused && plan.Schedule {
+	if r.NextSendDatetime == "" && (s.ImportedInitialPaused || pausedBaseline) && plan.Schedule {
 		e = nil
 	} else if e != nil || !plan.Schedule && !when.After(now) {
 		return RenewalPlan{}, nil, ReviewRenewalTarget
@@ -865,7 +873,7 @@ func (w *RenewalWorker) holdCurrent(claim queue.Operation, code int) {
 func (w *RenewalWorker) reviewNotices(s RenewalSnapshot, code int) []queue.Draft {
 	digest := sha256.Sum256([]byte(s.InvoiceID))
 	prefix := "renewal:" + hex.EncodeToString(digest[:]) + ":review"
-	body := fmt.Sprintf("Продление требует ручной проверки. Telegram ID %d, локальный клиент #%d, счёт %s. Автоматическое восстановление остановлено; проверьте состояние вручную. Код: %d.", s.TelegramID, s.ClientID, s.InvoiceID, code)
+	body := templates.Render("lifecycle/renewal_review_admin", templates.Data{ActorID: strconv.FormatInt(s.TelegramID, 10), ClientID: strconv.FormatInt(s.ClientID, 10), InvoiceID: s.InvoiceID, ReviewCode: strconv.Itoa(code)})
 	out := make([]queue.Draft, 0, len(w.admins))
 	for _, id := range w.admins {
 		out = append(out, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":admin:" + strconv.FormatInt(id, 10), Text: body})
@@ -876,10 +884,10 @@ func (w *RenewalWorker) reviewNotices(s RenewalSnapshot, code int) []queue.Draft
 func (w *RenewalWorker) successNotices(s RenewalSnapshot, plan RenewalPlan) []queue.Draft {
 	digest := sha256.Sum256([]byte(s.InvoiceID))
 	prefix := "renewal:" + hex.EncodeToString(digest[:])
-	text := fmt.Sprintf("Платёж по счёту №%s подтверждён, срок обслуживания учётной записи продлён до %s. Настройки для подключения не пересылались, а само подключение не проверялось.", s.Proof.InvoiceNumber, plan.TargetDate)
+	text := templates.Render("lifecycle/renewal_client", templates.Data{InvoiceNumber: s.Proof.InvoiceNumber, TargetDate: plan.TargetDate})
 	out := []queue.Draft{{BotID: w.botID, ChatID: s.ChatID, Key: prefix + ":client", Text: text}}
 	for _, id := range w.admins {
-		out = append(out, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":admin:" + strconv.FormatInt(id, 10), Text: fmt.Sprintf("Продление завершено: Telegram ID %d, счёт №%s, сумма %s %s, дата платежа %s, новый срок %s. Проверка подключения не выполнялась.", s.TelegramID, s.Proof.InvoiceNumber, s.Proof.Amount, s.Proof.CurrencyID, s.Proof.PaymentDate, plan.TargetDate)})
+		out = append(out, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":admin:" + strconv.FormatInt(id, 10), Text: templates.Render("lifecycle/renewal_admin", templates.Data{ActorID: strconv.FormatInt(s.TelegramID, 10), InvoiceNumber: s.Proof.InvoiceNumber, Amount: s.Proof.Amount, CurrencyID: s.Proof.CurrencyID, PaymentDate: s.Proof.PaymentDate, TargetDate: plan.TargetDate})})
 	}
 	return out
 }

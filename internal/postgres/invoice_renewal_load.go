@@ -419,14 +419,19 @@ func readRenewalSnapshot(ctx context.Context, reader renewalSnapshotReader, clai
 	}
 	if planFrozen {
 		var facts struct {
+			StatusID         string      `json:"status_id"`
 			Amount           json.Number `json:"amount"`
 			NextSendDatetime string      `json:"next_send_datetime"`
 		}
-		if planDate == "" || json.Unmarshal(baseline, &facts) != nil || facts.Amount == "" || (facts.NextSendDatetime == "" && !(s.ImportedInitialPaused && planSchedule)) {
+		if planDate == "" || json.Unmarshal(baseline, &facts) != nil || facts.Amount == "" {
+			return lifecycle.RenewalSnapshot{}, queue.ErrConflict
+		}
+		allowEmptyUTC := planSchedule && (s.ImportedInitialPaused || lifecycle.ImportedBillingWasPaused(s) && facts.StatusID == "3")
+		if facts.NextSendDatetime == "" && !allowEmptyUTC {
 			return lifecycle.RenewalSnapshot{}, queue.ErrConflict
 		}
 		when, parseErr := invoiceninja.ParseRecurringUTC(facts.NextSendDatetime)
-		if facts.NextSendDatetime == "" && s.ImportedInitialPaused && planSchedule {
+		if facts.NextSendDatetime == "" && allowEmptyUTC {
 			parseErr = nil
 		} else if parseErr != nil || !planSchedule && !when.After(time.Now()) {
 			return lifecycle.RenewalSnapshot{}, queue.ErrConflict

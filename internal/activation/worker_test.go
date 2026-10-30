@@ -19,6 +19,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 var workerOutage = errors.New("synthetic remote secret must never appear in logging")
@@ -493,7 +494,7 @@ func TestWorkerFourClaimsThenFreshFinalization(t *testing.T) {
 			t.Fatal("sensitive/invalid completion notice")
 		}
 	}
-	if len(f.s.notices) != 3 || !strings.Contains(f.s.notices[0].Text, "/config") || !strings.Contains(f.s.notices[0].Text, "требует отдельных проверок") || !strings.Contains(f.s.notices[0].Text, "не проверена") {
+	if len(f.s.notices) != 3 || f.s.notices[0].Text != templates.Render("activation/complete_client", templates.Data{NextInvoiceDate: f.s.s.Proof.NextInvoiceDate}) {
 		t.Fatal("completion overclaims configuration delivery or core health")
 	}
 }
@@ -1178,7 +1179,7 @@ func TestWorkerReviewNoticesStayImmutableAndNonSensitive(t *testing.T) {
 		t.Fatal("same review outbox key changed text with reason")
 	}
 	for _, d := range first {
-		if d.Validate() != nil || !strings.HasPrefix(d.Key, "activation:9:review:admin:") || !strings.Contains(d.Text, "могла сохраниться") || strings.Contains(d.Text, f.s.s.Token) || strings.Contains(d.Text, "http") {
+		if d.Validate() != nil || !strings.HasPrefix(d.Key, "activation:9:review:admin:") || d.Text != templates.Render("activation/review_admin", templates.Data{OperationID: "9"}) || strings.Contains(d.Text, f.s.s.Token) || strings.Contains(d.Text, "http") {
 			t.Fatal("unsafe/unstable review notice")
 		}
 	}

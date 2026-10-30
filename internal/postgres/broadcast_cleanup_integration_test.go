@@ -13,7 +13,7 @@ import (
 func createCleanupTestJob(t *testing.T, s *Store, ctx context.Context, bot int64, p broadcast.Policy, updateID int64, body string) int64 {
 	t.Helper()
 	preview := broadcastTestAction(t, s, ctx, bot, p, updateID, "/broadcast_text "+body)
-	textToken := broadcastResponseToken(t, preview, "Токен: ")
+	textToken := broadcastResponseToken(t, preview, "/broadcast_all ")
 	frozen := broadcastTestAction(t, s, ctx, bot, p, updateID+1, "/broadcast_all "+textToken)
 	confirmToken := broadcastResponseToken(t, frozen, "/broadcast_confirm ")
 	broadcastTestAction(t, s, ctx, bot, p, updateID+2, "/broadcast_confirm "+confirmToken)

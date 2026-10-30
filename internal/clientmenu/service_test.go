@@ -20,6 +20,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/clientmenu"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 // All identities, payment details and remote data in this file are synthetic.
@@ -137,7 +138,7 @@ func assertNoMenuText(t *testing.T, text string, forbidden ...string) {
 
 func assertNoInvoiceDisclosure(t *testing.T, text string) {
 	t.Helper()
-	assertNoMenuText(t, text, menuNumber, menuLink, menuPhone, "synthetic-bank", "synthetic-recipient", menuPII, "Сумма к переводу:", "Телефон:")
+	assertNoMenuText(t, text, menuNumber, menuLink, menuPhone, "synthetic-bank", "synthetic-recipient", menuPII, menuCopy("payment_details", templates.Data{Balance: "1234.5", PaymentPhone: menuPhone}))
 }
 
 func assertMenuCalls(t *testing.T, f *fakeReader, wants ...string) {
@@ -229,17 +230,17 @@ func TestMenuKnownAndUnknownActionsAreLocal(t *testing.T) {
 				assertNoMenuText(t, p.Text, snapshot.CustomerID, snapshot.InvoiceID, "<b>", "</", "**", "```", "[Инструкция](")
 				switch {
 				case action == clientmenu.Help:
-					assertMenuContains(t, p.Text, "sing-box", "https://sing-box.sagernet.org/clients/", "JSON", "отдельно включённой выдаче")
+					assertMenuContains(t, p.Text, menuCopy("instructions"))
 				case !known && action != clientmenu.Start:
 					assertMenuContains(t, p.Text, "/start", "/help")
 				case !known:
-					assertMenuContains(t, p.Text, "Регистрация сохранена", "первый счёт", "/invoice", "/status", "/config", "/help")
+					assertMenuContains(t, p.Text, menuCopy("welcome"), menuCopy("actions"))
 				case action == clientmenu.Start || action == clientmenu.Home:
-					assertMenuContains(t, p.Text, "/invoice", "/status", "/config", "/help", "сохранённое состояние")
+					assertMenuContains(t, p.Text, menuCopy("actions"), menuCopy("status_footer"))
 				case action == clientmenu.Status:
-					assertMenuContains(t, p.Text, "сохранённое состояние", "не разрешён", snapshot.PaymentDate, snapshot.NextInvoiceDate)
+					assertMenuContains(t, p.Text, menuCopy("access_denied"), menuCopy("payment_date", templates.Data{PaymentDate: snapshot.PaymentDate}), menuCopy("next_invoice_date", templates.Data{NextInvoiceDate: snapshot.NextInvoiceDate}))
 				case action == clientmenu.Configuration:
-					assertMenuContains(t, p.Text, "безопасная выдача недоступна", "полной проверенной оплаты", "/help")
+					assertMenuContains(t, p.Text, menuCopy("configuration_unavailable"))
 				}
 			})
 		}
@@ -262,16 +263,16 @@ func TestMenuStatusAndConfigurationNeverClaimLiveSUIAccess(t *testing.T) {
 			s := newMenuService(t, menuConfig(), f)
 			status := prepareMenu(t, s, clientmenu.Status, snapshot).Text
 			if access {
-				assertMenuContains(t, status, "не проверка текущего подключения S-UI")
+				assertMenuContains(t, status, menuCopy("access_requested"))
 			} else {
-				assertMenuContains(t, status, "не разрешён")
+				assertMenuContains(t, status, menuCopy("access_denied"))
 			}
 			if state == "synthetic-unknown-state" {
-				assertMenuContains(t, status, "проверки администратора")
+				assertMenuContains(t, status, menuCopy("state_unknown"))
 				assertNoMenuText(t, status, state)
 			}
 			configuration := prepareMenu(t, s, clientmenu.Configuration, snapshot).Text
-			assertMenuContains(t, configuration, "безопасная выдача недоступна", "полной проверенной оплаты")
+			assertMenuContains(t, configuration, menuCopy("configuration_unavailable"))
 			assertNoMenuText(t, configuration, "https://", "ss://", "vmess://", "vless://", "trojan://", "password", "token=")
 			assertMenuCalls(t, f)
 		}
@@ -321,7 +322,7 @@ func TestMenuExclusionsDoNotDependOnBillingOrReaderConfiguration(t *testing.T) {
 				snapshot := menuSnapshot()
 				snapshot.Known = known
 				p := prepareMenu(t, newMenuService(t, cfg, reader), action, snapshot)
-				assertMenuContains(t, p.Text, "исключён", "не менялись", "/help")
+				assertMenuContains(t, p.Text, menuCopy("excluded"))
 				assertNoInvoiceDisclosure(t, p.Text)
 				assertMenuCalls(t, f)
 			}
@@ -345,7 +346,7 @@ func TestMenuNewClonesExclusions(t *testing.T) {
 		}
 		p := prepareMenu(t, s, clientmenu.Invoice, menuSnapshot())
 		if initiallyExcluded {
-			assertMenuContains(t, p.Text, "исключён")
+			assertMenuContains(t, p.Text, menuCopy("excluded"))
 			assertMenuCalls(t, f)
 		} else {
 			assertMenuContains(t, p.Text, menuNumber)
@@ -371,7 +372,11 @@ func TestMenuInvoiceMissingReaderOrBindingsIsSafe(t *testing.T) {
 				snapshot.CustomerID, snapshot.InvoiceID = "", ""
 			}
 			p := prepareMenu(t, newMenuService(t, menuConfig(), reader), clientmenu.Invoice, snapshot)
-			assertMenuContains(t, p.Text, "администратору")
+			want := "invoice_pending"
+			if missing == "reader" {
+				want = "invoice_unavailable"
+			}
+			assertMenuContains(t, p.Text, menuCopy(want))
 			assertNoInvoiceDisclosure(t, p.Text)
 			assertMenuCalls(t, f)
 		})
@@ -469,7 +474,7 @@ func TestMenuInvoiceMalformedOrForeignDataFailsClosed(t *testing.T) {
 			tt.change(&f.invoice)
 			p := prepareMenu(t, newMenuService(t, menuConfig(), f), clientmenu.Invoice, menuSnapshot())
 			assertNoInvoiceDisclosure(t, p.Text)
-			assertMenuContains(t, p.Text, "администратору")
+			assertMenuContains(t, p.Text, menuCopy("invoice_unavailable"))
 			assertMenuCalls(t, f, "customer:"+menuSnapshot().CustomerID, "invoice:"+menuSnapshot().InvoiceID)
 		})
 	}
@@ -497,11 +502,11 @@ func TestMenuInvoiceStatusPaymentAndOverdueSemantics(t *testing.T) {
 		wants                 []string
 		payment               bool
 	}{
-		{"old unpaid", "2", "1234.50", []string{"2020-01-10", "Сумма к переводу: 1234.5", "может быть оплачен позднее"}, true},
-		{"partially paid", "3", "234.125", []string{"Сумма по счёту: 1234.5", "Остаток: 234.125", "Сумма к переводу: 234.125"}, true},
-		{"Ninja paid only", "4", "0", []string{"В Invoice Ninja счёт отмечен оплаченным", "не заменяет проверку платежа", "само по себе не включает доступ"}, false},
-		{"sent zero is not payment proof", "2", "0", []string{"Нулевой остаток сам по себе не подтверждает оплату", "администратор"}, false},
-		{"partial zero is not payment proof", "3", "0e2", []string{"Нулевой остаток сам по себе не подтверждает оплату"}, false},
+		{"old unpaid", "2", "1234.50", []string{"2020-01-10", menuCopy("payment_details", templates.Data{Balance: "1234.5", PaymentPhone: menuPhone}), menuCopy("invoice_footer")}, true},
+		{"partially paid", "3", "234.125", []string{menuInvoiceCopy("1234.5", "234.125", "2020-01-10"), menuCopy("payment_details", templates.Data{Balance: "234.125", PaymentPhone: menuPhone})}, true},
+		{"Ninja paid only", "4", "0", []string{menuCopy("invoice_paid")}, false},
+		{"sent zero is not payment proof", "2", "0", []string{menuCopy("payment_unverified")}, false},
+		{"partial zero is not payment proof", "3", "0e2", []string{menuCopy("payment_unverified")}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := menuReader()
@@ -512,22 +517,22 @@ func TestMenuInvoiceStatusPaymentAndOverdueSemantics(t *testing.T) {
 			assertMenuContains(t, p.Text, menuNumber, menuLink)
 			assertMenuContains(t, p.Text, tt.wants...)
 			if tt.payment {
-				assertMenuContains(t, p.Text, menuPhone, "synthetic-bank", "synthetic-recipient", "после подтверждения полной оплаты")
+				assertMenuContains(t, p.Text, menuPhone, "synthetic-bank", "synthetic-recipient", menuCopy("invoice_footer"))
 			} else {
-				assertNoMenuText(t, p.Text, menuPhone, "Сумма к переводу:")
+				assertNoMenuText(t, p.Text, menuPhone, menuCopy("payment_details", templates.Data{Balance: "0", PaymentPhone: menuPhone}))
 			}
 			if tt.status == "3" {
-				assertNoMenuText(t, p.Text, "Сумма к переводу: 1234.5")
+				assertNoMenuText(t, p.Text, menuCopy("payment_details", templates.Data{Balance: "1234.5", PaymentPhone: menuPhone}))
 			}
 			assertMenuCalls(t, f, "customer:"+snapshot.CustomerID, "invoice:"+snapshot.InvoiceID)
 		})
 	}
-	for _, tt := range []struct{ status, phrase string }{{"1", "черновику"}, {"5", "отменён или сторнирован"}, {"6", "отменён или сторнирован"}} {
+	for _, tt := range []struct{ status, phrase string }{{"1", menuCopy("invoice_draft")}, {"5", menuCopy("invoice_cancelled")}, {"6", menuCopy("invoice_cancelled")}} {
 		t.Run("not-payable-"+tt.status, func(t *testing.T) {
 			f := menuReader()
 			f.invoice.StatusID = tt.status
 			p := prepareMenu(t, newMenuService(t, menuConfig(), f), clientmenu.Invoice, menuSnapshot())
-			assertMenuContains(t, p.Text, tt.phrase, "Не переводите")
+			assertMenuContains(t, p.Text, tt.phrase)
 			assertNoInvoiceDisclosure(t, p.Text)
 		})
 	}
@@ -541,17 +546,16 @@ func TestManagedRecurringInvoiceUsesCanonicalSentDateForAccessBoundary(t *testin
 	snapshot.CanonicalSentDate = "2040-01-03"
 	p := prepareMenu(t, newMenuService(t, menuConfig(), f), clientmenu.Invoice, snapshot)
 	assertMenuContains(t, p.Text,
-		"Срок оплаты в Invoice Ninja (не срок доступа): 2040-02-01",
-		"последний день сохранения доступа при отсутствии оплаты: 2040-01-03 включительно",
-		"Со следующего дня доступ могут отключить.")
-	assertNoMenuText(t, p.Text, "Срок оплаты: 2040-02-01 включительно", "последний день сохранения доступа: 2040-02-01")
+		menuInvoiceCopy("1234.5", "1234.5", "2040-02-01"),
+		menuCopy("access_deadline", templates.Data{SentDate: "2040-01-03"}))
+	assertNoMenuText(t, p.Text, menuCopy("access_deadline", templates.Data{SentDate: "2040-02-01"}))
 
 	// A first/ordinary invoice has no lifecycle-owned sent date and gets no
 	// invented access boundary from its remote due date or invoice date.
 	snapshot.RecurringID, snapshot.CanonicalSentDate = "", ""
 	p = prepareMenu(t, newMenuService(t, menuConfig(), f), clientmenu.Invoice, snapshot)
-	assertMenuContains(t, p.Text, "Срок оплаты в Invoice Ninja (не срок доступа): 2040-02-01")
-	assertNoMenuText(t, p.Text, "последний день сохранения доступа", "2040-01-03")
+	assertMenuContains(t, p.Text, menuInvoiceCopy("1234.5", "1234.5", "2040-02-01"))
+	assertNoMenuText(t, p.Text, menuCopy("access_deadline", templates.Data{SentDate: "2040-01-03"}), "2040-01-03")
 }
 
 func TestMenuInvoiceAmountsAreExactDecimalsNotFloats(t *testing.T) {
@@ -565,7 +569,7 @@ func TestMenuInvoiceAmountsAreExactDecimalsNotFloats(t *testing.T) {
 			f := menuReader()
 			f.invoice.Amount, f.invoice.Balance, f.invoice.StatusID = json.Number(tt.amount), json.Number(tt.balance), "3"
 			p := prepareMenu(t, newMenuService(t, menuConfig(), f), clientmenu.Invoice, menuSnapshot())
-			assertMenuContains(t, p.Text, "Сумма по счёту: "+tt.wantAmount+"\n", "Остаток: "+tt.wantBalance+"\n", "Сумма к переводу: "+tt.wantBalance+"\n")
+			assertMenuContains(t, p.Text, tt.wantAmount, tt.wantBalance, menuInvoiceCopy(tt.wantAmount, tt.wantBalance, "2020-01-10"), menuCopy("payment_details", templates.Data{Balance: tt.wantBalance, PaymentPhone: menuPhone}))
 		})
 	}
 }
@@ -577,11 +581,11 @@ func TestMenuPaymentSettingsAreOptionalWithoutInventedData(t *testing.T) {
 		p := prepareMenu(t, newMenuService(t, cfg, menuReader()), clientmenu.Invoice, menuSnapshot())
 		assertMenuContains(t, p.Text, menuNumber, menuLink)
 		if cfg.PaymentPhone == "" {
-			assertMenuContains(t, p.Text, "Реквизиты перевода в боте не настроены", "администратора")
-			assertNoMenuText(t, p.Text, "Телефон:", "Банк:", "Получатель:", "Сумма к переводу:", menuPhone, cfg.PaymentBank, cfg.PaymentRecipient)
+			assertMenuContains(t, p.Text, menuCopy("payment_details_missing"))
+			assertNoMenuText(t, p.Text, menuPhone, cfg.PaymentBank, cfg.PaymentRecipient, menuCopy("payment_bank", templates.Data{PaymentBank: "synthetic-bank"}), menuCopy("payment_recipient", templates.Data{PaymentRecipient: "synthetic-recipient"}))
 		} else {
-			assertMenuContains(t, p.Text, "Телефон: "+menuPhone, "Сумма к переводу: 1234.5")
-			assertNoMenuText(t, p.Text, "Банк:", "Получатель:")
+			assertMenuContains(t, p.Text, menuCopy("payment_details", templates.Data{Balance: "1234.5", PaymentPhone: menuPhone}))
+			assertNoMenuText(t, p.Text, menuCopy("payment_bank", templates.Data{PaymentBank: "synthetic-bank"}), menuCopy("payment_recipient", templates.Data{PaymentRecipient: "synthetic-recipient"}))
 		}
 	}
 }
@@ -839,4 +843,17 @@ func TestMenuPreparedTextIsRenderedWithoutMarkup(t *testing.T) {
 	if calls.Load() != 2 {
 		t.Fatalf("renderer made %d local calls, want two", calls.Load())
 	}
+}
+
+// Expected UI copy follows editable templates; precision, routing and disclosure
+// assertions above still pin the intended branch and exact display values.
+func menuCopy(id string, values ...templates.Data) string {
+	var data templates.Data
+	if len(values) > 0 {
+		data = values[0]
+	}
+	return templates.Render("clientmenu/"+id, data)
+}
+func menuInvoiceCopy(amount, balance, dueDate string) string {
+	return menuCopy("invoice", templates.Data{InvoiceNumber: menuNumber, Amount: amount, Balance: balance, DueDate: dueDate, InvoiceURL: menuLink})
 }

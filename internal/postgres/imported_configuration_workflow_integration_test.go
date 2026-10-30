@@ -28,6 +28,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 func importedConfigurationWorkflowRun(t *testing.T, ctx context.Context, s *Store, sender configurationWorkflowSender, botID, target int64, failed bool, logger *slog.Logger) {
@@ -78,6 +79,12 @@ func TestImportedConfigurationFromOriginalPaidBaseline(t *testing.T) {
 	runImportedBaselineConfiguration(t, "basic")
 }
 
+func TestImportedConfigurationWithPausedBilling(t *testing.T) {
+	for _, schedule := range []string{"future", "stale", "empty"} {
+		t.Run(schedule, func(t *testing.T) { runImportedBaselineConfiguration(t, "paused_billing_"+schedule) })
+	}
+}
+
 func TestImportedConfigurationRuntimePermissionABABeforeSend(t *testing.T) {
 	runImportedBaselineConfiguration(t, "runtime_aba")
 }
@@ -90,6 +97,16 @@ func runImportedBaselineConfiguration(t *testing.T, scenario string) {
 	t.Helper()
 	var providerGETs atomic.Int64
 	rig := newImportedOverdueRigWithHandler(t, false, func(src *importedOverdueSource) http.Handler {
+		if strings.HasPrefix(scenario, "paused_billing_") {
+			src.recurring["status_id"] = "3"
+			switch scenario {
+			case "paused_billing_stale":
+				stale := time.Now().AddDate(0, -2, 0).Format(time.DateOnly)
+				src.recurring["next_send_date"], src.recurring["next_send_datetime"] = stale, stale+"T00:00:00Z"
+			case "paused_billing_empty":
+				src.recurring["next_send_date"], src.recurring["next_send_datetime"] = "", ""
+			}
+		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet && (strings.HasPrefix(r.URL.Path, "/ninja/") || strings.HasPrefix(r.URL.Path, "/panel/")) {
 				providerGETs.Add(1)
@@ -173,7 +190,7 @@ func runImportedBaselineConfiguration(t *testing.T, scenario string) {
 	var target, unknownTarget int64
 	var sentURL string // process memory only; never written to fixtures/logs/DB.
 	var sentDenials, secretSends, chatGets int
-	const denialText = "Не удалось подтвердить безопасную выдачу конфигурации по этому запросу. Проверьте /status или обратитесь к администратору. Ранее выданную подписку не удаляйте."
+	var denialText = templates.Render("configdelivery/denied", templates.Data{})
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodPost {
@@ -308,8 +325,9 @@ func runImportedBaselineConfiguration(t *testing.T, scenario string) {
 	peerMu.Lock()
 	captured := sentURL
 	peerMu.Unlock()
-	u, urlErr := url.Parse(strings.Split(strings.TrimPrefix(captured, "Ваша персональная ссылка на подписку:\n"), "\n")[0])
-	if urlErr != nil || u.Scheme != "https" || u.Host != "subs.invalid" || u.EscapedPath() != "/42" || u.RawQuery != "format=json" || u.Fragment != "" {
+	const expectedURL = "https://subs.invalid/42?format=json"
+	u, urlErr := url.Parse(expectedURL)
+	if !strings.Contains(captured, expectedURL) || captured != templates.Render("configdelivery/subscription", templates.Data{SubscriptionURL: expectedURL}) || urlErr != nil || u.Scheme != "https" || u.Host != "subs.invalid" || u.EscapedPath() != "/42" || u.RawQuery != "format=json" || u.Fragment != "" {
 		t.Fatal("synthetic Telegram client did not receive the canonical Telegram-ID subscription URL")
 	}
 	if strings.Contains(captured, queue.ConfigurationIntentBody) {
@@ -452,7 +470,7 @@ func runImportedBaselineConfiguration(t *testing.T, scenario string) {
 		}
 		return
 	}
-	if scenario != "basic" {
+	if scenario != "basic" && !strings.HasPrefix(scenario, "paused_billing_") {
 		t.Fatalf("unknown imported configuration scenario %q", scenario)
 	}
 
@@ -566,6 +584,14 @@ func runImportedBaselineConfiguration(t *testing.T, scenario string) {
 	paymentSQL(t, rig.s, ctx, `SELECT d.kind='denial' AND d.outcome='sent' AND o.status='sent' FROM configuration_dispatches d JOIN outbox o ON o.id=d.outbox_id WHERE o.id=$1`, changedID)
 	if posts := rig.source.postSnapshot(); len(posts) != 0 {
 		t.Fatalf("GET-only configuration workflow performed provider writes: %v", posts)
+	}
+	if strings.HasPrefix(scenario, "paused_billing_") {
+		rig.source.mu.Lock()
+		status := rig.source.recurring["status_id"]
+		rig.source.mu.Unlock()
+		if status != "3" {
+			t.Fatal("import/configuration delivery resumed paused billing")
+		}
 	}
 	paymentSQL(t, rig.s, ctx, `SELECT count(*)=0 FROM invoice_renewal_actions WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`)
 	paymentSQL(t, rig.s, ctx, `SELECT count(*)=0 FROM invoice_lifecycle_invoices WHERE client_id=(SELECT id FROM clients WHERE telegram_id=42)`)

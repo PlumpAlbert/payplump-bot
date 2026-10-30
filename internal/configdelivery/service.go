@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/billing"
 	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/importverify"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
@@ -18,6 +19,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 // Providers deliberately exposes only GET capabilities. Neither reconciliation,
@@ -52,7 +54,7 @@ func (*Service) GoString() string { return "[protected configuration service]" }
 
 const databaseTimeout = 5 * time.Second
 
-const denialText = "Не удалось подтвердить безопасную выдачу конфигурации по этому запросу. Проверьте /status или обратитесь к администратору. Ранее выданную подписку не удаляйте."
+var denialText = templates.Render("configdelivery/denied", templates.Data{})
 
 func New(store Store, providers Providers, transport Transport, botID int64, cfg Config, logger *slog.Logger) (*Service, error) {
 	if err := cfg.Validate(); err != nil {
@@ -177,7 +179,7 @@ func (s *Service) Deliver(ctx context.Context, m queue.Message) (int64, error) {
 			if err != nil {
 				return telegram.ProtectedMessage{}, ErrDenied
 			}
-			text = "Ваша персональная ссылка на подписку:\n" + uri + "\n\nПомощь: /help"
+			text = templates.Render("configdelivery/subscription", templates.Data{SubscriptionURL: uri})
 		}
 		if err := ctx.Err(); err != nil {
 			return telegram.ProtectedMessage{}, err
@@ -293,7 +295,8 @@ func deliveryFutureImported(e Entitlement, r Request, deadline, now time.Time) b
 	if e.Period == RenewalPeriod {
 		instant = e.Renewal.NextSendUTC
 	}
-	return !now.Before(r.CreatedAt) && now.Before(r.ExpiresAt) && now.Before(deadline) && e.Current.NextInvoiceDate > now.In(time.Local).Format(time.DateOnly) && instant.After(now)
+	scheduleFuture := instant.After(now) || e.Period == ImportedBaselinePeriod && e.Imported.Profile.BaselinePaused()
+	return !now.Before(r.CreatedAt) && now.Before(r.ExpiresAt) && now.Before(deadline) && e.Current.NextInvoiceDate > now.In(time.Local).Format(time.DateOnly) && scheduleFuture
 }
 
 func (s *Service) readImportedBound(ctx context.Context, e Entitlement) Decision {
@@ -309,7 +312,19 @@ func (s *Service) readImportedBound(ctx context.Context, e Entitlement) Decision
 	if err != nil {
 		return deny(DeniedUnavailable)
 	}
-	if recurring.ID != e.Current.RecurringID || recurring.ClientID != e.Current.CustomerID || recurring.StatusID != "2" || recurring.IsDeleted || recurring.ArchivedAt != 0 || recurring.NextSendDate != e.CurrentProof.NextInvoiceDate || invoiceninja.ValidateImportedRecurringForProfile(recurring, b.Profile) != nil {
+	if recurring.ID != e.Current.RecurringID || recurring.ClientID != e.Current.CustomerID || recurring.IsDeleted || recurring.ArchivedAt != 0 || invoiceninja.ValidateImportedRecurringForProfile(recurring, b.Profile) != nil {
+		return deny(DeniedRecurring)
+	}
+	if e.Period == ImportedBaselinePeriod && b.Profile.BaselinePaused() {
+		// No billing action is inferred from the access entitlement. Bind the
+		// unchanged paused source, but expire access by the independently paid period.
+		amount, amountErr := billing.FormatAmount(recurring.Amount)
+		if invoiceninja.ValidateImportedRecurringBaseline(recurring, b.Profile) != nil || amountErr != nil || amount != e.CurrentProof.Amount {
+			return deny(DeniedRecurring)
+		}
+		return Decision{Kind: Secret}
+	}
+	if recurring.StatusID != "2" || recurring.NextSendDate != e.CurrentProof.NextInvoiceDate {
 		return deny(DeniedRecurring)
 	}
 	amount, instant, normalizeErr := activation.NormalizeRecurringFacts(recurring.Amount, recurring.NextSendDatetime)

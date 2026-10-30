@@ -5,12 +5,14 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/broadcast"
 	"github.com/PlumpAlbert/payplump-bot/internal/configdelivery"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 func TestAutomaticImportIssueOutboxDeduplicatesAndRearmsOnChange(t *testing.T) {
@@ -41,7 +43,7 @@ func TestAutomaticImportIssueOutboxDeduplicatesAndRearmsOnChange(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, `SELECT body FROM outbox WHERE bot_id=$1 ORDER BY id LIMIT 1`, bot).Scan(&body); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(body, "Код диагностики: "+key[:12]+".") {
+	if body != templates.Render("import/issue_admin", templates.Data{Subject: templates.Render("import/subject_actor", templates.Data{ActorID: strconv.FormatInt(actor, 10)}), Reason: templates.Render("import/ambiguous_source", templates.Data{}), DiagnosticCode: key[:12]}) {
 		t.Fatal("notification lacks the log correlation code")
 	}
 	if strings.Contains(body, facts) || strings.Contains(body, newFacts) || strings.Contains(body, "synthetic") {

@@ -98,6 +98,18 @@ elif args[:1] == ["logout"]: record("logout")
 else: raise SystemExit("unexpected fake docker command: " + repr(args))
 '''
 
+class TemplatePackagingTests(unittest.TestCase):
+    def test_embedded_templates_are_in_whitelisted_build_context(self):
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("COPY templates ./templates", dockerfile)
+        ignore = (ROOT / ".dockerignore").read_text().splitlines()
+        self.assertEqual(ignore[0], "*")
+        self.assertIn("!templates/", ignore)
+        self.assertIn("!templates/**", ignore)
+        self.assertLess(dockerfile.index("COPY templates ./templates"),
+                        dockerfile.index("go build -trimpath"))
+
+
 class ReleaseBuildTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

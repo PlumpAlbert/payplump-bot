@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/broadcast"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -205,7 +207,7 @@ func (s *Store) ApplyBroadcastUpdate(ctx context.Context, botID int64, username 
 		return true, tx.Commit(ctx)
 	}
 	current, found, policyErr := loadBroadcastPolicy(ctx, tx, botID)
-	text := "Команда рассылки не выполнена."
+	text := templates.Render("broadcast/failed", templates.Data{})
 	if policyErr == nil && found {
 		admins := make(map[int64]struct{}, len(current.AdminIDs))
 		for _, id := range current.AdminIDs {
@@ -217,7 +219,7 @@ func (s *Store) ApplyBroadcastUpdate(ctx context.Context, botID int64, username 
 				return true, errors.New("broadcast update unavailable")
 			}
 		} else {
-			text = "Доступ к команде рассылки изменился или команда неверна."
+			text = templates.Render("broadcast/unauthorized", templates.Data{})
 		}
 	}
 	_, e = enqueueOutbox(ctx, tx, queue.Draft{BotID: botID, ChatID: identity.ChatID, Key: fmt.Sprintf("broadcast-admin:%d:%d", botID, u.ID), Text: text})
@@ -404,7 +406,7 @@ func refreshBroadcastJobs(ctx context.Context, tx pgx.Tx, bot int64, p broadcast
 		if pending > 0 || enqueued != sent+failed {
 			continue
 		}
-		text := fmt.Sprintf("Рассылка #%d завершена. Передано в отправку %d, доставлено %d, ошибок %d, пропущено %d.", j.id, enqueued, sent, failed, skipped)
+		text := templates.Render("broadcast/summary", templates.Data{JobID: strconv.FormatInt(j.id, 10), Enqueued: strconv.Itoa(enqueued), Sent: strconv.Itoa(sent), Failed: strconv.Itoa(failed), Skipped: strconv.Itoa(skipped)})
 		outboxID, err := enqueueOutbox(ctx, tx, queue.Draft{BotID: bot, ChatID: j.creator, Key: fmt.Sprintf("broadcast-summary:%d", j.id), Text: text})
 		if err != nil {
 			return err

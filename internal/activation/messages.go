@@ -1,16 +1,16 @@
 package activation
 
 import (
-	"fmt"
 	"strconv"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 func reviewMessages(botID, operationID int64, admins []int64) []queue.Draft {
 	// Both key and text are immutable across reason changes/retries. Partial
 	// external results can persist; never promise that access was unchanged.
-	text := fmt.Sprintf("Активация (задание %d) остановлена для ручной проверки. Часть изменений во внешних системах могла сохраниться. Автоматические записи остановлены; проверьте журнал и внешние системы.", operationID)
+	text := templates.Render("activation/review_admin", templates.Data{OperationID: strconv.FormatInt(operationID, 10)})
 	messages := make([]queue.Draft, 0, len(admins))
 	for _, id := range admins {
 		messages = append(messages, queue.Draft{BotID: botID, ChatID: id, Key: "activation:" + strconv.FormatInt(operationID, 10) + ":review:admin:" + strconv.FormatInt(id, 10), Text: text})
@@ -20,9 +20,9 @@ func reviewMessages(botID, operationID int64, admins []int64) []queue.Draft {
 
 func completionMessages(s Snapshot, operationID int64, admins []int64) []queue.Draft {
 	prefix := "activation:" + strconv.FormatInt(operationID, 10) + ":complete:"
-	text := "Учётная запись и расписание подписки настроены. Следующая дата счёта: " + s.Proof.NextInvoiceDate + ". Запросить персональную подписку: /config. Выдача требует отдельных проверок. Работоспособность подключения не проверена."
+	text := templates.Render("activation/complete_client", templates.Data{NextInvoiceDate: s.Proof.NextInvoiceDate})
 	messages := []queue.Draft{{BotID: s.Account.BotID, ChatID: s.Account.ChatID, Key: prefix + "client", Text: text}}
-	adminText := fmt.Sprintf("Активация (задание %d), Telegram ID %d: учётная запись и расписание настроены. Следующая дата счёта: %s. Выдача через /config требует отдельного включения и проверок; работоспособность подключения не проверена.", operationID, s.Account.TelegramID, s.Proof.NextInvoiceDate)
+	adminText := templates.Render("activation/complete_admin", templates.Data{OperationID: strconv.FormatInt(operationID, 10), ActorID: strconv.FormatInt(s.Account.TelegramID, 10), NextInvoiceDate: s.Proof.NextInvoiceDate})
 	for _, id := range admins {
 		messages = append(messages, queue.Draft{BotID: s.Account.BotID, ChatID: id, Key: prefix + "admin:" + strconv.FormatInt(id, 10), Text: adminText})
 	}

@@ -13,7 +13,6 @@ func TestDiscoveryExplainsLifecycleMismatchWithoutChangingProviders(t *testing.T
 		status, identity, check string
 	}{
 		{"2", `[{"id":1,"name":"42","enable":false}]`, "active_recurring_sui_disabled"},
-		{"3", `[{"id":1,"name":"42","enable":true}]`, "paused_recurring_sui_enabled"},
 		{"1", `[{"id":1,"name":"42","enable":true}]`, "recurring_draft"},
 		{"4", `[{"id":1,"name":"42","enable":false}]`, "recurring_completed"},
 		{"unknown", `[{"id":1,"name":"42","enable":false}]`, "recurring_status_unsupported"},
