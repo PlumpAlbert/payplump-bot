@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -21,6 +20,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/managedscope"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 var (
@@ -641,10 +641,10 @@ func (w *EnforcementWorker) finishPaid(claim queue.Operation, s EnforcementSnaps
 
 func overdueSuccessDrafts(botID int64, admins []int64, s EnforcementSnapshot) []queue.Draft {
 	prefix := overdueMessagePrefix(s.InvoiceID)
-	client := fmt.Sprintf("Счёт №%s не был отмечен как оплаченный после окончания дня отправки %s. Расписание продления приостановлено, доступ отключён. Система получила запрос закрыть активные сессии; это не подтверждает, что все соединения уже завершены. Если вы оплатили счёт, свяжитесь с администратором для проверки и восстановления доступа.", s.Invoice.Number, s.Invoice.SentDate)
+	client := templates.Render("lifecycle/overdue_client", templates.Data{InvoiceNumber: s.Invoice.Number, SentDate: s.Invoice.SentDate})
 	out := []queue.Draft{{BotID: botID, ChatID: s.ChatID, Key: prefix + ":overdue:client", Text: client}}
 	for _, id := range sortedIDs(admins) {
-		out = append(out, queue.Draft{BotID: botID, ChatID: id, Key: prefix + ":overdue:admin:" + strconv.FormatInt(id, 10), Text: fmt.Sprintf("Просрочка обработана: Telegram ID %d, счёт №%s. Recurring приостановлен, S-UI отключён; closeSessions принял запрос, фактическое завершение всех соединений не подтверждено.", s.TelegramID, s.Invoice.Number)})
+		out = append(out, queue.Draft{BotID: botID, ChatID: id, Key: prefix + ":overdue:admin:" + strconv.FormatInt(id, 10), Text: templates.Render("lifecycle/overdue_admin", templates.Data{ActorID: strconv.FormatInt(s.TelegramID, 10), InvoiceNumber: s.Invoice.Number})})
 	}
 	return out
 }
@@ -657,7 +657,7 @@ func overdueReviewDrafts(botID int64, admins []int64, s EnforcementSnapshot, cod
 			confirmedSteps = append(confirmedSteps, string(step))
 		}
 	}
-	message := fmt.Sprintf("Просроченный счёт требует ручной проверки. Telegram ID %d, счёт №%s, review_code=%d. Подтверждённые шаги: %s. Автоматическое восстановление и повтор неизвестной записи не выполняются.", s.TelegramID, s.Invoice.Number, code, strings.Join(confirmedSteps, ", "))
+	message := templates.Render("lifecycle/overdue_review_admin", templates.Data{ActorID: strconv.FormatInt(s.TelegramID, 10), InvoiceNumber: s.Invoice.Number, ReviewCode: strconv.Itoa(code), ConfirmedSteps: strings.Join(confirmedSteps, ", ")})
 	out := make([]queue.Draft, 0, len(admins))
 	for _, id := range sortedIDs(admins) {
 		out = append(out, queue.Draft{BotID: botID, ChatID: id, Key: prefix + ":review:" + strconv.Itoa(code) + ":admin:" + strconv.FormatInt(id, 10), Text: message})

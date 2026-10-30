@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -126,13 +128,13 @@ func (s *Store) RecordAutomaticImportIssue(ctx context.Context, bot, actor int64
 	if e != nil {
 		return false, errors.New("could not save import diagnostic")
 	}
-	subject := "Общая сверка клиентов"
+	subject := templates.Render("import/subject_general", templates.Data{})
 	if actor > 0 {
-		subject = fmt.Sprintf("Клиент Telegram %d", actor)
+		subject = templates.Render("import/subject_actor", templates.Data{ActorID: strconv.FormatInt(actor, 10)})
 	} else if reason != "source_failure" {
-		subject = "Кандидат " + key[:12]
+		subject = templates.Render("import/subject_candidate", templates.Data{DiagnosticCode: key[:12]})
 	}
-	text := subject + ": автоматический импорт не выполнен. " + explanation + " Код диагностики: " + key[:12] + "."
+	text := templates.Render("import/issue_admin", templates.Data{Subject: subject, Reason: explanation, DiagnosticCode: key[:12]})
 	for _, admin := range admins {
 		if _, e = enqueueOutbox(ctx, tx, queue.Draft{BotID: bot, ChatID: admin, Key: fmt.Sprintf("auto-import:%s:%d:%d", key, generation, admin), Text: text}); e != nil {
 			return false, errors.New("could not enqueue import diagnostic")
@@ -148,18 +150,18 @@ func (s *Store) RecordAutomaticImportIssue(ctx context.Context, bot, actor int64
 }
 
 var importIssueExplanation = map[string]string{
-	"unsupported_profile":          "Проверьте тариф, настройки подписки и заполнение Telegram ID в Invoice Ninja.",
-	"ambiguous_source":             "Не удалось однозначно сопоставить клиентов Invoice Ninja/S-UI, регулярные или текущие счета. Проверьте состояние, идентификаторы и привязки.",
-	"source_failure":               "Не удалось получить полные актуальные данные из API или локальной БД. Проверьте доступность сервисов и БД, права токенов; сверка будет повторена.",
-	"payment_unverified":           "Не удалось однозначно подтвердить полную оплату и расчётный период. Проверьте счета и распределения платежей.",
-	"unpaid_debt":                  "Состояние долга не соответствует поддерживаемому профилю. Проверьте текущий счёт, оплату и состояние доступа.",
-	"active_period_expired":        "Подтверждённый период активной подписки истёк. Проверьте счета и даты.",
-	"source_changed":               "Данные изменились во время проверки. Сверка будет повторена.",
-	"excluded":                     "Аккаунт исключён из обслуживания.",
-	"invalid_policy":               "Проверьте общие настройки тарифа, валюты и подписки.",
-	"paused_history_not_supported": "Нет подходящего подтверждения предыдущего оплаченного периода приостановленной подписки.",
-	"historical_anchor_limit":      "История оплаченных счетов превышает поддерживаемую границу проверки.",
-	"admission_conflict":           "Подтверждённые данные конфликтуют с локальными привязками, разрешениями или незавершённой операцией. Требуется проверка администратора.",
+	"unsupported_profile":          templates.Render("import/unsupported_profile", templates.Data{}),
+	"ambiguous_source":             templates.Render("import/ambiguous_source", templates.Data{}),
+	"source_failure":               templates.Render("import/source_failure", templates.Data{}),
+	"payment_unverified":           templates.Render("import/payment_unverified", templates.Data{}),
+	"unpaid_debt":                  templates.Render("import/unpaid_debt", templates.Data{}),
+	"active_period_expired":        templates.Render("import/active_period_expired", templates.Data{}),
+	"source_changed":               templates.Render("import/source_changed", templates.Data{}),
+	"excluded":                     templates.Render("import/excluded", templates.Data{}),
+	"invalid_policy":               templates.Render("import/invalid_policy", templates.Data{}),
+	"paused_history_not_supported": templates.Render("import/paused_history_not_supported", templates.Data{}),
+	"historical_anchor_limit":      templates.Render("import/historical_anchor_limit", templates.Data{}),
+	"admission_conflict":           templates.Render("import/admission_conflict", templates.Data{}),
 }
 
 func rejectAutomaticImportRegistration(ctx context.Context, tx pgx.Tx, bot, actor, updateID int64) (bool, error) {
@@ -170,6 +172,6 @@ func rejectAutomaticImportRegistration(ctx context.Context, tx pgx.Tx, bot, acto
 	if !blocked {
 		return false, nil
 	}
-	_, e := enqueueOutbox(ctx, tx, queue.Draft{BotID: bot, ChatID: actor, Key: fmt.Sprintf("auto-import-registration:%d", updateID), Text: "Не удалось однозначно связать существующую подписку. Администратор уведомлён; повторный клиент и новый счёт не создаются."})
+	_, e := enqueueOutbox(ctx, tx, queue.Draft{BotID: bot, ChatID: actor, Key: fmt.Sprintf("auto-import-registration:%d", updateID), Text: templates.Render("import/registration_blocked", templates.Data{})})
 	return true, e
 }

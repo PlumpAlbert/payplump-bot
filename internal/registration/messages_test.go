@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 func TestDisplayAmountExactAndBounded(t *testing.T) {
@@ -66,10 +67,8 @@ func TestInvoiceMessagesExactAmountProvidedLinkPlaintextAndStableKeys(t *testing
 	if err != nil || !reflect.DeepEqual(first, again) || len(first) != 3 {
 		t.Fatalf("notifications not stable: %v", err)
 	}
-	wantText := "Счёт №INV-001\nСумма по счёту: 9007199254740993.123456789\nОплатите до 2035-06-12 включительно.\nПеревод по телефону: " + cfg.PaymentPhone +
-		"\nБанк: " + cfg.PaymentBank + "\nПолучатель: " + cfg.PaymentRecipient +
-		"\nОткрыть счёт: " + invoice.Invitations[0].Link + "\nДоступ будет выдан после подтверждения полной оплаты."
-	if first[0].Text != wantText || first[0].Key != "registration:"+s.Token+":invoice:client" || first[0].ChatID != s.ChatID {
+	wantText := templates.Render("registration/invoice", templates.Data{InvoiceNumber: "INV-001", Amount: "9007199254740993.123456789", DueDate: "2035-06-12", PaymentPhone: cfg.PaymentPhone}) + templates.Render("registration/payment_bank", templates.Data{PaymentBank: cfg.PaymentBank}) + templates.Render("registration/payment_recipient", templates.Data{PaymentRecipient: cfg.PaymentRecipient}) + templates.Render("registration/invoice_footer", templates.Data{InvoiceURL: invoice.Invitations[0].Link})
+	if !strings.Contains(first[0].Text, "9007199254740993.123456789") || !strings.Contains(first[0].Text, invoice.Invitations[0].Link) || first[0].Text != wantText || first[0].Key != "registration:"+s.Token+":invoice:client" || first[0].ChatID != s.ChatID {
 		t.Fatalf("unexpected client notification: %+v", first[0])
 	}
 	for i, draft := range first {
@@ -89,7 +88,7 @@ func TestInvoiceMessagesExactAmountProvidedLinkPlaintextAndStableKeys(t *testing
 	cfg.PaymentBank, cfg.PaymentRecipient = "", ""
 	s.DisplayName = " "
 	minimal, err := invoiceMessages(s, invoice, cfg, admins)
-	if err != nil || strings.Contains(minimal[0].Text, "Банк:") || strings.Contains(minimal[0].Text, "Получатель:") || !strings.Contains(minimal[1].Text, "Клиент Telegram") {
+	if err != nil || minimal[0].Text != templates.Render("registration/invoice", templates.Data{InvoiceNumber: "INV-001", Amount: "9007199254740993.123456789", DueDate: "2035-06-12", PaymentPhone: cfg.PaymentPhone})+templates.Render("registration/invoice_footer", templates.Data{InvoiceURL: invoice.Invitations[0].Link}) || !strings.Contains(minimal[1].Text, templates.Render("registration/default_name", templates.Data{})) {
 		t.Fatalf("optional payment details / fallback: %v", err)
 	}
 }

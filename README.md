@@ -111,6 +111,7 @@ startup fences. Используйте его **только с disposable БД*
 - [Резервное копирование](docs/backup-restore.md), [операторские инструменты](docs/operator.md).
 - [Платежи](docs/payments.md), [счета и продления](docs/invoice-lifecycle.md).
 - [Меню](docs/client-menu.md), [рассылки](docs/admin-broadcast.md).
+- [Редактирование текстов Telegram](templates/README.md) (нужна пересборка образа).
 - [API-контракты](docs/integrations.md), [расширенный ручной release](docs/release.md).
 - [Бизнес-требования](spec.md), [история реализации](IMPLEMENTATION_PLAN.md).
 

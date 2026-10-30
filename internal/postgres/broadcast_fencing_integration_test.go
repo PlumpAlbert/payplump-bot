@@ -4,13 +4,13 @@ package postgres
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/broadcast"
 	"github.com/PlumpAlbert/payplump-bot/internal/clientmenu"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 func broadcastTestPolicy() broadcast.Policy {
@@ -58,7 +58,7 @@ func TestBroadcastFrozenDeliveryAndTerminalSummaryCannotBeRearmed(t *testing.T) 
 		t.Fatal(e)
 	}
 	broadcastTestMembers(t, s, ctx, bot, 51)
-	a := broadcastResponseToken(t, broadcastTestAction(t, s, ctx, bot, p, 1, "/broadcast_text synthetic immutable body"), "Токен: ")
+	a := broadcastResponseToken(t, broadcastTestAction(t, s, ctx, bot, p, 1, "/broadcast_text synthetic immutable body"), "/broadcast_all ")
 	b := broadcastResponseToken(t, broadcastTestAction(t, s, ctx, bot, p, 2, "/broadcast_all "+a), "/broadcast_confirm ")
 	var draft int64
 	if e := s.pool.QueryRow(ctx, `SELECT id FROM broadcast_drafts WHERE bot_id=$1 AND state='audience'`, bot).Scan(&draft); e != nil {
@@ -69,7 +69,7 @@ func TestBroadcastFrozenDeliveryAndTerminalSummaryCannotBeRearmed(t *testing.T) 
 			t.Fatal("frozen preview could be modified")
 		}
 	}
-	if body := broadcastTestAction(t, s, ctx, bot, p, 3, "/broadcast_confirm "+a); !strings.Contains(body, "не найден") {
+	if body := broadcastTestAction(t, s, ctx, bot, p, 3, "/broadcast_confirm "+a); body != templates.Render("broadcast/draft_missing", templates.Data{}) {
 		t.Fatal("old preview token survived nonce rotation")
 	}
 	broadcastTestAction(t, s, ctx, bot, p, 4, "/broadcast_confirm "+b)
@@ -140,9 +140,9 @@ func TestBroadcastMembershipRequiresSameBotPrivateMenuInteraction(t *testing.T) 
 	if _, e := s.RegisterPrivateClient(ctx, TelegramIdentity{TelegramID: 101, ChatID: 101, DisplayName: "unrelated global client"}); e != nil {
 		t.Fatal(e)
 	}
-	a := broadcastResponseToken(t, broadcastTestAction(t, s, ctx, bot, p, 2, "/broadcast_text private members only"), "Токен: ")
+	a := broadcastResponseToken(t, broadcastTestAction(t, s, ctx, bot, p, 2, "/broadcast_text private members only"), "/broadcast_all ")
 	preview := broadcastTestAction(t, s, ctx, bot, p, 3, "/broadcast_all "+a)
-	if !strings.HasPrefix(preview, "Получателей: 1.") {
+	if preview != templates.Render("broadcast/confirm_audience", templates.Data{Count: "1", Token: broadcastResponseToken(t, preview, "/broadcast_confirm ")}) {
 		t.Fatal("foreign-bot or arbitrary global clients were adopted")
 	}
 	var members int

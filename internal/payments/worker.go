@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -15,6 +14,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/integrationhttp"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 type Reader interface {
@@ -165,17 +165,17 @@ func (w *Worker) deferCheck(claim Claim, cause error) {
 func (w *Worker) notices(s Snapshot, d Decision) Notices {
 	digest := sha256.Sum256([]byte(s.InvoiceID))
 	prefix := "payment:" + hex.EncodeToString(digest[:])
-	reviewText := fmt.Sprintf("Оплата требует ручной проверки. Telegram ID %d, локальный клиент #%d.\nПодтверждение изменилось или данные проверки неоднозначны. По этой проверке доступ и recurring не менялись.", s.TelegramID, s.ClientID)
+	reviewText := templates.Render("payments/review_admin", templates.Data{ActorID: strconv.FormatInt(s.TelegramID, 10), ClientID: strconv.FormatInt(s.ClientID, 10)})
 	var notices Notices
 	for _, id := range w.admins {
 		notices.Review = append(notices.Review, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":review:admin:" + strconv.FormatInt(id, 10), Text: reviewText})
 	}
 	if d.Kind == Verified && s.ImportedBaselineProofHash == ([32]byte{}) {
 		p := d.Proof
-		body := fmt.Sprintf("Платёж по счёту №%s проверен.\nСумма: %s. Дата платежа: %s.\nРасчётная дата следующего счёта: %s.\nЭто подтверждение платежа, не состояния доступа. Настройка доступа выполняется отдельно; проверьте статус в меню или обратитесь к администратору.", p.InvoiceNumber, p.Amount, p.PaymentDate, p.NextInvoiceDate)
+		body := templates.Render("payments/confirmed_client", templates.Data{InvoiceNumber: p.InvoiceNumber, Amount: p.Amount, PaymentDate: p.PaymentDate, NextInvoiceDate: p.NextInvoiceDate})
 		notices.Confirmed = append(notices.Confirmed, queue.Draft{BotID: w.botID, ChatID: s.ChatID, Key: prefix + ":confirmed:client", Text: body})
 		for _, id := range w.admins {
-			notices.Confirmed = append(notices.Confirmed, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":confirmed:admin:" + strconv.FormatInt(id, 10), Text: fmt.Sprintf("Платёж проверен: Telegram ID %d, счёт №%s, сумма %s, Payment.date %s, следующая расчётная дата %s. Это наблюдение платежа; настройка доступа и recurring учитывается отдельно.", s.TelegramID, p.InvoiceNumber, p.Amount, p.PaymentDate, p.NextInvoiceDate)})
+			notices.Confirmed = append(notices.Confirmed, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":confirmed:admin:" + strconv.FormatInt(id, 10), Text: templates.Render("payments/confirmed_admin", templates.Data{ActorID: strconv.FormatInt(s.TelegramID, 10), InvoiceNumber: p.InvoiceNumber, Amount: p.Amount, PaymentDate: p.PaymentDate, NextInvoiceDate: p.NextInvoiceDate})})
 		}
 	}
 	return notices

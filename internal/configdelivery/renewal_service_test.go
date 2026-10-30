@@ -3,11 +3,13 @@ package configdelivery
 import (
 	"context"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 func prepareRenewalDelivery(t *testing.T, f *deliveryFixture) {
@@ -58,7 +60,8 @@ func TestRenewalDeliveryUsesCurrentProofAndPreservesSubscriptionURL(t *testing.T
 	if f.store.original.Entitlement.Activation.Proof.InvoiceID != "invoice-A" || f.store.original.Entitlement.CurrentProof.InvoiceID != "invoice-B" {
 		t.Fatal("renewal replaced the immutable first-activation audit")
 	}
-	if f.tg.content.Text != "Ваша персональная ссылка на подписку:\nhttps://subscription.invalid/sub/"+url.PathEscape(f.store.view.Entitlement.Binding.Name)+"?format=json\n\nПомощь: /help" {
+	expectedURL := "https://subscription.invalid/sub/" + url.PathEscape(f.store.view.Entitlement.Binding.Name) + "?format=json"
+	if !strings.Contains(f.tg.content.Text, expectedURL) || f.tg.content.Text != templates.Render("configdelivery/subscription", templates.Data{SubscriptionURL: expectedURL}) {
 		t.Fatal("renewal changed the existing personal subscription URL")
 	}
 }

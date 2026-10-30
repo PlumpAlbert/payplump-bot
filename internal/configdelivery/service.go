@@ -19,6 +19,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 // Providers deliberately exposes only GET capabilities. Neither reconciliation,
@@ -53,7 +54,7 @@ func (*Service) GoString() string { return "[protected configuration service]" }
 
 const databaseTimeout = 5 * time.Second
 
-const denialText = "Не удалось подтвердить безопасную выдачу конфигурации по этому запросу. Проверьте /status или обратитесь к администратору. Ранее выданную подписку не удаляйте."
+var denialText = templates.Render("configdelivery/denied", templates.Data{})
 
 func New(store Store, providers Providers, transport Transport, botID int64, cfg Config, logger *slog.Logger) (*Service, error) {
 	if err := cfg.Validate(); err != nil {
@@ -178,7 +179,7 @@ func (s *Service) Deliver(ctx context.Context, m queue.Message) (int64, error) {
 			if err != nil {
 				return telegram.ProtectedMessage{}, ErrDenied
 			}
-			text = "Ваша персональная ссылка на подписку:\n" + uri + "\n\nПомощь: /help"
+			text = templates.Render("configdelivery/subscription", templates.Data{SubscriptionURL: uri})
 		}
 		if err := ctx.Err(); err != nil {
 			return telegram.ProtectedMessage{}, err

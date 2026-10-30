@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math/big"
 	"slices"
@@ -22,6 +21,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 var (
@@ -873,7 +873,7 @@ func (w *RenewalWorker) holdCurrent(claim queue.Operation, code int) {
 func (w *RenewalWorker) reviewNotices(s RenewalSnapshot, code int) []queue.Draft {
 	digest := sha256.Sum256([]byte(s.InvoiceID))
 	prefix := "renewal:" + hex.EncodeToString(digest[:]) + ":review"
-	body := fmt.Sprintf("Продление требует ручной проверки. Telegram ID %d, локальный клиент #%d, счёт %s. Автоматическое восстановление остановлено; проверьте состояние вручную. Код: %d.", s.TelegramID, s.ClientID, s.InvoiceID, code)
+	body := templates.Render("lifecycle/renewal_review_admin", templates.Data{ActorID: strconv.FormatInt(s.TelegramID, 10), ClientID: strconv.FormatInt(s.ClientID, 10), InvoiceID: s.InvoiceID, ReviewCode: strconv.Itoa(code)})
 	out := make([]queue.Draft, 0, len(w.admins))
 	for _, id := range w.admins {
 		out = append(out, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":admin:" + strconv.FormatInt(id, 10), Text: body})
@@ -884,10 +884,10 @@ func (w *RenewalWorker) reviewNotices(s RenewalSnapshot, code int) []queue.Draft
 func (w *RenewalWorker) successNotices(s RenewalSnapshot, plan RenewalPlan) []queue.Draft {
 	digest := sha256.Sum256([]byte(s.InvoiceID))
 	prefix := "renewal:" + hex.EncodeToString(digest[:])
-	text := fmt.Sprintf("Платёж по счёту №%s подтверждён, срок обслуживания учётной записи продлён до %s. Настройки для подключения не пересылались, а само подключение не проверялось.", s.Proof.InvoiceNumber, plan.TargetDate)
+	text := templates.Render("lifecycle/renewal_client", templates.Data{InvoiceNumber: s.Proof.InvoiceNumber, TargetDate: plan.TargetDate})
 	out := []queue.Draft{{BotID: w.botID, ChatID: s.ChatID, Key: prefix + ":client", Text: text}}
 	for _, id := range w.admins {
-		out = append(out, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":admin:" + strconv.FormatInt(id, 10), Text: fmt.Sprintf("Продление завершено: Telegram ID %d, счёт №%s, сумма %s %s, дата платежа %s, новый срок %s. Проверка подключения не выполнялась.", s.TelegramID, s.Proof.InvoiceNumber, s.Proof.Amount, s.Proof.CurrencyID, s.Proof.PaymentDate, plan.TargetDate)})
+		out = append(out, queue.Draft{BotID: w.botID, ChatID: id, Key: prefix + ":admin:" + strconv.FormatInt(id, 10), Text: templates.Render("lifecycle/renewal_admin", templates.Data{ActorID: strconv.FormatInt(s.TelegramID, 10), InvoiceNumber: s.Proof.InvoiceNumber, Amount: s.Proof.Amount, CurrencyID: s.Proof.CurrencyID, PaymentDate: s.Proof.PaymentDate, TargetDate: plan.TargetDate})})
 	}
 	return out
 }

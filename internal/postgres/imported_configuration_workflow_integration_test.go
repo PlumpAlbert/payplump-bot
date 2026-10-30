@@ -28,6 +28,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 func importedConfigurationWorkflowRun(t *testing.T, ctx context.Context, s *Store, sender configurationWorkflowSender, botID, target int64, failed bool, logger *slog.Logger) {
@@ -189,7 +190,7 @@ func runImportedBaselineConfiguration(t *testing.T, scenario string) {
 	var target, unknownTarget int64
 	var sentURL string // process memory only; never written to fixtures/logs/DB.
 	var sentDenials, secretSends, chatGets int
-	const denialText = "Не удалось подтвердить безопасную выдачу конфигурации по этому запросу. Проверьте /status или обратитесь к администратору. Ранее выданную подписку не удаляйте."
+	var denialText = templates.Render("configdelivery/denied", templates.Data{})
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodPost {
@@ -324,8 +325,9 @@ func runImportedBaselineConfiguration(t *testing.T, scenario string) {
 	peerMu.Lock()
 	captured := sentURL
 	peerMu.Unlock()
-	u, urlErr := url.Parse(strings.Split(strings.TrimPrefix(captured, "Ваша персональная ссылка на подписку:\n"), "\n")[0])
-	if urlErr != nil || u.Scheme != "https" || u.Host != "subs.invalid" || u.EscapedPath() != "/42" || u.RawQuery != "format=json" || u.Fragment != "" {
+	const expectedURL = "https://subs.invalid/42?format=json"
+	u, urlErr := url.Parse(expectedURL)
+	if !strings.Contains(captured, expectedURL) || captured != templates.Render("configdelivery/subscription", templates.Data{SubscriptionURL: expectedURL}) || urlErr != nil || u.Scheme != "https" || u.Host != "subs.invalid" || u.EscapedPath() != "/42" || u.RawQuery != "format=json" || u.Fragment != "" {
 		t.Fatal("synthetic Telegram client did not receive the canonical Telegram-ID subscription URL")
 	}
 	if strings.Contains(captured, queue.ConfigurationIntentBody) {

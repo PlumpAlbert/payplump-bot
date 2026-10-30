@@ -10,6 +10,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/billing"
 	"github.com/PlumpAlbert/payplump-bot/internal/clientmenu"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 type sentBoundaryMenuReader struct {
@@ -33,7 +34,7 @@ func TestStageOneMenuAndEnforcementUseCanonicalSentDateBoundary(t *testing.T) {
 		SentDate: sentDate, Amount: "100", Balance: "100", PaidToDate: "0",
 	}
 	notices := makeNotices(7, nil, Snapshot{ClientID: 1, ChatID: 101}, observation, 0)
-	if notices.Client == nil || !strings.Contains(notices.Client.Text, "Последний день сохранения доступа при неоплате: 2040-01-03 включительно") {
+	if notices.Client == nil || !strings.Contains(notices.Client.Text, templates.Render("lifecycle/invoice_client", templates.Data{Verb: templates.Render("lifecycle/invoice_issued", templates.Data{}), InvoiceNumber: observation.Number, Balance: "100", SentDate: sentDate})) {
 		t.Fatalf("Stage 1 notice omitted sent-date access boundary: %#v", notices.Client)
 	}
 
@@ -58,9 +59,7 @@ func TestStageOneMenuAndEnforcementUseCanonicalSentDateBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(prepared.Text, "Срок оплаты в Invoice Ninja (не срок доступа): "+dueDate) ||
-		!strings.Contains(prepared.Text, "последний день сохранения доступа при отсутствии оплаты: "+sentDate+" включительно") ||
-		strings.Contains(prepared.Text, "последний день сохранения доступа: "+dueDate) {
+	if !strings.Contains(prepared.Text, templates.Render("clientmenu/invoice", templates.Data{InvoiceNumber: observation.Number, Amount: "100", Balance: "100", DueDate: dueDate, InvoiceURL: reader.invoice.Invitations[0].Link})) || !strings.Contains(prepared.Text, templates.Render("clientmenu/access_deadline", templates.Data{SentDate: sentDate})) || strings.Contains(prepared.Text, templates.Render("clientmenu/access_deadline", templates.Data{SentDate: dueDate})) {
 		t.Fatalf("menu did not separate Invoice Ninja due date from access boundary: %s", prepared.Text)
 	}
 

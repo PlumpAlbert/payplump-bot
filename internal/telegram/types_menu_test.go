@@ -92,7 +92,7 @@ func TestPrivateMenuButtonsRoundTrip(t *testing.T) {
 				t.Fatal("PrivateStart recognized a menu label")
 			}
 			for _, text := range []string{" " + tc.label, tc.label + "\n", tc.label + " 123", strings.ToLower(tc.label)} {
-				if _, _, ok := menuUpdate(text).PrivateMenu("PayplumpBot"); ok {
+				if _, _, ok := menuUpdate(text).PrivateMenu("PayplumpBot"); ok && text != tc.label {
 					t.Fatalf("inexact label accepted: %q", text)
 				}
 			}

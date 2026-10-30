@@ -22,7 +22,7 @@ import (
 
 var _ configdelivery.Store = (*Store)(nil)
 
-const configurationDeniedText = clientmenu.ConfigurationUnavailableText
+var configurationDeniedText = clientmenu.ConfigurationUnavailableText
 
 // Every error crossing this boundary is static or an explicitly safe sentinel.
 func configurationError(err error) error {

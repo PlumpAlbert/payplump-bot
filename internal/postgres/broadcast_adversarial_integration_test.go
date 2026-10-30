@@ -4,11 +4,11 @@ package postgres
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/broadcast"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 func TestBroadcastRecipientLimitRollsBackPartialAudience(t *testing.T) {
@@ -49,13 +49,13 @@ func TestBroadcastRecipientLimitRollsBackPartialAudience(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, `SELECT body FROM outbox WHERE bot_id=$1 AND message_key=$2`, bot, "broadcast-admin:912346:1").Scan(&preview); err != nil {
 		t.Fatal(err)
 	}
-	token := strings.Split(strings.Split(preview, "Токен: ")[1], "\n")[0]
+	token := broadcastResponseToken(t, preview, "/broadcast_all ")
 	apply(2, "/broadcast_all "+token)
 	var denial string
 	if err := s.pool.QueryRow(ctx, `SELECT body FROM outbox WHERE bot_id=$1 AND message_key=$2`, bot, "broadcast-admin:912346:2").Scan(&denial); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(denial, "превышает разрешённый предел") {
+	if denial != templates.Render("broadcast/audience_limit", templates.Data{}) {
 		t.Fatalf("unexpected response: %q", denial)
 	}
 	var draftState string
@@ -104,7 +104,7 @@ func TestBroadcastPolicyRotationRejectsPreparedDraftAndOldActor(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, `SELECT body FROM outbox WHERE bot_id=$1 AND message_key=$2`, bot, "broadcast-admin:912347:2").Scan(&deny); err != nil {
 		t.Fatal(err)
 	}
-	if deny != "Доступ к команде рассылки изменился или команда неверна." {
+	if deny != templates.Render("broadcast/unauthorized", templates.Data{}) {
 		t.Fatal("former administrator was not denied by current database policy")
 	}
 	var drafts, jobs int

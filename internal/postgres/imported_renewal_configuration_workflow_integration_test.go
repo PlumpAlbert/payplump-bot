@@ -28,6 +28,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 // A completed native imported renewal remains eligible for protected
@@ -84,7 +85,7 @@ func TestCompletedImportedRenewalStaleConfigurationRevisionDenied(t *testing.T) 
 	})
 }
 
-const importedConfigurationDenialText = "Не удалось подтвердить безопасную выдачу конфигурации по этому запросу. Проверьте /status или обратитесь к администратору. Ранее выданную подписку не удаляйте."
+var importedConfigurationDenialText = templates.Render("configdelivery/denied", templates.Data{})
 
 func initialRestorationWriteCount(src *initialRestorationSource) int {
 	src.mu.Lock()
@@ -241,15 +242,9 @@ func assertImportedRenewalProtectedConfiguration(t *testing.T, args importedConf
 		if text == importedConfigurationDenialText {
 			denialSends.Add(1)
 		} else {
-			const prefix = "Ваша персональная ссылка на подписку:\n"
-			if !strings.HasPrefix(text, prefix) {
-				t.Error("Telegram received neither the fixed denial nor the canonical subscription URL")
-				http.Error(w, "bad text", http.StatusBadRequest)
-				return
-			}
-			urlText := strings.SplitN(strings.TrimPrefix(text, prefix), "\n", 2)[0]
+			const urlText = "https://subs.invalid/42?format=json"
 			u, parseErr := url.Parse(urlText)
-			if parseErr != nil || u.Scheme != "https" || u.Host != "subs.invalid" || u.EscapedPath() != "/42" || u.RawQuery != "format=json" || u.Fragment != "" || text != prefix+urlText+"\n\nПомощь: /help" {
+			if !strings.Contains(text, urlText) || parseErr != nil || u.Scheme != "https" || u.Host != "subs.invalid" || u.EscapedPath() != "/42" || u.RawQuery != "format=json" || u.Fragment != "" || text != templates.Render("configdelivery/subscription", templates.Data{SubscriptionURL: urlText}) {
 				t.Error("Telegram received a noncanonical personal URL")
 				http.Error(w, "bad URL", http.StatusBadRequest)
 				return

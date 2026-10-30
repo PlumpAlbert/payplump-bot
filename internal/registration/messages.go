@@ -3,7 +3,6 @@ package registration
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/billing"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 func displayAmount(value json.Number) (string, error) { return billing.FormatAmount(value) }
@@ -49,20 +49,20 @@ func invoiceMessages(s Snapshot, invoice invoiceninja.Invoice, cfg Config, admin
 	if link == "" {
 		return nil, errors.New("invoice has no verified public invitation link")
 	}
-	text := fmt.Sprintf("Счёт №%s\nСумма по счёту: %s\nОплатите до %s включительно.\nПеревод по телефону: %s", invoice.Number, amount, invoice.DueDate, cfg.PaymentPhone)
+	text := templates.Render("registration/invoice", templates.Data{InvoiceNumber: invoice.Number, Amount: amount, DueDate: invoice.DueDate, PaymentPhone: cfg.PaymentPhone})
 	if cfg.PaymentBank != "" {
-		text += "\nБанк: " + cfg.PaymentBank
+		text += templates.Render("registration/payment_bank", templates.Data{PaymentBank: cfg.PaymentBank})
 	}
 	if cfg.PaymentRecipient != "" {
-		text += "\nПолучатель: " + cfg.PaymentRecipient
+		text += templates.Render("registration/payment_recipient", templates.Data{PaymentRecipient: cfg.PaymentRecipient})
 	}
-	text += "\nОткрыть счёт: " + link + "\nДоступ будет выдан после подтверждения полной оплаты."
+	text += templates.Render("registration/invoice_footer", templates.Data{InvoiceURL: link})
 	messages := []queue.Draft{{BotID: s.BotID, ChatID: s.ChatID, Key: "registration:" + s.Token + ":invoice:client", Text: text}}
 	name := s.DisplayName
 	if strings.TrimSpace(name) == "" {
-		name = "Клиент Telegram"
+		name = templates.Render("registration/default_name", templates.Data{})
 	}
-	adminText := fmt.Sprintf("Регистрация: %s (Telegram ID %d).\nВыставлен счёт №%s, сумма %s, срок %s.\n%s", name, s.TelegramID, invoice.Number, amount, invoice.DueDate, link)
+	adminText := templates.Render("registration/invoice_admin", templates.Data{DisplayName: name, ActorID: strconv.FormatInt(s.TelegramID, 10), InvoiceNumber: invoice.Number, Amount: amount, DueDate: invoice.DueDate, InvoiceURL: link})
 	for _, id := range admins {
 		messages = append(messages, queue.Draft{BotID: s.BotID, ChatID: id, Key: "registration:" + s.Token + ":invoice:admin:" + strconv.FormatInt(id, 10), Text: adminText})
 	}
@@ -87,22 +87,22 @@ func reviewMessages(s Snapshot, operationID int64, code int, admins []int64) []q
 		return nil
 	}
 	reason := map[int]string{
-		ReviewExistingCustomer: "Существующая запись Invoice Ninja требует контролируемого импорта; повторный первый счёт не создаётся.",
-		ReviewCustomerConflict: "Найдено неоднозначное или изменённое соответствие клиента.",
-		ReviewInvoiceConflict:  "Найдены несовместимые данные или другая история счетов.",
-		ReviewUnknownWrite:     "Результат записи не подтверждён. Автоматический повтор POST запрещён; проверьте Invoice Ninja и журнал задания.",
-		ReviewInvoiceState:     "Состояние или дата счёта требуют проверки. Автоматическое перевыставление остановлено.",
-		ReviewContract:         "Параметры или контракт Invoice Ninja требуют проверки.",
-		ReviewLocalAssociation: "У клиента уже есть другое состояние подписки или внешние соответствия.",
-		ReviewExcludedUser:     "Пользователь исключён владельцем из автоматического биллинга. Внешние записи не менялись.",
+		ReviewExistingCustomer: templates.Render("registration/review_existing_customer", templates.Data{}),
+		ReviewCustomerConflict: templates.Render("registration/review_customer_conflict", templates.Data{}),
+		ReviewInvoiceConflict:  templates.Render("registration/review_invoice_conflict", templates.Data{}),
+		ReviewUnknownWrite:     templates.Render("registration/review_unknown_write", templates.Data{}),
+		ReviewInvoiceState:     templates.Render("registration/review_invoice_state", templates.Data{}),
+		ReviewContract:         templates.Render("registration/review_contract", templates.Data{}),
+		ReviewLocalAssociation: templates.Render("registration/review_local_association", templates.Data{}),
+		ReviewExcludedUser:     templates.Render("registration/review_excluded", templates.Data{}),
 	}[code]
 	if reason == "" {
-		reason = "Регистрация требует ручной проверки."
+		reason = templates.Render("registration/review_default", templates.Data{})
 	}
-	text := fmt.Sprintf("Регистрация, задание #%d, код %d.\nTelegram ID %d.\n%s", operationID, code, s.TelegramID, reason)
+	text := templates.Render("registration/review_admin", templates.Data{OperationID: strconv.FormatInt(operationID, 10), ReviewCode: strconv.Itoa(code), ActorID: strconv.FormatInt(s.TelegramID, 10), Reason: reason})
 	var messages []queue.Draft
 	if s.ChatID > 0 {
-		messages = append(messages, queue.Draft{BotID: s.BotID, ChatID: s.ChatID, Key: "registration:" + s.Token + ":review:client", Text: "Для продолжения регистрации нужна проверка администратора. Ваши текущие настройки доступа не изменялись."})
+		messages = append(messages, queue.Draft{BotID: s.BotID, ChatID: s.ChatID, Key: "registration:" + s.Token + ":review:client", Text: templates.Render("registration/review_client", templates.Data{})})
 	}
 	for _, id := range admins {
 		messages = append(messages, queue.Draft{BotID: s.BotID, ChatID: id, Key: "registration:" + s.Token + ":review:" + strconv.Itoa(code) + ":admin:" + strconv.FormatInt(id, 10), Text: text})
