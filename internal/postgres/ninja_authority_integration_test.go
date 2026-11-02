@@ -234,6 +234,43 @@ func TestAuthorityCreatePersistsFrozenIntentAndCAS(t *testing.T) {
 	}
 	paymentSQL(t, s, ctx, `SELECT c.sui_id='3400' AND sub.payment_date IS NULL FROM clients c JOIN subscriptions sub ON sub.client_id=c.id WHERE c.telegram_id=64000`)
 }
+func TestAuthorityUnknownCreationRetainsFrozenOwnership(t *testing.T) {
+	s, ctx := authorityFixture(t)
+	o := authorityObservation(64001)
+	d := authorityDraft(t, "64001", true)
+	if _, err := s.PrepareAuthorityCreate(ctx, 9123, o, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AuthorizeAuthorityCreate(ctx, 9123, o.Actor, o.SourceHash); err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.LoadAuthorityBindings(ctx, 9123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b[o.Actor].SUIID != 0 || b[o.Actor].Name != d.Name() || b[o.Actor].CredentialsHash != d.CredentialsHash() || b[o.Actor].CustomerID != o.CustomerID {
+		t.Fatal("unknown creation lost its ownership anchor")
+	}
+	foreign := authorityRecord(t, authorityDraft(t, "64001", true), 3401)
+	o.Binding = ninjaauthority.Binding{CustomerID: o.CustomerID, SUIID: foreign.ID(), Name: foreign.Name(), CredentialsHash: foreign.CredentialsHash()}
+	if err = s.SaveAuthorityObservation(ctx, 9123, o); !errors.Is(err, ninjaauthority.ErrConflict) {
+		t.Fatal("same-name foreign record adopted after unknown POST")
+	}
+	o.Binding = b[o.Actor]
+	if err = s.SaveAuthorityObservation(ctx, 9123, o); err != nil {
+		t.Fatal(err)
+	}
+	r := authorityRecord(t, d, 3402)
+	o.Binding.SUIID = r.ID()
+	o.SUIEnabled = true
+	if err = s.SaveAuthorityObservation(ctx, 9123, o); err != nil {
+		t.Fatal(err)
+	}
+	paymentSQL(t, s, ctx, `SELECT dispatched AND NOT completed FROM authority_create_intents WHERE actor_id=64001`)
+	if err = s.AuthorizeAuthorityCreate(ctx, 9123, o.Actor, o.SourceHash); !errors.Is(err, ninjaauthority.ErrUnknown) {
+		t.Fatal("readback rearmed the dispatch")
+	}
+}
 func TestAuthorityOldUnknownGuardAndCreateIntentAreNeverReleased(t *testing.T) {
 	s, ctx := authorityFixture(t)
 	o := authorityObservation(65000)

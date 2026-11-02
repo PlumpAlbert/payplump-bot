@@ -254,6 +254,12 @@ func (s *Service) scan(ctx context.Context) error {
 				}
 				continue
 			}
+			if old.CredentialsHash != ([32]byte{}) && old.CredentialsHash != r.CredentialsHash() {
+				if e = notice(key, actor, "ambiguous_identity", "bound_credentials_changed"); e != nil {
+					return e
+				}
+				continue
+			}
 			o.Binding = Binding{CustomerID: c.ID, SUIID: r.ID(), Name: r.Name(), CredentialsHash: r.CredentialsHash()}
 			o.InboundIDs = r.InboundIDs()
 			slices.Sort(o.InboundIDs)
@@ -267,7 +273,7 @@ func (s *Service) scan(ctx context.Context) error {
 				return e
 			}
 		} else {
-			o.Binding = Binding{CustomerID: c.ID, Name: name}
+			o.Binding = Binding{CustomerID: c.ID, Name: name, CredentialsHash: old.CredentialsHash}
 		}
 		// Invoices are observed for menu association, never used to manufacture a
 		// paid period or to decide the state of an existing recurring subscription.

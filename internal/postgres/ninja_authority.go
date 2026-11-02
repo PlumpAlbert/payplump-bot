@@ -134,22 +134,34 @@ func loadAuthorityBindings(ctx context.Context, q authorityQuerier, bot, actorFi
 	if rowErr != nil {
 		return nil, rowErr
 	}
-	rows, err = q.Query(ctx, `SELECT actor_id,draft,record_id FROM authority_create_intents WHERE bot_id=$1 AND completed AND ($2::bigint=0 OR actor_id=$2)`, bot, actorFilter)
+	// An unconfirmed create still owns its frozen credentials. Never adopt a
+	// same-name foreign record while the result of our dispatch is unknown.
+	rows, err = q.Query(ctx, `SELECT actor_id,draft,record_id,customer_id FROM authority_create_intents WHERE bot_id=$1 AND ($2::bigint=0 OR actor_id=$2)`, bot, actorFilter)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var actor, id int64
+		var actor int64
+		var recordID *int64
+		var customer string
 		var raw []byte
 		var d sui.AuthorityCreateDraft
-		if err = rows.Scan(&actor, &raw, &id); err != nil {
+		if err = rows.Scan(&actor, &raw, &recordID, &customer); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal(raw, &d); err != nil {
 			return nil, err
 		}
 		b := out[actor]
+		id := b.SUIID
+		if recordID != nil {
+			id = *recordID
+		}
+		if b.CustomerID != "" && b.CustomerID != customer {
+			return nil, ninjaauthority.ErrConflict
+		}
+		b.CustomerID = customer
 		if (b.SUIID != 0 && b.SUIID != id) || (b.Name != "" && b.Name != d.Name()) || (b.CredentialsHash != ([32]byte{}) && b.CredentialsHash != d.CredentialsHash()) {
 			return nil, ninjaauthority.ErrConflict
 		}

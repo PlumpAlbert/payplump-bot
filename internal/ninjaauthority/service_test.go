@@ -341,6 +341,25 @@ func TestAuthorityFreshInventoryDuplicateIDPreventsDispatch(t *testing.T) {
 		t.Fatal("ambiguous fresh inventory authorized creation")
 	}
 }
+func TestAuthorityUnknownIntentDoesNotAdoptSameNameForeignCredentials(t *testing.T) {
+	s, st, _, p := fixture(t, "2", false)
+	d, err := sui.NewAuthorityCreateDraft("42", true, []int64{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.bindings[42] = Binding{CustomerID: "customer-42", Name: d.Name(), CredentialsHash: d.CredentialsHash()}
+	foreign, err := sui.NewAuthorityCreateDraft("42", true, []int64{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.records = []sui.ClientRecord{draftRecord(foreign, 7)}
+	if err = s.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p.posts != 0 || st.observations[42].Actor != 0 {
+		t.Fatal("unknown intent adopted a foreign same-name account")
+	}
+}
 func TestAuthorityMissingBoundSUIKeepsIdentityAndObservesNinja(t *testing.T) {
 	s, st, n, p := fixture(t, "2", false)
 	if err := s.Scan(context.Background()); err != nil {
