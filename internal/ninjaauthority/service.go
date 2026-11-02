@@ -258,6 +258,14 @@ func (s *Service) scan(ctx context.Context) error {
 			o.InboundIDs = r.InboundIDs()
 			slices.Sort(o.InboundIDs)
 			o.SUIEnabled = r.Enabled()
+		} else if old.SUIID > 0 {
+			// Missing is not permission to discard an established binding or
+			// recreate a possibly unresolved historic account. Still observe Ninja.
+			o.Binding = old
+			o.Binding.CustomerID = c.ID
+			if e = notice(key+":missing_sui", actor, "bound_sui_missing", "absent_from_complete_inventory"); e != nil {
+				return e
+			}
 		} else {
 			o.Binding = Binding{CustomerID: c.ID, Name: name}
 		}
@@ -311,7 +319,7 @@ func (s *Service) scan(ctx context.Context) error {
 			}
 			continue
 		}
-		if len(matches) == 0 && o.StateKnown && reason == "" {
+		if len(matches) == 0 && old.SUIID == 0 && o.StateKnown && reason == "" {
 			created, createErr := s.create(ctx, o)
 			if createErr != nil {
 				if e = notice(key+":create", actor, "creation_needs_review", "creation_unconfirmed"); e != nil {
@@ -330,12 +338,12 @@ func (s *Service) scan(ctx context.Context) error {
 			panelNames[created.Name()] = []sui.ClientRecord{created}
 			matched[created.ID()] = true
 		}
-		if o.Binding.SUIID > 0 && o.StateKnown && o.SUIEnabled != o.Enabled {
+		if len(matches) == 1 && o.StateKnown && o.SUIEnabled != o.Enabled {
 			if e = notice(key+":enabled", actor, "state_mismatch", fmt.Sprintf("ninja=%t,sui=%t", o.Enabled, o.SUIEnabled)); e != nil {
 				return e
 			}
 		}
-		if o.Binding.SUIID > 0 && !slices.Equal(o.InboundIDs, s.cfg.InboundIDs) {
+		if len(matches) == 1 && !slices.Equal(o.InboundIDs, s.cfg.InboundIDs) {
 			if e = notice(key+":inbounds", actor, "inbound_mismatch", fmt.Sprint(o.InboundIDs, s.cfg.InboundIDs)); e != nil {
 				return e
 			}

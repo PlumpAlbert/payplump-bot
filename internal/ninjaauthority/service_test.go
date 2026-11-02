@@ -341,6 +341,22 @@ func TestAuthorityFreshInventoryDuplicateIDPreventsDispatch(t *testing.T) {
 		t.Fatal("ambiguous fresh inventory authorized creation")
 	}
 }
+func TestAuthorityMissingBoundSUIKeepsIdentityAndObservesNinja(t *testing.T) {
+	s, st, n, p := fixture(t, "2", false)
+	if err := s.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	original := st.bindings[42]
+	p.records = nil
+	n.records[0].StatusID = "3"
+	if err := s.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	o := st.observations[42]
+	if p.posts != 1 || o.Binding != original || !o.StateKnown || o.Enabled || o.SUIEnabled {
+		t.Fatal("missing binding lost, recreated or blocked Ninja observation")
+	}
+}
 func TestAuthorityMissingCustomerInvalidatesObservation(t *testing.T) {
 	s, st, n, p := fixture(t, "2", false)
 	if err := s.Scan(context.Background()); err != nil {

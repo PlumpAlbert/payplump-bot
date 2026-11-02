@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
+	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 )
 
 // Install the exact pre-010 schema with the same immutable checksum ledger used
@@ -93,20 +95,32 @@ func TestSharedDispatchMigrationBackfillsUnknownActivationGuard(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(setup), 4*time.Minute)
 	t.Cleanup(cancel)
 	applyMigrationsThrough009(t, s, ctx)
-	for _, table := range []string{"verified_import_origins", "imported_runtime_permissions"} {
+	for _, table := range []string{"verified_import_origins", "imported_runtime_permissions", "authority_observations"} {
 		var absent bool
 		if err := s.pool.QueryRow(ctx, `SELECT to_regclass($1) IS NULL`, table).Scan(&absent); err != nil || !absent {
 			t.Fatalf("pre-010 schema unexpectedly contains %s: absent=%v err=%v", table, absent, err)
 		}
 	}
 	seedLegacyActivationAccounts(t, s, ctx, 34200, 34200, 1)
-	seedActivationBatch(t, s, ctx, 34200, activationAllow(34200, 1), 1)
-	op, snapshot := claimOneActivation(t, s, ctx, 34200)
-	payload := activationPayload(t, snapshot, activation.SUICreate)
-	if granted, err := s.PrepareActivationWrite(ctx, op.Lease, snapshot, activation.SUICreate, payload, activationToday); err != nil || !granted {
-		t.Fatalf("reservation granted=%v err=%v", granted, err)
-	}
+	// Build the historical journal with pre-010 SQL, not today's seeding/loading
+	// methods (which legitimately require authority tables and flow_mode).
 	var oldOp int64
+	if err := s.pool.QueryRow(ctx, `INSERT INTO operations(client_id,operation_key,kind,status,attempts,locked_until)
+ SELECT id,'first-activation:'||id::text,'activate_first_subscription','running',1,clock_timestamp()+interval '5 minutes' FROM clients WHERE telegram_id=34200 RETURNING id`).Scan(&oldOp); err != nil {
+		t.Fatal(err)
+	}
+	paymentExec(t, s, ctx, `INSERT INTO activation_flows(operation_id,bot_id,token,invoice_id,proof_hash,policy_hash)
+ SELECT $1,34200,'synthetic-migration-token-34200',pc.invoice_id,pc.proof_hash,$2 FROM payment_confirmations pc JOIN operations op ON op.client_id=pc.client_id WHERE op.id=$1`, oldOp, activationTestPolicy[:])
+	draft, err := sui.NewDisabledDraft([]int64{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paymentExec(t, s, ctx, `INSERT INTO activation_steps(operation_id,step,dispatch_attempt,request) VALUES($1,'sui_create',1,$2)`, oldOp, payload)
+	paymentExec(t, s, ctx, `UPDATE activation_write_guard SET operation_id=$1,step='sui_create',epoch=epoch+1 WHERE id=1`, oldOp)
 	var oldStep string
 	var oldEpoch int64
 	if err := s.pool.QueryRow(ctx, `SELECT operation_id,step,epoch FROM activation_write_guard`).Scan(&oldOp, &oldStep, &oldEpoch); err != nil {
@@ -116,7 +130,7 @@ func TestSharedDispatchMigrationBackfillsUnknownActivationGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ok bool
-	err := s.pool.QueryRow(ctx, `SELECT g.operation_id=$1 AND g.step=$2 AND g.epoch=$3 AND i.origin='activation' AND i.dispatch_attempt=1 AND i.request_hash=sha256(convert_to(st.request::text,'UTF8')) AND (SELECT count(*)=1 FROM external_write_intents) FROM activation_write_guard g JOIN external_write_intents i ON (i.operation_id,i.step)=(g.operation_id,g.step) JOIN activation_steps st ON (st.operation_id,st.step)=(g.operation_id,g.step)`, oldOp, oldStep, oldEpoch).Scan(&ok)
+	err = s.pool.QueryRow(ctx, `SELECT g.operation_id=$1 AND g.step=$2 AND g.epoch=$3 AND i.origin='activation' AND i.dispatch_attempt=1 AND i.request_hash=sha256(convert_to(st.request::text,'UTF8')) AND (SELECT count(*)=1 FROM external_write_intents) FROM activation_write_guard g JOIN external_write_intents i ON (i.operation_id,i.step)=(g.operation_id,g.step) JOIN activation_steps st ON (st.operation_id,st.step)=(g.operation_id,g.step)`, oldOp, oldStep, oldEpoch).Scan(&ok)
 	if err != nil || !ok {
 		t.Fatalf("legacy unknown guard/anchor was not preserved: ok=%v err=%v", ok, err)
 	}
