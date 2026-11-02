@@ -55,13 +55,24 @@ func TestAuthorityActivationJournalCompletesWithoutSUIAudit(t *testing.T) {
 	if err := s.SaveAuthorityObservation(ctx, 123, o); err != nil {
 		t.Fatal(err)
 	}
-	d := authorityDraft(t, "31000", true)
+	d := authorityDraft(t, "31000", false)
 	r := authorityRecord(t, d, 777)
 	o.Binding.SUIID = r.ID()
 	o.Binding.Name = r.Name()
 	o.Binding.CredentialsHash = r.CredentialsHash()
+	o.SUIEnabled = false
+	if err := s.SaveAuthorityObservation(ctx, 123, o); err != nil {
+		t.Fatal(err)
+	}
+	paymentSQL(t, s, ctx, `SELECT NOT EXISTS(SELECT 1 FROM outbox WHERE message_key LIKE 'authority-change:%:configuration_ready')`)
 	o.SUIEnabled = true
 	for i := 0; i < 2; i++ {
+		if err := s.SaveAuthorityObservation(ctx, 123, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, enabled := range []bool{false, true} {
+		o.Enabled = enabled
 		if err := s.SaveAuthorityObservation(ctx, 123, o); err != nil {
 			t.Fatal(err)
 		}

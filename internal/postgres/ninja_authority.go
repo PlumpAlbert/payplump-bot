@@ -213,6 +213,9 @@ func (s *Store) SaveAuthorityObservation(ctx context.Context, bot int64, o ninja
 	if err != nil {
 		return err
 	}
+	if err = checkAuthorityHistoricalScope(ctx, tx, bot, o.Actor, o.ScopeHash); err != nil {
+		return err
+	}
 	var pendingOwn bool
 	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM subscriptions s WHERE s.client_id=$1 AND s.first_invoice_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM verified_import_origins v WHERE v.client_id=$1) AND NOT EXISTS(SELECT 1 FROM operations op WHERE op.client_id=$1 AND op.kind='activate_first_subscription' AND op.status='completed'))`, client).Scan(&pendingOwn)
 	if err != nil {
@@ -329,6 +332,9 @@ func (s *Store) PrepareAuthorityCreate(ctx context.Context, bot int64, o ninjaau
 	if err = authorityCreateGuard(ctx, tx, o.Actor); err != nil {
 		return out, err
 	}
+	if err = checkAuthorityHistoricalScope(ctx, tx, bot, o.Actor, o.ScopeHash); err != nil {
+		return out, err
+	}
 	var conflict bool
 	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM authority_observations WHERE bot_id=$1 AND actor_id=$2 AND (coalesce(observation->>'ScopeHash','')<>$3 OR coalesce(observation->>'CustomerID','')<>$4))`, bot, o.Actor, o.ScopeHash, o.CustomerID).Scan(&conflict)
 	if err != nil {
@@ -377,6 +383,16 @@ func (s *Store) AuthorizeAuthorityCreate(ctx context.Context, bot, actor int64, 
 	}
 	defer rollback(tx)
 	if err = authorityCreateGuard(ctx, tx, actor); err != nil {
+		return err
+	}
+	var scope string
+	if err = tx.QueryRow(ctx, `SELECT scope_hash FROM authority_create_intents WHERE bot_id=$1 AND actor_id=$2 FOR UPDATE`, bot, actor).Scan(&scope); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ninjaauthority.ErrUnknown
+		}
+		return err
+	}
+	if err = checkAuthorityHistoricalScope(ctx, tx, bot, actor, scope); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `SET LOCAL synchronous_commit=on`); err != nil {
@@ -496,6 +512,22 @@ func (s *Store) ReconcileAuthorityNotices(ctx context.Context, bot int64, active
 	}
 	_, err := s.pool.Exec(ctx, `UPDATE authority_notices SET resolved=true,updated_at=clock_timestamp() WHERE bot_id=$1 AND NOT resolved AND updated_at<$3 AND NOT(notice_key=ANY($2::text[]))`, bot, active, started)
 	return err
+}
+
+// Scope established before authority adoption must not be silently replaced
+// when endpoints/tokens change. Revocation retains this historical anchor.
+func checkAuthorityHistoricalScope(ctx context.Context, tx pgx.Tx, bot, actor int64, scope string) error {
+	var conflict bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(
+ SELECT 1 FROM import_admission_policy WHERE bot_id=$1 AND encode(source_scope_hash,'hex')<>$3
+ UNION ALL SELECT 1 FROM verified_import_origins v JOIN clients c ON c.id=v.client_id WHERE c.telegram_id=$2 AND (v.bot_id<>$1 OR encode(v.source_scope_hash,'hex')<>$3))`, bot, actor, scope).Scan(&conflict)
+	if err != nil {
+		return err
+	}
+	if conflict {
+		return ninjaauthority.ErrConflict
+	}
+	return nil
 }
 
 // Old senders may still POST after losing their worker lease. Never release
