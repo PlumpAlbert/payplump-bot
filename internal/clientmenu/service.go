@@ -115,7 +115,7 @@ func (s *Service) Prepare(ctx context.Context, r Request, snapshot Snapshot) (Pr
 	case Configuration:
 		result.Text = ConfigurationUnavailableText
 		if s.cfg.ConfigurationEnabled {
-			if (s.cfg.ConfigurationManagedClients || slices.Contains(s.cfg.ConfigurationAllowedTelegramIDs, r.TelegramID)) && snapshot.Known && snapshot.State == "active" && snapshot.DesiredAccess && !snapshot.PaymentReview && snapshot.SUIID != "" && snapshot.RecurringID != "" {
+			if (s.cfg.ConfigurationManagedClients || slices.Contains(s.cfg.ConfigurationAllowedTelegramIDs, r.TelegramID)) && snapshot.Known && snapshot.State == "active" && snapshot.DesiredAccess && (!snapshot.PaymentReview || snapshot.NinjaAuthority) && snapshot.SUIID != "" && snapshot.RecurringID != "" {
 				result.ProtectedConfiguration = true
 				result.ConfigurationPolicyRevision = s.cfg.ConfigurationPolicyRevision
 				result.ConfigurationPolicyHash = s.cfg.ConfigurationPolicyHash
@@ -140,7 +140,7 @@ func statusText(s Snapshot) string {
 	if s.State == "awaiting_payment" && date(s.PaymentDate) {
 		state = templates.Render("clientmenu/state_setting_up", templates.Data{})
 	}
-	if s.PaymentReview {
+	if s.PaymentReview && !s.NinjaAuthority {
 		state = templates.Render("clientmenu/state_payment_review", templates.Data{})
 	}
 	message := templates.Render("clientmenu/status", templates.Data{State: state})

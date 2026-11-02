@@ -25,13 +25,22 @@ func newActivationProviders(cfg activation.Config) (activation.Providers, error)
 	if err != nil {
 		return activation.Providers{}, errors.New("invalid activation product reader")
 	}
-	panel, err := sui.NewManagedClient(cfg.SUIBaseURL, cfg.SUIToken, cfg.SUIVersion, cfg.HTTPTimeout, cfg.MaxAccounts)
-	if err != nil {
-		return activation.Providers{}, errors.New("invalid activation SUI writer")
+	var panel activation.PanelAPI
+	if !cfg.NinjaAuthority {
+		panel, err = sui.NewManagedClient(cfg.SUIBaseURL, cfg.SUIToken, cfg.SUIVersion, cfg.HTTPTimeout, cfg.MaxAccounts)
+		if err != nil {
+			return activation.Providers{}, errors.New("invalid activation SUI writer")
+		}
 	}
 	recurring, err := invoiceninja.NewRecurringClient(cfg.BaseURL, cfg.Token, cfg.HTTPTimeout, cfg.PageSize, cfg.MaxPages)
 	if err != nil {
 		return activation.Providers{}, errors.New("invalid activation recurring writer")
 	}
 	return activation.Providers{Payments: settlement, Products: products, SUI: panel, Recurring: recurring}, nil
+}
+
+// newAuthorityActivationProviders never constructs a panel writer.
+func newAuthorityActivationProviders(cfg activation.Config) (activation.Providers, error) {
+	cfg.NinjaAuthority = true
+	return newActivationProviders(cfg)
 }

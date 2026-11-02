@@ -43,7 +43,11 @@ func newConfigurationProviders(cfg configdelivery.Config) (configdelivery.Provid
 	if err != nil {
 		return configdelivery.Providers{}, errors.New("invalid configuration recurring reader")
 	}
-	return configdelivery.Providers{Payments: payments, SUI: panel, Recurring: recurring}, nil
+	customers, err := invoiceninja.NewCustomerInventoryReader(cfg.BaseURL, cfg.Token, cfg.HTTPTimeout, cfg.PageSize, cfg.MaxPages)
+	if err != nil {
+		return configdelivery.Providers{}, errors.New("invalid configuration authority reader")
+	}
+	return configdelivery.Providers{Payments: payments, SUI: panel, Recurring: recurring, AuthorityCustomers: customers}, nil
 }
 
 type configurationGateway struct {

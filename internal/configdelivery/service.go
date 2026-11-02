@@ -25,8 +25,9 @@ import (
 // Providers deliberately exposes only GET capabilities. Neither reconciliation,
 // adoption nor any provider write is part of configuration delivery.
 type Providers struct {
-	Payments payments.Reader
-	SUI      interface {
+	AuthorityCustomers AuthorityCustomers
+	Payments           payments.Reader
+	SUI                interface {
 		GetRecord(context.Context, int64) (sui.ClientRecord, error)
 	}
 	Recurring interface {
@@ -213,6 +214,9 @@ func (s *Service) evaluate(ctx context.Context, m queue.Message, v View) Decisio
 		return deny(reason)
 	}
 	e := v.Entitlement
+	if e.Authority != nil {
+		return s.evaluateAuthority(ctx, v)
+	}
 	if e.Imported != nil {
 		return s.evaluateImported(ctx, v)
 	}

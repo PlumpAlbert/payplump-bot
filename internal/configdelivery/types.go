@@ -10,6 +10,7 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
 	"github.com/PlumpAlbert/payplump-bot/internal/importorigin"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
+	"github.com/PlumpAlbert/payplump-bot/internal/ninjaauthority"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
@@ -42,8 +43,9 @@ type Policy struct {
 type OriginKind string
 
 const (
-	OwnedOrigin    OriginKind = "owned"
-	ImportedOrigin OriginKind = "imported"
+	OwnedOrigin     OriginKind = "owned"
+	ImportedOrigin  OriginKind = "imported"
+	AuthorityOrigin OriginKind = "authority"
 )
 
 type PeriodKind string
@@ -52,11 +54,14 @@ const (
 	FirstPeriod            PeriodKind = "first"
 	RenewalPeriod          PeriodKind = "renewal"
 	ImportedBaselinePeriod PeriodKind = "imported_baseline"
+	AuthorityPeriod        PeriodKind = "authority"
 )
 
 type Request struct {
 	OutboxID, BotID, ClientID, ActorID, ChatID, ActivationID                             int64
 	RenewalID                                                                            int64
+	AuthorityRevision                                                                    int64
+	AuthorityHash                                                                        [32]byte
 	Period                                                                               PeriodKind
 	Origin                                                                               OriginKind
 	ImportedOriginClientID, ImportedAdmissionPermissionRevision, ImportedRuntimeRevision int64
@@ -95,7 +100,16 @@ type ImportedBaseline struct {
 func (ImportedBaseline) String() string   { return "[private imported configuration baseline]" }
 func (ImportedBaseline) GoString() string { return "[private imported configuration baseline]" }
 
+type AuthorityEntitlement struct {
+	ClientID, BotID, Revision int64
+	Observation               ninjaauthority.Observation
+}
+
+func (AuthorityEntitlement) String() string   { return "[private authority entitlement]" }
+func (AuthorityEntitlement) GoString() string { return "[private authority entitlement]" }
+
 type Entitlement struct {
+	Authority    *AuthorityEntitlement
 	Imported     *ImportedBaseline
 	Activation   activation.Snapshot // immutable first-activation audit
 	ActivationID int64

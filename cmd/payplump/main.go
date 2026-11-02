@@ -17,14 +17,13 @@ import (
 	"github.com/PlumpAlbert/payplump-bot/internal/broadcast"
 	"github.com/PlumpAlbert/payplump-bot/internal/configdelivery"
 	"github.com/PlumpAlbert/payplump-bot/internal/httpserver"
-	"github.com/PlumpAlbert/payplump-bot/internal/importverify"
 	"github.com/PlumpAlbert/payplump-bot/internal/invoiceninja"
 	"github.com/PlumpAlbert/payplump-bot/internal/lifecycle"
+	"github.com/PlumpAlbert/payplump-bot/internal/ninjaauthority"
 	"github.com/PlumpAlbert/payplump-bot/internal/outbox"
 	"github.com/PlumpAlbert/payplump-bot/internal/payments"
 	"github.com/PlumpAlbert/payplump-bot/internal/postgres"
 	"github.com/PlumpAlbert/payplump-bot/internal/registration"
-	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
 )
 
@@ -139,40 +138,10 @@ func run(logger *slog.Logger, args []string) error {
 			return errors.New("invalid invoice lifecycle API configuration")
 		}
 	}
-	enforcementConfig, err := lifecycle.EnforcementConfigFromEnvironment(get, lifecycleConfig.Enabled, telegramConfig.Enabled, paymentConfig.Enabled, standard)
-	if err != nil {
-		return err
-	}
-	renewalConfig, err := lifecycle.RenewalConfigFromEnvironment(get, lifecycleConfig.Enabled, telegramConfig.Enabled, paymentConfig.Enabled, standard)
-	if err != nil {
-		return err
-	}
-	var renewalRecurring lifecycle.RenewalRecurringWriter
-	var renewalSUI lifecycle.RenewalSUIWriter
-	if renewalConfig.Enabled {
-		recurring, err := invoiceninja.NewRecurringClient(renewalConfig.BaseURL, renewalConfig.Token, renewalConfig.HTTPTimeout, 50, 20)
-		if err != nil {
-			return errors.New("invalid paid renewal recurring writer configuration")
-		}
-		panel, err := sui.NewManagedClient(renewalConfig.SUIBaseURL, renewalConfig.SUIToken, renewalConfig.SUIVersion, renewalConfig.HTTPTimeout, renewalConfig.MaxAccounts)
-		if err != nil {
-			return errors.New("invalid paid renewal S-UI writer configuration")
-		}
-		renewalRecurring, renewalSUI = recurring, panel
-	}
-	var enforcementRecurring *invoiceninja.RecurringClient
-	var enforcementSUI *sui.ManagedClient
-	if enforcementConfig.Enabled {
-		enforcementRecurring, err = invoiceninja.NewRecurringClient(enforcementConfig.BaseURL, enforcementConfig.Token, enforcementConfig.HTTPTimeout, 50, 20)
-		if err != nil {
-			return errors.New("invalid invoice overdue recurring writer configuration")
-		}
-		enforcementSUI, err = sui.NewManagedClient(enforcementConfig.SUIBaseURL, enforcementConfig.SUIToken, enforcementConfig.SUIVersion, enforcementConfig.HTTPTimeout, enforcementConfig.MaxAccounts)
-		if err != nil {
-			return errors.New("invalid invoice overdue S-UI writer configuration")
-		}
-	}
-	activationConfig, err := activation.ConfigFromEnvironment(get, telegramConfig.Enabled, paymentConfig.Enabled, standard)
+	// Ninja owns recurring state/calendar. Legacy renewal/overdue writers are
+	// deliberately not constructed or started: their queued jobs remain audit,
+	// not authority to edit S-UI or recompute an existing Ninja schedule.
+	activationConfig, err := activation.AuthorityConfigFromEnvironment(get, telegramConfig.Enabled, paymentConfig.Enabled, standard)
 	if err != nil {
 		return err
 	}
@@ -181,7 +150,7 @@ func run(logger *slog.Logger, args []string) error {
 		if len(telegramConfig.AdminIDs) > 99 {
 			return errors.New("activation requires at most 99 administrators")
 		}
-		activationAPIs, err = newActivationProviders(activationConfig)
+		activationAPIs, err = newAuthorityActivationProviders(activationConfig)
 		if err != nil {
 			return err
 		}
@@ -191,19 +160,6 @@ func run(logger *slog.Logger, args []string) error {
 		return err
 	}
 	configurationAPIs, err := newConfigurationProviders(configurationConfig)
-	if err != nil {
-		return err
-	}
-	var importedRuntimeConfig importedRuntimeConfig
-	if standard {
-		importedRuntimeConfig, err = serviceImportedRuntimeConfig(enforcementConfig)
-	} else {
-		importedRuntimeConfig, err = loadImportedRuntimeConfig(get, telegramConfig.Enabled, paymentConfig.Enabled)
-	}
-	if err != nil {
-		return err
-	}
-	billingProviders, err := newImportedBillingProviders(importedRuntimeConfig, enforcementConfig, renewalConfig)
 	if err != nil {
 		return err
 	}
@@ -236,10 +192,13 @@ func run(logger *slog.Logger, args []string) error {
 	if err := fenceConfigurationStartup(startupCtx, store, configurationConfig); err != nil {
 		return err
 	}
-	if !standard {
-		if err := fenceImportedRuntimeStartup(startupCtx, store, importedRuntimeConfig); err != nil {
-			return err
-		}
+	// Revoke persisted legacy permissions before readiness; do not clear sticky
+	// unknown-dispatch reservations or fabricate completion of old operations.
+	if err := store.DisableImportedEffectPermissions(startupCtx); err != nil {
+		return err
+	}
+	if err := store.DisableImportedRuntimePermissions(startupCtx); err != nil {
+		return err
 	}
 	cancelStartup()
 	var paymentEndpoint *payments.WebhookHandler
@@ -273,7 +232,7 @@ func run(logger *slog.Logger, args []string) error {
 		}
 		handler = transport.Handler()
 		var botID int64
-		var importer *automaticImporter
+		var importer *ninjaauthority.Service
 		initialize = func(ctx context.Context) error {
 			bot, err := transport.Configure(ctx)
 			if err != nil {
@@ -289,47 +248,6 @@ func run(logger *slog.Logger, args []string) error {
 					return err
 				}
 				broadcastConfig.Revision, configurationConfig.Revision = bp.Revision, cp.Revision
-				// Budget includes bounded retries of the GET-only product lookup.
-				readCtx, stop := context.WithTimeout(ctx, 30*time.Second)
-				verification, err := serviceVerificationConfig(readCtx, get, botID, activationConfig)
-				stop()
-				if err != nil {
-					return err
-				}
-				providers, err := newVerifyProviders(verification)
-				if err != nil {
-					return err
-				}
-				inventory, err := invoiceninja.NewCustomerInventoryReader(verification.ninjaBase, verification.ninjaToken, verification.timeout, verification.pageSize, verification.maxPages)
-				if err != nil {
-					return err
-				}
-				providers.Customers = inventory
-				verifier, err := importverify.New(verification.policy, providers)
-				if err != nil {
-					return err
-				}
-				policyHash, err := verification.policy.Fingerprint()
-				if err != nil {
-					return err
-				}
-				admission, read, effects, err := store.InstallServiceImportPolicies(ctx, botID, policyHash, verification.policy.SourceScopeHash)
-				if err != nil {
-					return err
-				}
-				importedRuntimeConfig.BotID, importedRuntimeConfig.PolicyHash = botID, policyHash
-				importedRuntimeConfig.Revision, importedRuntimeConfig.EffectsRevision = read, effects
-				admins := make([]int64, 0, len(telegramConfig.AdminIDs))
-				for id := range telegramConfig.AdminIDs {
-					admins = append(admins, id)
-				}
-				importer = &automaticImporter{store: store, verifier: verifier, policy: verification.policy, revision: admission, admins: admins, logger: logger, now: time.Now}
-				scanCtx, stop := context.WithTimeout(ctx, 3*time.Minute)
-				err = importer.Scan(scanCtx)
-				stop()
-				if err != nil {
-					return err
-				}
 			} else {
 				if broadcastConfig.Enabled {
 					if err := store.InstallBroadcastPolicy(ctx, botID, broadcastConfig.Policy()); err != nil {
@@ -339,11 +257,21 @@ func run(logger *slog.Logger, args []string) error {
 				if err := store.InstallConfigurationPolicy(ctx, botID, configurationConfig.Policy()); err != nil {
 					return err
 				}
-				if err := installImportedRuntimePermission(ctx, store, botID, importedRuntimeConfig); err != nil {
+			}
+			if activationConfig.Enabled {
+				admins := make([]int64, 0, len(telegramConfig.AdminIDs))
+				for id := range telegramConfig.AdminIDs {
+					admins = append(admins, id)
+				}
+				importer, err = newAuthorityReconciler(store, botID, admins, activationConfig, logger)
+				if err != nil {
 					return err
 				}
-				if err := installImportedEffectPermission(ctx, store, botID, importedRuntimeConfig); err != nil {
-					return err
+				scanCtx, stop := context.WithTimeout(ctx, 3*time.Minute)
+				err = importer.Scan(scanCtx)
+				stop()
+				if err != nil {
+					return errors.New("Ninja authority startup reconciliation failed")
 				}
 			}
 			menu, err := newMenuGatewayWithConfiguration(store, configurationConfig)
@@ -412,32 +340,12 @@ func run(logger *slog.Logger, args []string) error {
 				}
 				workers = append(workers, worker.Run)
 			}
-			if enforcementConfig.Enabled {
-				var worker *lifecycle.EnforcementWorker
-				if billingProviders.Enforcement != nil {
-					worker, err = lifecycle.NewEnforcementWorkerWithImported(store, lifecycleAPI, enforcementRecurring, billingProviders.Enforcement, enforcementSUI, botID, admins, enforcementConfig, logger)
-				} else {
-					worker, err = lifecycle.NewEnforcementWorker(store, lifecycleAPI, enforcementRecurring, enforcementSUI, botID, admins, enforcementConfig, logger)
-				}
-				if err != nil {
-					return err
-				}
-				workers = append(workers, worker.Run)
-			}
-			if renewalConfig.Enabled {
-				var worker *lifecycle.RenewalWorker
-				if billingProviders.Renewal != nil {
-					worker, err = lifecycle.NewRenewalWorkerWithImported(store, lifecycleAPI, paymentAPI, renewalRecurring, billingProviders.Renewal, renewalSUI, botID, admins, paymentConfig.CurrencyID, renewalConfig, logger)
-				} else {
-					worker, err = lifecycle.NewRenewalWorker(store, lifecycleAPI, paymentAPI, renewalRecurring, renewalSUI, botID, admins, paymentConfig.CurrencyID, renewalConfig, logger)
-				}
-				if err != nil {
-					return err
-				}
-				workers = append(workers, worker.Run)
-			}
 			if activationConfig.Enabled {
-				provisioner, err := activation.New(store, activationAPIs, botID, admins, activationConfig, logger)
+				activationStore, err := postgres.NewAuthorityActivationStore(store, activationConfig)
+				if err != nil {
+					return err
+				}
+				provisioner, err := activation.New(activationStore, activationAPIs, botID, admins, activationConfig, logger)
 				if err != nil {
 					return err
 				}

@@ -25,14 +25,18 @@ func (r Request) Validate() error {
 	if origin == "" {
 		origin = OwnedOrigin
 	}
-	periodValid := (origin == OwnedOrigin && ((r.Period == FirstPeriod && r.RenewalID == 0) || (r.Period == RenewalPeriod && r.RenewalID > 0)) && r.ActivationID > 0 && r.ImportedOriginClientID == 0 && r.ImportedAdmissionPermissionRevision == 0 && r.ImportedRuntimeRevision == 0) ||
+	authority := origin == AuthorityOrigin
+	periodValid := (authority && r.Period == AuthorityPeriod && r.ActivationID == 0 && r.RenewalID == 0 && r.ImportedOriginClientID == 0 && r.ImportedAdmissionPermissionRevision == 0 && r.ImportedRuntimeRevision == 0 && r.AuthorityRevision > 0 && r.AuthorityHash != ([32]byte{}) && r.ProofHash == ([32]byte{}) && r.InvoiceID == "") || (origin == OwnedOrigin && ((r.Period == FirstPeriod && r.RenewalID == 0) || (r.Period == RenewalPeriod && r.RenewalID > 0)) && r.ActivationID > 0 && r.ImportedOriginClientID == 0 && r.ImportedAdmissionPermissionRevision == 0 && r.ImportedRuntimeRevision == 0) ||
 		(origin == ImportedOrigin && ((r.Period == ImportedBaselinePeriod && r.RenewalID == 0) || (r.Period == RenewalPeriod && r.RenewalID > 0)) && r.ActivationID == 0 && r.ImportedOriginClientID == r.ClientID && r.ImportedAdmissionPermissionRevision > 0 && r.ImportedRuntimeRevision > 0)
-	if r.OutboxID <= 0 || r.BotID <= 0 || r.ClientID <= 0 || r.ActorID <= 0 || r.ChatID != r.ActorID || !periodValid || r.ClientRevision < 0 || r.PolicyRevision < 1 || r.PolicyHash == ([32]byte{}) || r.ProofHash == ([32]byte{}) || r.EntitlementHash == ([32]byte{}) || !activation.ValidID(r.InvoiceID) || r.CreatedAt.IsZero() || !r.ExpiresAt.After(r.CreatedAt) || r.ExpiresAt.Sub(r.CreatedAt) > RequestTTL {
+	if r.OutboxID <= 0 || r.BotID <= 0 || r.ClientID <= 0 || r.ActorID <= 0 || r.ChatID != r.ActorID || !periodValid || r.ClientRevision < 0 || r.PolicyRevision < 1 || r.PolicyHash == ([32]byte{}) || (!authority && r.ProofHash == ([32]byte{})) || (!authority && (r.AuthorityRevision != 0 || r.AuthorityHash != ([32]byte{}))) || r.EntitlementHash == ([32]byte{}) || (!authority && !activation.ValidID(r.InvoiceID)) || r.CreatedAt.IsZero() || !r.ExpiresAt.After(r.CreatedAt) || r.ExpiresAt.Sub(r.CreatedAt) > RequestTTL {
 		return ErrDenied
 	}
 	return nil
 }
 func (e Entitlement) Validate() error {
+	if e.Authority != nil {
+		return e.validateAuthority()
+	}
 	if e.Imported != nil {
 		return e.validateImported()
 	}
@@ -191,6 +195,18 @@ func (e Entitlement) Fingerprint() ([32]byte, error) {
 	if e.Imported != nil {
 		return e.importedFingerprint()
 	}
+	if e.Authority != nil {
+		type authorityFingerprint AuthorityEntitlement
+		raw, err := json.Marshal(struct {
+			Authority      authorityFingerprint
+			ClientRevision int64
+			Period         PeriodKind
+		}{authorityFingerprint(*e.Authority), e.Revision, e.Period})
+		if err != nil {
+			return [32]byte{}, ErrDenied
+		}
+		return sha256.Sum256(raw), nil
+	}
 	s := e.Activation
 	s.WriteEpoch, s.WriterBusy = 0, false // unrelated clients' dispatches are irrelevant.
 	raw, err := json.Marshal(struct {
@@ -259,6 +275,9 @@ func (e Entitlement) Deadline() (time.Time, error) {
 	if e.Validate() != nil {
 		return time.Time{}, ErrDenied
 	}
+	if e.Authority != nil {
+		return e.Authority.Observation.ObservedAt.Add(AuthorityFreshness), nil
+	}
 	if e.Imported != nil {
 		instant := e.Imported.NextSendUTC
 		if e.Period == RenewalPeriod {
@@ -324,6 +343,11 @@ func (v View) Matches() bool {
 	}
 	r, e := v.Request, v.Entitlement
 	hash, err := e.Fingerprint()
+	if e.Authority != nil {
+		a := e.Authority
+		o := a.Observation
+		return err == nil && r.Origin == AuthorityOrigin && r.Period == AuthorityPeriod && r.ClientID == a.ClientID && r.BotID == a.BotID && r.ActorID == o.Actor && r.ChatID == o.Actor && r.ClientRevision == e.Revision && r.AuthorityRevision == a.Revision && r.AuthorityHash == o.Hash() && r.EntitlementHash == hash
+	}
 	if e.Imported != nil {
 		b, c := e.Imported, e.Current
 		origin := r.Origin

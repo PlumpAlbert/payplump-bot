@@ -17,6 +17,8 @@ import (
 )
 
 type Config struct {
+	// NinjaAuthority is selected by service wiring, never by an environment flag.
+	NinjaAuthority bool
 	// ManagedClients selects only actors with bot-owned database provenance.
 	ManagedClients                                         bool
 	Enabled, TelegramEnabled, PaymentsEnabled              bool
@@ -37,7 +39,17 @@ func ConfigFromEnv(telegramEnabled, paymentsEnabled bool) (Config, error) {
 
 // ConfigFromEnvironment reads an explicit environment without mutating process globals.
 func ConfigFromEnvironment(getenv func(string) string, telegramEnabled, paymentsEnabled bool, managed bool) (Config, error) {
-	c := Config{TelegramEnabled: telegramEnabled, PaymentsEnabled: paymentsEnabled, Workers: 1, PageSize: 50, MaxPages: 20, MaxAccounts: 1000, PollInterval: time.Second, HTTPTimeout: 5 * time.Second}
+	return configFromEnvironment(getenv, telegramEnabled, paymentsEnabled, managed, false)
+}
+
+// AuthorityConfigFromEnvironment uses the same billing/payment policy, but the
+// mode is chosen by service wiring before validation, not by an environment flag.
+func AuthorityConfigFromEnvironment(getenv func(string) string, telegramEnabled, paymentsEnabled bool, managed bool) (Config, error) {
+	return configFromEnvironment(getenv, telegramEnabled, paymentsEnabled, managed, true)
+}
+
+func configFromEnvironment(getenv func(string) string, telegramEnabled, paymentsEnabled bool, managed, authority bool) (Config, error) {
+	c := Config{NinjaAuthority: authority, TelegramEnabled: telegramEnabled, PaymentsEnabled: paymentsEnabled, Workers: 1, PageSize: 50, MaxPages: 20, MaxAccounts: 1000, PollInterval: time.Second, HTTPTimeout: 5 * time.Second}
 	if raw := getenv("ACTIVATION_ENABLED"); raw != "" {
 		v, e := strconv.ParseBool(raw)
 		if e != nil {
@@ -95,7 +107,7 @@ func ConfigFromEnvironment(getenv func(string) string, telegramEnabled, payments
 		key      string
 		target   *[]int64
 		required bool
-	}{{"SUI_INBOUND_IDS", &c.InboundIDs, true}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", &c.AllowedTelegramIDs, !managed}, {"REGISTRATION_EXCLUDED_TELEGRAM_IDS", &c.ExcludedTelegramIDs, false}} {
+	}{{"SUI_INBOUND_IDS", &c.InboundIDs, !authority}, {"ACTIVATION_ALLOWED_TELEGRAM_IDS", &c.AllowedTelegramIDs, !managed}, {"REGISTRATION_EXCLUDED_TELEGRAM_IDS", &c.ExcludedTelegramIDs, false}} {
 		raw := strings.TrimSpace(getenv(item.key))
 		if raw == "" {
 			if item.required {
@@ -124,7 +136,11 @@ func (c Config) Validate() error {
 	if !c.ExclusiveWriter {
 		return errors.New("activation requires explicit ACTIVATION_EXCLUSIVE_WRITER=true acknowledgement")
 	}
-	for _, token := range []string{c.Token, c.SUIToken} {
+	tokens := []string{c.Token}
+	if !c.NinjaAuthority {
+		tokens = append(tokens, c.SUIToken)
+	}
+	for _, token := range tokens {
 		if token == "" || !utf8.ValidString(token) || strings.IndexFunc(token, func(r rune) bool { return unicode.IsControl(r) || unicode.IsSpace(r) }) >= 0 {
 			return errors.New("activation API credentials must not contain whitespace or control characters")
 		}
@@ -138,14 +154,16 @@ func (c Config) Validate() error {
 	if c.PollInterval < 100*time.Millisecond || c.PollInterval > time.Minute || c.HTTPTimeout < time.Second || c.HTTPTimeout > 10*time.Second {
 		return errors.New("invalid activation timeouts")
 	}
-	if !idList(c.InboundIDs, 1, 100) || (!c.ManagedClients && !idList(c.AllowedTelegramIDs, 1, 20)) || !idList(c.ExcludedTelegramIDs, 0, 1000) {
+	if (!c.NinjaAuthority && !idList(c.InboundIDs, 1, 100)) || (!c.ManagedClients && !idList(c.AllowedTelegramIDs, 1, 20)) || !idList(c.ExcludedTelegramIDs, 0, 1000) {
 		return errors.New("invalid activation inbound, pilot allowlist or exclusion IDs")
 	}
 	if _, e := invoiceninja.NewRecurringClient(c.BaseURL, c.Token, c.HTTPTimeout, c.PageSize, c.MaxPages); e != nil {
 		return errors.New("invalid activation billing configuration")
 	}
-	if _, e := sui.NewManagedClient(c.SUIBaseURL, c.SUIToken, c.SUIVersion, c.HTTPTimeout, c.MaxAccounts); e != nil {
-		return errors.New("invalid activation SUI configuration")
+	if !c.NinjaAuthority {
+		if _, e := sui.NewManagedClient(c.SUIBaseURL, c.SUIToken, c.SUIVersion, c.HTTPTimeout, c.MaxAccounts); e != nil {
+			return errors.New("invalid activation SUI configuration")
+		}
 	}
 	return nil
 }
@@ -188,6 +206,9 @@ func (c Config) PolicyHash() [32]byte {
 		InclusiveTaxes                                                   bool
 		Inbounds, Allowed, Excluded                                      []int64
 	}{policyVersion(c.ManagedClients), c.BaseURL, c.SUIBaseURL, legacySUIVersionLabel, c.CurrencyID, c.ProductID, c.TelegramIDField, c.InclusiveTaxes, slices.Clone(c.InboundIDs), sorted(c.AllowedTelegramIDs), sorted(c.ExcludedTelegramIDs)})
+	if c.NinjaAuthority {
+		raw = append([]byte("ninja-authority-first-activation:"), raw...)
+	}
 	return sha256.Sum256(raw)
 }
 

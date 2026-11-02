@@ -61,3 +61,13 @@ func TestLegacyActivationLoaderRequiresPaymentVerification(t *testing.T) {
 		t.Fatal("activation did not enforce dependencies")
 	}
 }
+
+func TestAuthorityActivationCapabilitiesNeverConstructSUI(t *testing.T) {
+	c := activation.Config{NinjaAuthority: true, Enabled: true, TelegramEnabled: true, PaymentsEnabled: true, ExclusiveWriter: true, TaxModeConfirmed: true,
+		BaseURL: "https://billing.invalid", Token: "synthetic-token", ProductID: "product-A", CurrencyID: "1", TelegramIDField: "id_number",
+		AllowedTelegramIDs: []int64{101}, Workers: 1, PageSize: 50, MaxPages: 20, MaxAccounts: 100, PollInterval: time.Second, HTTPTimeout: time.Second}
+	p, err := newAuthorityActivationProviders(c)
+	if err != nil || p.Payments == nil || p.Products == nil || p.Recurring == nil || p.SUI != nil {
+		t.Fatal("authority capabilities require/construct a SUI writer")
+	}
+}

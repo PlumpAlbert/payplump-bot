@@ -22,7 +22,7 @@ var _ activation.Store = (*Store)(nil)
 
 // Eligibility is rechecked in a separate statement after account locks. The
 // anti-join is deliberately before LIMIT, including completed/held activations.
-const activationSeedEligible = paymentProvenance + `
+const activationSeedEligible = ownedPaymentTrackingProvenance + `
     AND c.telegram_id = ANY($2::bigint[])
     AND c.sui_id IS NULL AND s.recurring_id IS NULL
     AND s.state = 'awaiting_payment' AND NOT s.desired_access
@@ -41,6 +41,10 @@ func prepareActivationBot(ctx context.Context, tx pgx.Tx, botID int64) error {
 }
 
 func (s *Store) SeedActivations(ctx context.Context, botID int64, allowed []int64, policyHash [32]byte) (count int, err error) {
+	return s.seedActivations(ctx, botID, allowed, policyHash, "")
+}
+
+func (s *Store) seedActivations(ctx context.Context, botID int64, allowed []int64, policyHash [32]byte, mode string) (count int, err error) {
 	defer func() { err = activationStageError("seed activations", err) }()
 	if botID <= 0 || len(allowed) > 1000 || policyHash == ([32]byte{}) {
 		return 0, errors.New("invalid activation seed policy")
@@ -134,9 +138,9 @@ func (s *Store) SeedActivations(ctx context.Context, botID int64, allowed []int6
             INSERT INTO operations (client_id, operation_key, kind)
             SELECT client_id, 'first-activation:' || client_id::text, 'activate_first_subscription'
             FROM candidates ORDER BY client_id ON CONFLICT DO NOTHING RETURNING id, client_id
-        ) INSERT INTO activation_flows (operation_id, bot_id, token, invoice_id, proof_hash, policy_hash)
-            SELECT o.id, $5, c.token, c.invoice_id, c.proof_hash, $6
-            FROM inserted o JOIN candidates c ON c.client_id=o.client_id`, clientIDs, invoices, tokens, hashes, botID, policyHash[:])
+        ) INSERT INTO activation_flows (operation_id, bot_id, token, invoice_id, proof_hash, policy_hash, flow_mode)
+            SELECT o.id, $5, c.token, c.invoice_id, c.proof_hash, $6, $7
+            FROM inserted o JOIN candidates c ON c.client_id=o.client_id`, clientIDs, invoices, tokens, hashes, botID, policyHash[:], mode)
 		if err != nil {
 			return 0, err
 		}
@@ -331,8 +335,8 @@ func readActivationSnapshot(ctx context.Context, tx pgx.Tx, lease queue.Lease, b
         COALESCE(c.invoice_ninja_id, ''), COALESCE(s.current_invoice_id, ''), COALESCE(s.first_invoice_id, ''),
         COALESCE(s.recurring_id, ''), COALESCE(c.sui_id, ''), s.state, s.desired_access,
         COALESCE(s.payment_date::text, ''), COALESCE(s.next_invoice_date::text, ''),
-        f.token, f.policy_hash, f.proof_hash, f.invoice_id, f.review_code,
-        p.bot_id, p.review_code, (`+paymentProvenance+`), g.epoch, (g.operation_id IS NOT NULL)
+        f.token, f.policy_hash, f.proof_hash, f.invoice_id, f.review_code, f.flow_mode,
+        p.bot_id, p.review_code, (`+ownedPaymentTrackingProvenance+`), g.epoch, (g.operation_id IS NOT NULL)
         FROM operations o JOIN activation_flows f ON f.operation_id = o.id
         JOIN clients c ON c.id = o.client_id JOIN subscriptions s ON s.client_id = c.id
         JOIN payment_checks p ON p.client_id = c.id
@@ -341,7 +345,7 @@ func readActivationSnapshot(ctx context.Context, tx pgx.Tx, lease queue.Lease, b
             AND o.status = 'running' AND o.locked_until > clock_timestamp() AND f.bot_id = $1`, botID, lease.ID, lease.Attempt).
 		Scan(&a.ClientID, &a.TelegramID, &a.ChatID, &a.BotID, &a.CustomerID, &a.InvoiceID, &a.FirstInvoiceID,
 			&a.RecurringID, &a.SUIID, &a.State, &a.DesiredAccess, &a.PaymentDate, &a.NextInvoiceDate,
-			&snapshot.Token, &policy, &hash, &invoiceID, &snapshot.ReviewCode, &checkBot, &checkReview, &provenance,
+			&snapshot.Token, &policy, &hash, &invoiceID, &snapshot.ReviewCode, &snapshot.Mode, &checkBot, &checkReview, &provenance,
 			&snapshot.WriteEpoch, &snapshot.WriterBusy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return snapshot, queue.ErrLeaseLost
@@ -400,6 +404,10 @@ func readActivationSnapshot(ctx context.Context, tx pgx.Tx, lease queue.Lease, b
 }
 
 func (s *Store) LoadActivation(ctx context.Context, lease queue.Lease, botID int64) (snapshot activation.Snapshot, err error) {
+	return s.loadActivation(ctx, lease, botID, nil)
+}
+
+func (s *Store) loadActivation(ctx context.Context, lease queue.Lease, botID int64, authorityPolicy *[32]byte) (snapshot activation.Snapshot, err error) {
 	defer func() { err = activationStageError("load activation", err) }()
 	if botID <= 0 || lease.ID <= 0 || lease.Attempt <= 0 {
 		return snapshot, queue.ErrLeaseLost
@@ -419,6 +427,16 @@ func (s *Store) LoadActivation(ctx context.Context, lease queue.Lease, botID int
 	if sourceBot != botID {
 		return snapshot, queue.ErrConflict
 	}
+	if authorityPolicy != nil {
+		// Client, subscription, original confirmation, operation and journal are locked.
+		// Never reclassify a dispatched journal or release an unresolved global guard.
+		if _, err := tx.Exec(ctx, `UPDATE activation_flows f SET flow_mode='ninja_authority', policy_hash=$2
+ WHERE operation_id=$1 AND flow_mode='' AND review_code=0
+ AND NOT EXISTS(SELECT 1 FROM activation_steps WHERE operation_id=f.operation_id)
+ AND NOT EXISTS(SELECT 1 FROM activation_write_guard WHERE operation_id=f.operation_id)`, lease.ID, authorityPolicy[:]); err != nil {
+			return snapshot, err
+		}
+	}
 	snapshot, err = readActivationSnapshot(ctx, tx, lease, botID)
 	if err != nil {
 		return snapshot, err
@@ -435,7 +453,7 @@ func (s *Store) LoadActivation(ctx context.Context, lease queue.Lease, botID int
 }
 
 func authorizeActivation(actual, expected activation.Snapshot, today string) error {
-	if actual.Account != expected.Account || actual.Token != expected.Token || actual.PolicyHash != expected.PolicyHash || actual.Proof.Hash != expected.Proof.Hash {
+	if actual.Mode != expected.Mode || actual.Account != expected.Account || actual.Token != expected.Token || actual.PolicyHash != expected.PolicyHash || actual.Proof.Hash != expected.Proof.Hash {
 		return queue.ErrConflict
 	}
 	if activation.ValidateSnapshot(actual) != nil || actual.PaymentReview || actual.ReviewCode != 0 || !activation.ValidDate(today) ||
@@ -782,7 +800,7 @@ func (s *Store) FinishActivation(ctx context.Context, lease queue.Lease, expecte
 	if next, err := activation.NextStep(actual); err != nil || next != "" {
 		return queue.ErrConflict
 	}
-	for _, step := range activation.OrderedSteps() {
+	for _, step := range activation.StepsForMode(actual.Mode) {
 		intent, ok := actual.Steps[step]
 		if !ok || intent.ExternalID == "" || intent.DispatchAttempt <= 0 || activation.ValidateIntent(actual, step, intent.Payload) != nil {
 			return queue.ErrConflict
@@ -792,8 +810,11 @@ func (s *Store) FinishActivation(ctx context.Context, lease queue.Lease, expecte
 	if actual.Steps[activation.SUIEnable].ExternalID != actual.Steps[activation.SUICreate].ExternalID ||
 		started.ExternalID != created.ExternalID || started.RecurringAmount != created.RecurringAmount ||
 		started.RecurringDatetime != created.RecurringDatetime ||
-		!activation.ValidSUIID(actual.Steps[activation.SUICreate].ExternalID) {
+		(actual.Mode != activation.NinjaAuthorityMode && !activation.ValidSUIID(actual.Steps[activation.SUICreate].ExternalID)) {
 		return queue.ErrConflict
+	}
+	if actual.Mode == activation.NinjaAuthorityMode {
+		return finishAuthorityActivation(ctx, tx, lease, actual)
 	}
 	binding, err := activation.SUIBinding(actual)
 	if err != nil {

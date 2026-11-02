@@ -421,7 +421,7 @@ func (s *Service) verifyCandidate(ctx context.Context, c importplan.Candidate, c
 	if err != nil {
 		return ReasonSourceFailure, PrivateEvidence{}, FailureDiagnostic("sui_settings", "read", err)
 	}
-	if settings.SubURI != "" && settings.SubURI != s.policy.PublicSubscriptionBase {
+	if settings.SubURI != "" && !sui.EquivalentSubscriptionBase(settings.SubURI, s.policy.PublicSubscriptionBase) {
 		return ReasonUnsupported, PrivateEvidence{}, Diagnostic{Stage: "sui_settings", Check: "subscription_base"}
 	}
 	// Use the owner-configured public URL when the panel has no override.
@@ -657,7 +657,7 @@ func legacyRecurringCheck(r invoiceninja.RecurringRecord, productKey, amount, ex
 	if r.FrequencyID != "5" {
 		return "legacy_frequency"
 	}
-	if r.AutoBillEnabled || r.AutoBill != "off" {
+	if !invoiceninja.KnownImportedAutoBillMode(r.AutoBill) {
 		return "legacy_auto_bill"
 	}
 	if r.RemainingCycles != -1 {

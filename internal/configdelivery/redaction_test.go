@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/activation"
+	"github.com/PlumpAlbert/payplump-bot/internal/ninjaauthority"
 	"github.com/PlumpAlbert/payplump-bot/internal/sui"
 	"github.com/PlumpAlbert/payplump-bot/internal/telegram"
 )
@@ -22,7 +23,8 @@ func TestSensitiveDeliveryWrappersRemainRedactedInStructuredAndNestedJSON(t *tes
 	e := Entitlement{Activation: activation.Snapshot{Steps: map[activation.Step]activation.Intent{activation.SUICreate: intent}}, Binding: sui.Binding{Name: marker}}
 	v := View{Request: Request{InvoiceID: marker}, Entitlement: e}
 	message := telegram.ProtectedMessage{Text: "https://subscription.example.test/" + marker, NotAfter: time.Now().Add(time.Minute)}
-	values := []any{cfg, v.Request, e, v, message, intent, e.Activation, e.Binding}
+	a := AuthorityEntitlement{Observation: ninjaauthority.Observation{ScopeHash: marker, CustomerID: marker}}
+	values := []any{a, cfg, v.Request, e, v, message, intent, e.Activation, e.Binding}
 	for _, value := range values {
 		for _, jsonLog := range []bool{false, true} {
 			var output bytes.Buffer
@@ -36,7 +38,7 @@ func TestSensitiveDeliveryWrappersRemainRedactedInStructuredAndNestedJSON(t *tes
 			}
 		}
 	}
-	for _, value := range []any{cfg, v.Request, e, v, message} {
+	for _, value := range []any{a, cfg, v.Request, e, v, message} {
 		raw, err := json.Marshal(struct{ Private any }{value})
 		if err != nil || bytes.Contains(raw, []byte(marker)) || bytes.Contains(raw, []byte("password")) {
 			t.Fatal("sensitive application wrapper escaped nested JSON redaction")

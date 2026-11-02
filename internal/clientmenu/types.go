@@ -55,6 +55,7 @@ type Snapshot struct {
 	ConfigurationRevision        int64
 	State                        string
 	DesiredAccess                bool
+	NinjaAuthority               bool
 	PaymentReview                bool
 	PaymentDate, NextInvoiceDate string
 	CanonicalSentDate            string

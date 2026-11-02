@@ -574,6 +574,13 @@ func readConfigurationRenewalAudit(ctx context.Context, tx pgx.Tx, clientID, bot
 // Imported identity presence is authoritative for mode selection: an imported
 // account never falls back to the owned activation journal reader.
 func readConfigurationEntitlement(ctx context.Context, tx pgx.Tx, botID, actor int64) (configdelivery.Entitlement, error) {
+	var authority bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM authority_observations WHERE bot_id=$1 AND actor_id=$2)`, botID, actor).Scan(&authority); err != nil {
+		return configdelivery.Entitlement{}, err
+	}
+	if authority {
+		return readAuthorityConfigurationEntitlement(ctx, tx, botID, actor)
+	}
 	var imported bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM verified_import_origins io JOIN clients c ON c.id=io.client_id WHERE io.bot_id=$1 AND c.telegram_id=$2)`, botID, actor).Scan(&imported); err != nil {
 		return configdelivery.Entitlement{}, err
@@ -611,6 +618,9 @@ func enqueueConfigurationIntent(ctx context.Context, tx pgx.Tx, prepared clientm
 		return err
 	}
 	clientID := e.Activation.Account.ClientID
+	if e.Authority != nil {
+		clientID = e.Authority.ClientID
+	}
 	if e.Period == configdelivery.ImportedBaselinePeriod || (e.Period == configdelivery.RenewalPeriod && e.Imported != nil) {
 		clientID = e.Current.ClientID
 	}
@@ -625,7 +635,7 @@ func enqueueConfigurationIntent(ctx context.Context, tx pgx.Tx, prepared clientm
 	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
 		return err
 	}
-	if !now.Before(deadline) {
+	if !now.Before(deadline) || (e.Authority != nil && now.Before(e.Authority.Observation.ObservedAt)) {
 		return denied()
 	}
 	fingerprint, err := e.Fingerprint()
@@ -654,6 +664,9 @@ func enqueueConfigurationIntent(ctx context.Context, tx pgx.Tx, prepared clientm
 			invoiceID, proofHash = e.Current.InvoiceID, e.CurrentProof.Hash
 		}
 	}
+	if e.Authority != nil {
+		return enqueueAuthorityConfiguration(ctx, tx, prepared, e, p, fingerprint)
+	}
 	id, err := insertOutbox(ctx, tx, queue.Draft{BotID: r.BotID, ChatID: r.ChatID, Key: r.Key(), Text: queue.ConfigurationIntentBody, ProtectedConfiguration: true})
 	if err != nil {
 		return err
@@ -673,27 +686,28 @@ func validConfigurationMessage(m queue.Message) bool {
 }
 func readConfigurationRequest(ctx context.Context, tx pgx.Tx, m queue.Message) (configdelivery.Request, error) {
 	var r configdelivery.Request
-	var policy, proof, hash []byte
+	var policy, proof, hash, authorityHash []byte
 	var activationID, importedOriginID, importedAdmissionRevision, importedRuntimeRevision *int64
 	var originKind string
 	err := tx.QueryRow(ctx, `SELECT r.outbox_id,r.bot_id,r.client_id,r.actor_id,r.chat_id,r.activation_operation_id,
-        r.invoice_id,r.proof_hash,r.client_revision,r.policy_revision,r.policy_hash,r.entitlement_hash,r.created_at,r.expires_at,r.period_kind,COALESCE(r.renewal_operation_id,0),
-        r.origin_kind,r.imported_origin_client_id,r.imported_admission_permission_revision,r.imported_runtime_revision
+        COALESCE(r.invoice_id,''),r.proof_hash,r.client_revision,r.policy_revision,r.policy_hash,r.entitlement_hash,r.created_at,r.expires_at,r.period_kind,COALESCE(r.renewal_operation_id,0),
+        r.origin_kind,r.imported_origin_client_id,r.imported_admission_permission_revision,r.imported_runtime_revision,COALESCE(r.authority_revision,0),r.authority_hash
         FROM configuration_requests r JOIN outbox o ON o.id=r.outbox_id
         WHERE o.id=$1 AND o.attempts=$2 AND o.status='running' AND o.locked_until>clock_timestamp()
         AND o.bot_id=$3 AND o.chat_id=$4 AND o.protected_configuration AND NOT o.client_menu AND o.body=$5
         AND r.bot_id=o.bot_id AND r.chat_id=o.chat_id AND r.actor_id=r.chat_id`, m.ID, m.Attempt, m.BotID, m.ChatID, queue.ConfigurationIntentBody).Scan(
 		&r.OutboxID, &r.BotID, &r.ClientID, &r.ActorID, &r.ChatID, &activationID, &r.InvoiceID, &proof, &r.ClientRevision, &r.PolicyRevision, &policy, &hash, &r.CreatedAt, &r.ExpiresAt, &r.Period, &r.RenewalID,
-		&originKind, &importedOriginID, &importedAdmissionRevision, &importedRuntimeRevision)
+		&originKind, &importedOriginID, &importedAdmissionRevision, &importedRuntimeRevision, &r.AuthorityRevision, &authorityHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, queue.ErrLeaseLost
 	}
 	if err != nil {
 		return r, err
 	}
-	if len(policy) != 32 || len(proof) != 32 || len(hash) != 32 {
+	if len(policy) != 32 || (originKind != string(configdelivery.AuthorityOrigin) && len(proof) != 32) || len(hash) != 32 || (originKind == string(configdelivery.AuthorityOrigin) && len(authorityHash) != 32) {
 		return r, queue.ErrLeaseLost
 	}
+	copy(r.AuthorityHash[:], authorityHash)
 	copy(r.PolicyHash[:], policy)
 	copy(r.ProofHash[:], proof)
 	copy(r.EntitlementHash[:], hash)
@@ -770,7 +784,7 @@ func readConfigurationView(ctx context.Context, tx pgx.Tx, m queue.Message) (con
 	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
 		return v, err
 	}
-	if !now.Before(r.ExpiresAt) || !now.Before(deadline) {
+	if !now.Before(r.ExpiresAt) || !now.Before(deadline) || (e.Authority != nil && now.Before(e.Authority.Observation.ObservedAt)) {
 		v.Eligible = false
 		v.DenialCode = configdelivery.DeniedExpired
 		return v, nil
@@ -812,6 +826,10 @@ func lockConfigurationAccount(ctx context.Context, tx pgx.Tx, r configdelivery.R
 		return err
 	}
 	if _, err := tx.Exec(ctx, `SELECT client_id FROM payment_checks WHERE client_id=$1 FOR UPDATE`, r.ClientID); err != nil {
+		return err
+	}
+	if r.Origin == configdelivery.AuthorityOrigin {
+		_, err := tx.Exec(ctx, `SELECT client_id FROM authority_observations WHERE bot_id=$1 AND client_id=$2 FOR UPDATE`, r.BotID, r.ClientID)
 		return err
 	}
 	// Lock both immutable first-period and requested current proofs in stable

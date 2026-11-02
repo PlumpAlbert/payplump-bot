@@ -282,6 +282,47 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	if result.Diagnostics != nil || strings.Contains(string(mustJSON(t, result)), "diagnostics") {
 		t.Fatal("successful verification must omit diagnostics")
 	}
+	t.Run("external always policy with terms", func(t *testing.T) {
+		recurring["auto_bill"], recurring["auto_bill_enabled"], recurring["due_date_days"] = "always", true, "terms"
+		defer func() {
+			recurring["auto_bill"], recurring["auto_bill_enabled"], recurring["due_date_days"] = "off", false, "on_receipt"
+			invoiceGets.Store(0)
+		}()
+		now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+		inventory, err := invoiceninja.NewCustomerInventoryReader(server.URL+"/ninja", workflowToken, time.Second, 10, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		autoPolicy, autoProviders := policy, providers
+		autoPolicy.Automatic, autoPolicy.PilotIDs = true, nil
+		autoProviders.Customers = inventory
+		auto, err := New(autoPolicy, autoProviders)
+		if err != nil {
+			t.Fatal(err)
+		}
+		discovered, err := auto.Discover(context.Background(), now, nil)
+		if err != nil || len(discovered) != 1 || discovered[0].Reason != "" {
+			t.Fatalf("always discovery failed: %+v %v", discovered, err)
+		}
+		invoiceGets.Store(0)
+		got, saved, err := svc.Verify(context.Background(), plan, plan.Hash, now)
+		if err != nil || got.Verified != 1 || len(saved) != 1 {
+			t.Fatalf("always verification: %+v %v", got, err)
+		}
+		var frozen invoiceninja.RecurringRecord
+		if err := json.Unmarshal(saved[0].LegacyRecurring, &frozen); err != nil {
+			t.Fatal(err)
+		}
+		if frozen.AutoBill != "always" || !frozen.AutoBillEnabled || frozen.DueDateDays != "terms" {
+			t.Fatal("external policy erased")
+		}
+		if _, err := invoiceninja.NewImportedRecurringProfile(frozen, policy.ProductKey); err != nil {
+			t.Fatal(err)
+		}
+		if saved[0].ProofHash != evidence[0].ProofHash || saved[0].LegacyRecurringHash == evidence[0].LegacyRecurringHash || saved[0].SourceFactsHash == evidence[0].SourceFactsHash || got.EvidenceHash == result.EvidenceHash {
+			t.Fatal("external billing policy must bind source hashes, not payment proof")
+		}
+	})
 	initialEvidenceHash := result.EvidenceHash
 	// Numeric Ninja flags and zero-rate classification labels have no monetary
 	// effect, but must remain frozen in the imported profile and its evidence.
@@ -433,6 +474,16 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 	}
 	assertVerificationDiagnostic(t, baseFailure, Diagnostic{Stage: "sui_settings", Check: "subscription_base"})
 	subscriptionBase = "https://subs.invalid/"
+	// The configured base and panel override may differ only by the final slash
+	// while constructing exactly the same subscription URL. Keep raw source data.
+	subscriptionBase = "https://subs.invalid"
+	slashResult, slashEvidence, slashErr := svc.Verify(context.Background(), plan, plan.Hash, time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC))
+	if slashErr != nil || slashResult.Verified != 1 || len(slashEvidence) != 1 {
+		t.Fatalf("equivalent public URL rejected: reasons=%v err=%v", slashResult.Reasons, slashErr)
+	}
+	if slashEvidence[0].SUISettings.SubURI != subscriptionBase || slashEvidence[0].ProofHash != evidence[0].ProofHash || slashEvidence[0].SourceFactsHash == evidence[0].SourceFactsHash {
+		t.Fatal("equivalent URL erased raw source evidence or changed payment proof")
+	}
 	// An absent panel override does not invalidate an explicitly configured
 	// public base. Preserve the actual empty source setting in the evidence.
 	subscriptionBase = ""
@@ -534,7 +585,7 @@ func TestWorkflowRealGETReadersVerifyLegacyPaidBridge(t *testing.T) {
 		{field: "product_key", value: "other-product", target: line},
 		{field: "quantity", value: 2, target: line},
 		{field: "frequency_id", value: "4", target: recurring},
-		{field: "auto_bill", value: "always", target: recurring},
+		{field: "auto_bill", value: "unknown", target: recurring},
 		{field: "remaining_cycles", value: 1, target: recurring},
 		{field: "paid_to_date", value: 1, target: recurring},
 		{field: "balance", value: 99, target: recurring},

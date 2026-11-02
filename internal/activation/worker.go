@@ -72,8 +72,11 @@ func New(store Store, providers Providers, botID int64, admins []int64, cfg Conf
 	if !cfg.Enabled {
 		return nil, errors.New("activation worker is disabled")
 	}
-	if store == nil || providers.Payments == nil || providers.Products == nil || providers.SUI == nil || providers.Recurring == nil || botID <= 0 {
+	if store == nil || providers.Payments == nil || providers.Products == nil || (!cfg.NinjaAuthority && providers.SUI == nil) || providers.Recurring == nil || botID <= 0 {
 		return nil, errors.New("activation requires a store, providers and verified bot identity")
+	}
+	if cfg.NinjaAuthority && providers.SUI != nil {
+		return nil, errors.New("authority activation must not receive a SUI capability")
 	}
 	ids := slices.Clone(admins)
 	slices.Sort(ids)
@@ -238,21 +241,23 @@ func (w *Worker) validate(s Snapshot, op queue.Operation) (Step, error) {
 	if ValidateSnapshot(s) != nil || s.Account.ClientID != op.ClientID || s.Account.BotID != w.botID || op.Kind != Kind {
 		return "", review(ReviewAssociation)
 	}
-	if s.PolicyHash != w.cfg.PolicyHash() {
-		return "", review(ReviewPolicy)
-	}
-	// An old sender may still be alive. No GET/positive lookup can release its
-	// sticky global barrier or authorize a replacement dispatch.
+	// Unknown original senders always remain audit-held, including legacy SUI intents.
 	for _, intent := range s.Steps {
 		if intent.ExternalID == "" {
 			return "", review(ReviewUnknownWrite)
 		}
 	}
+	if (s.Mode == NinjaAuthorityMode) != w.cfg.NinjaAuthority {
+		return "", review(ReviewPolicy)
+	}
+	if s.PolicyHash != w.cfg.PolicyHash() {
+		return "", review(ReviewPolicy)
+	}
 	next, err := NextStep(s)
 	if err != nil {
 		return "", review(ReviewContract)
 	}
-	for _, step := range OrderedSteps() {
+	for _, step := range StepsForMode(s.Mode) {
 		intent, ok := s.Steps[step]
 		if !ok {
 			continue

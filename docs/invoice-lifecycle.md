@@ -1,5 +1,11 @@
 # Invoice lifecycle: sent-invoice notices and overdue enforcement
 
+> Исторический контракт прежних потоков. Текущий обычный запуск описан в
+> [ninja-authority.md](ninja-authority.md): Ninja определяет состояние;
+> существующий S-UI не изменяется, legacy renewal/overdue writers не запускаются.
+> Защищённая выдача для наблюдаемых клиентов использует отдельный authority origin,
+> а первая собственная активация сохраняет проверку платежа без S-UI шагов.
+
 В обычном режиме lifecycle observation, overdue enforcement и renewal работают без
 отдельных feature flags, pilot allowlists, exclusive-writer numbers или ручных
 ревизий. Заполните бизнес-параметры по [инструкции обычного запуска](configuration.md),

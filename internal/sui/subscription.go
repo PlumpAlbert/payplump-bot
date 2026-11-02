@@ -7,6 +7,15 @@ import (
 	"unicode"
 )
 
+// EquivalentSubscriptionBase compares the URLs this adapter would actually
+// construct. A missing final slash is equivalent; distinct hosts, prefixes,
+// escaped path segments or extra slashes are not silently normalized. No fetch.
+func EquivalentSubscriptionBase(a, b string) bool {
+	left, leftErr := SubscriptionURL(a, "base-comparison")
+	right, rightErr := SubscriptionURL(b, "base-comparison")
+	return leftErr == nil && rightErr == nil && left == right
+}
+
 // SubscriptionURL constructs a URL only; it never fetches a subscription.
 // baseURL is the public subscription base (not necessarily the panel URL).
 // The existing name is preserved verbatim as one escaped path segment.
