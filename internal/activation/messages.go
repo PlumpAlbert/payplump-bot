@@ -19,6 +19,10 @@ func reviewMessages(botID, operationID int64, admins []int64) []queue.Draft {
 }
 
 func completionMessages(s Snapshot, operationID int64, admins []int64) []queue.Draft {
+	// Provisioning is not SUI activation; the authority reconciler owns access notices.
+	if s.Mode == NinjaAuthorityMode {
+		return nil
+	}
 	prefix := "activation:" + strconv.FormatInt(operationID, 10) + ":complete:"
 	text := templates.Render("activation/complete_client", templates.Data{NextInvoiceDate: s.Proof.NextInvoiceDate})
 	messages := []queue.Draft{{BotID: s.Account.BotID, ChatID: s.Account.ChatID, Key: prefix + "client", Text: text}}

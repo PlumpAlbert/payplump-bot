@@ -22,3 +22,6 @@ func (r Request) MarshalJSON() ([]byte, error)          { return json.Marshal(r.
 func (e Entitlement) MarshalJSON() ([]byte, error)      { return json.Marshal(e.String()) }
 func (b ImportedBaseline) MarshalJSON() ([]byte, error) { return json.Marshal(b.String()) }
 func (v View) MarshalJSON() ([]byte, error)             { return json.Marshal(v.String()) }
+
+func (a AuthorityEntitlement) LogValue() slog.Value         { return slog.StringValue(a.String()) }
+func (a AuthorityEntitlement) MarshalJSON() ([]byte, error) { return json.Marshal(a.String()) }

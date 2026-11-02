@@ -20,7 +20,8 @@ var _ payments.Store = (*Store)(nil)
 // Current invoices may advance, but the original customer/first invoice must
 // still match all three confirmed registration steps. Imports are not adopted.
 const paymentProvenance = `
-    c.invoice_ninja_id IS NOT NULL AND c.invoice_ninja_id <> ''
+    NOT EXISTS (SELECT 1 FROM authority_observations authority WHERE authority.client_id=c.id AND authority.bot_id=$1)
+    AND c.invoice_ninja_id IS NOT NULL AND c.invoice_ninja_id <> ''
     AND s.first_invoice_id IS NOT NULL AND s.first_invoice_id <> ''
     AND s.current_invoice_id IS NOT NULL AND s.current_invoice_id <> ''
     AND c.chat_id = c.telegram_id
@@ -42,7 +43,7 @@ const paymentProvenance = `
 
 // Imported payment tracking is permitted only for an immutable admitted
 // origin whose independent runtime and admission permissions are current.
-const importedPaymentProvenance = `EXISTS (
+const importedPaymentProvenance = `NOT EXISTS (SELECT 1 FROM authority_observations authority WHERE authority.client_id=c.id AND authority.bot_id=$1) AND EXISTS (
     SELECT 1 FROM verified_import_origins io
     JOIN imported_runtime_permissions rp ON rp.bot_id=io.bot_id AND rp.enabled
     JOIN import_admission_policy ap ON ap.bot_id=io.bot_id AND ap.enabled

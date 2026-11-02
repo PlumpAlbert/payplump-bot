@@ -55,11 +55,14 @@ func ValidSUIID(value string) bool {
 // must separately deny authorization; a reviewed proof is still an audit fact.
 func ValidateSnapshot(s Snapshot) error {
 	a, p := s.Account, s.Proof
+	if s.Mode != "" && s.Mode != NinjaAuthorityMode {
+		return ErrReviewRequired
+	}
 	if a.ClientID <= 0 || a.TelegramID <= 0 || a.ChatID != a.TelegramID || a.BotID <= 0 || !ValidID(a.CustomerID) || !ValidID(a.InvoiceID) || a.InvoiceID != a.FirstInvoiceID || a.SUIID != "" || a.RecurringID != "" || a.State != "awaiting_payment" || a.DesiredAccess || !tokenPattern.MatchString(s.Token) || s.PolicyHash == ([32]byte{}) || p.Validate() != nil || p.InvoiceID != a.InvoiceID || p.CustomerID != a.CustomerID || p.PaymentDate != a.PaymentDate || p.NextInvoiceDate != a.NextInvoiceDate {
 		return ErrReviewRequired
 	}
 	for step, intent := range s.Steps {
-		if !step.Valid() || len(intent.Payload) == 0 || intent.DispatchAttempt <= 0 || (intent.ExternalID != "" && !ValidID(intent.ExternalID)) {
+		if (s.Mode == NinjaAuthorityMode && (step == SUICreate || step == SUIEnable)) || !step.Valid() || len(intent.Payload) == 0 || intent.DispatchAttempt <= 0 || (intent.ExternalID != "" && !ValidID(intent.ExternalID)) {
 			return ErrReviewRequired
 		}
 		if (step == RecurringCreate || step == RecurringStart) && intent.ExternalID != "" {
@@ -78,7 +81,15 @@ func ValidateSnapshot(s Snapshot) error {
 func NextStep(s Snapshot) (Step, error) {
 	var next Step
 	blocked := false
-	for _, step := range OrderedSteps() {
+	if s.Mode != "" && s.Mode != NinjaAuthorityMode {
+		return "", ErrReviewRequired
+	}
+	for step := range s.Steps {
+		if !step.Valid() || (s.Mode == NinjaAuthorityMode && (step == SUICreate || step == SUIEnable)) {
+			return "", ErrReviewRequired
+		}
+	}
+	for _, step := range StepsForMode(s.Mode) {
 		intent, exists := s.Steps[step]
 		if blocked && exists {
 			return "", ErrReviewRequired
@@ -181,7 +192,7 @@ func SUIBinding(s Snapshot) (sui.Binding, error) {
 // prior confirmed objects. It does not establish provider state or ownership by
 // itself; the worker's final callback performs GET verification first.
 func ValidateIntent(s Snapshot, step Step, raw []byte) error {
-	if ValidateSnapshot(s) != nil || !step.Valid() {
+	if ValidateSnapshot(s) != nil || !step.Valid() || (s.Mode == NinjaAuthorityMode && (step == SUICreate || step == SUIEnable)) {
 		return ErrReviewRequired
 	}
 	switch step {

@@ -45,6 +45,26 @@ func TestConfigurationMenuPreparesOnlyNonsensitiveTypedIntent(t *testing.T) {
 		assertNoMenuText(t, p.Text, "format=json", snapshot.CustomerID, snapshot.InvoiceID, snapshot.RecurringID)
 	}
 }
+func TestAuthorityConfigurationMenuDoesNotInventPaymentRequirement(t *testing.T) {
+	cfg := configurationMenuConfig()
+	snapshot := menuSnapshot()
+	snapshot.State = "active"
+	snapshot.DesiredAccess = true
+	snapshot.SUIID = "17"
+	snapshot.RecurringID = "observed-recurring"
+	snapshot.PaymentReview = true
+	snapshot.NinjaAuthority = true
+	p := prepareMenu(t, newMenuService(t, cfg, menuReader()), clientmenu.Configuration, snapshot)
+	if !p.ProtectedConfiguration {
+		t.Fatal("historical payment review masked current authority")
+	}
+	snapshot.State = "overdue"
+	snapshot.DesiredAccess = false
+	p = prepareMenu(t, newMenuService(t, cfg, menuReader()), clientmenu.Configuration, snapshot)
+	if p.ProtectedConfiguration {
+		t.Fatal("paused authority was allowed")
+	}
+}
 func TestConfigurationMenuScopeIsValidatedAndCopied(t *testing.T) {
 	for _, change := range []func(*clientmenu.Config){func(c *clientmenu.Config) { c.ConfigurationPolicyRevision = 0 }, func(c *clientmenu.Config) { c.ConfigurationPolicyHash = [32]byte{} }, func(c *clientmenu.Config) { c.ConfigurationAllowedTelegramIDs = nil }, func(c *clientmenu.Config) { c.ConfigurationAllowedTelegramIDs = []int64{0} }, func(c *clientmenu.Config) {
 		c.ConfigurationAllowedTelegramIDs = []int64{menuTelegramID, menuTelegramID}

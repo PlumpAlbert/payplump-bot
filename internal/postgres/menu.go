@@ -162,7 +162,8 @@ func readMenuSnapshot(ctx context.Context, reader menuSnapshotReader, botID, act
             COALESCE(s.payment_date::text, ''), COALESCE(s.next_invoice_date::text, ''),
             COALESCE(li.sent_date::text, ''),
             EXISTS (SELECT 1 FROM payment_confirmations pc WHERE pc.client_id=c.id
-                AND pc.invoice_id=s.current_invoice_id AND pc.review_required)
+                AND pc.invoice_id=s.current_invoice_id AND pc.review_required),
+            EXISTS (SELECT 1 FROM authority_observations authority WHERE authority.client_id=c.id AND authority.bot_id=$1)
         FROM clients c LEFT JOIN subscriptions s ON s.client_id = c.id
         LEFT JOIN invoice_lifecycle_invoices li ON li.client_id = c.id
             AND li.invoice_id = s.current_invoice_id AND li.bot_id = $1
@@ -172,7 +173,7 @@ func readMenuSnapshot(ctx context.Context, reader menuSnapshotReader, botID, act
 		&snapshot.ClientID, &chatID, &snapshot.CustomerID, &snapshot.InvoiceID, &snapshot.SUIID,
 		&snapshot.RecurringID, &snapshot.ConfigurationRevision,
 		&subscriptionExists, &snapshot.State, &snapshot.DesiredAccess, &snapshot.PaymentDate, &snapshot.NextInvoiceDate,
-		&snapshot.CanonicalSentDate, &snapshot.PaymentReview,
+		&snapshot.CanonicalSentDate, &snapshot.PaymentReview, &snapshot.NinjaAuthority,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return clientmenu.Snapshot{}, nil

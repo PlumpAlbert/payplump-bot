@@ -65,10 +65,25 @@ type Intent struct {
 func (Intent) String() string   { return "[sensitive activation intent]" }
 func (Intent) GoString() string { return "[sensitive activation intent]" }
 
+const NinjaAuthorityMode = "ninja_authority"
+
+// StepsForMode keeps historical four-step journals distinct from authority provisioning.
+func StepsForMode(mode string) []Step {
+	switch mode {
+	case NinjaAuthorityMode:
+		return []Step{RecurringCreate, RecurringStart}
+	case "":
+		return OrderedSteps()
+	default:
+		return nil
+	}
+}
+
 // Snapshot binds an immutable flow to its original confirmation. PaymentReview
 // includes BOTH sticky confirmation review and the payment check review code.
 // Account is revalidated under locks before reserving a write and finalization.
 type Snapshot struct {
+	Mode          string
 	Account       payments.Snapshot
 	Token         string
 	PolicyHash    [32]byte

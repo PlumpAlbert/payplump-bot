@@ -107,3 +107,20 @@ func TestConfigurationSafeErrorsAndImmutableEquality(t *testing.T) {
 		t.Fatal("stale revision accepted")
 	}
 }
+
+func TestConfigurationAuthorityRequestEquality(t *testing.T) {
+	a := configdelivery.Request{Origin: configdelivery.AuthorityOrigin, AuthorityRevision: 1, AuthorityHash: [32]byte{1}, PolicyRevision: 2, PolicyHash: [32]byte{2}}
+	for _, change := range []func(*configdelivery.Request){
+		func(r *configdelivery.Request) { r.AuthorityRevision++ },
+		func(r *configdelivery.Request) { r.AuthorityHash[0] ^= 1 },
+		func(r *configdelivery.Request) { r.PolicyRevision++ },
+		func(r *configdelivery.Request) { r.PolicyHash[0] ^= 1 },
+		func(r *configdelivery.Request) { r.Origin = configdelivery.OwnedOrigin },
+	} {
+		b := a
+		change(&b)
+		if sameConfigurationRequest(a, b) {
+			t.Fatal("authority or policy mutation accepted")
+		}
+	}
+}

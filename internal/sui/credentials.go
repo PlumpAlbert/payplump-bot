@@ -218,7 +218,17 @@ func validateCreate(r ClientRecord) error {
 	if b, err := hex.DecodeString(w.Name[3:]); err != nil || len(b) != 20 || strings.ToLower(w.Name) != w.Name {
 		return ErrManagedInvalid
 	}
-	if w.ID != 0 || w.Enable || w.Volume != 0 || w.Expiry != 0 || w.Up != 0 || w.Down != 0 || w.CreatedAt != 0 || w.OnlineAt != 0 || w.TotalUp != 0 || w.TotalDown != 0 || w.Desc != "" || w.Group != "" || w.Remark != "" || len(w.Links) != 0 || !safeEnablePolicy(r) || !validInboundIDs(w.Inbounds, true) {
+	if w.Enable {
+		return ErrManagedInvalid
+	}
+	return validateCreateSchema(r)
+}
+
+// validateCreateSchema checks the complete generated payload independently of
+// the caller's name and initial enable policy.
+func validateCreateSchema(r ClientRecord) error {
+	w := r.wire
+	if w.ID != 0 || w.Volume != 0 || w.Expiry != 0 || w.Up != 0 || w.Down != 0 || w.CreatedAt != 0 || w.OnlineAt != 0 || w.TotalUp != 0 || w.TotalDown != 0 || w.Desc != "" || w.Group != "" || w.Remark != "" || len(w.Links) != 0 || !safeEnablePolicy(r) || !validInboundIDs(w.Inbounds, true) {
 		return ErrManagedInvalid
 	}
 	// Validate the exact frontend schema and intentional intra-client sharing.

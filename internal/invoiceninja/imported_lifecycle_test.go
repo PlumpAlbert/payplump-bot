@@ -16,7 +16,8 @@ func importedFixture(t *testing.T, status string) (ImportedRecurringProfile, Rec
 	r.PrivateNotes = "legacy customer note"
 	// Imported accounts keep existing terms; unlike own drafts these need not
 	// be on_receipt. Exercise every imported mutation with nondefault terms.
-	r.DueDateDays = "30"
+	r.DueDateDays = "terms"
+	r.AutoBill, r.AutoBillEnabled = "always", true
 	r.UsesInclusiveTaxes = true // A zero-rate mode is preserved, not normalized away.
 	r.Amount, r.Balance = r.LineItems[0].Cost, r.LineItems[0].Cost
 	r.IsAmountDiscount = true
