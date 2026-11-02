@@ -133,6 +133,22 @@ func (s *Service) Prepare(ctx context.Context, r Request, snapshot Snapshot) (Pr
 }
 
 func statusText(s Snapshot) string {
+	if s.NinjaAuthority {
+		state := templates.Render("clientmenu/state_unknown", templates.Data{})
+		if s.State == "active" && s.DesiredAccess {
+			state = templates.Render("clientmenu/state_active", templates.Data{})
+		}
+		if s.State == "overdue" && !s.DesiredAccess {
+			state = templates.Render("clientmenu/state_authority_disabled", templates.Data{})
+		}
+		message := templates.Render("clientmenu/status", templates.Data{State: state})
+		if date(s.NextInvoiceDate) {
+			message += templates.Render("clientmenu/next_invoice_date", templates.Data{NextInvoiceDate: s.NextInvoiceDate})
+		}
+		// The source's desired state is not proof that existing panel access was
+		// changed, nor that an old payment_date belongs to the current invoice.
+		return message + templates.Render("clientmenu/authority_footer", templates.Data{})
+	}
 	state := map[string]string{"awaiting_payment": templates.Render("clientmenu/state_awaiting_payment", templates.Data{}), "active": templates.Render("clientmenu/state_active", templates.Data{}), "overdue": templates.Render("clientmenu/state_overdue", templates.Data{})}[s.State]
 	if state == "" {
 		state = templates.Render("clientmenu/state_unknown", templates.Data{})
