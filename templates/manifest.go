@@ -11,6 +11,7 @@ var manifest = map[string][]string{
 	"activation/complete_admin":             {"OperationID", "ActorID", "NextInvoiceDate"},
 	"activation/complete_client":            {"NextInvoiceDate"},
 	"activation/review_admin":               {"OperationID"},
+	"broadcast/audience_empty":              {},
 	"broadcast/audience_limit":              {},
 	"broadcast/cancelled":                   {},
 	"broadcast/confirm_audience":            {"Count", "Token"},

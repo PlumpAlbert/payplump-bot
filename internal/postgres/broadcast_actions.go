@@ -118,6 +118,22 @@ func freezeBroadcastAudience(ctx context.Context, tx pgx.Tx, bot, actor int64, p
 	if d.state != "text" || !d.valid || d.rev != p.Revision || !equalBytes(d.hash, p.Hash[:]) {
 		return templates.Render("broadcast/draft_changed", templates.Data{}), nil
 	}
+	if _, e = tx.Exec(ctx, `INSERT INTO broadcast_recipients(draft_id,client_id,actor_id,chat_id) SELECT $1,c.id,c.telegram_id,c.chat_id FROM clients c WHERE `+broadcastEligibilitySQL+` ORDER BY c.id LIMIT $3`, d.id, bot, p.MaxRecipients+1); e != nil {
+		return "", e
+	}
+	var count int
+	if e = tx.QueryRow(ctx, `SELECT count(*) FROM broadcast_recipients WHERE draft_id=$1`, d.id).Scan(&count); e != nil {
+		return "", e
+	}
+	if count == 0 {
+		return templates.Render("broadcast/audience_empty", templates.Data{}), nil
+	}
+	if count > p.MaxRecipients {
+		if _, e = tx.Exec(ctx, `DELETE FROM broadcast_recipients WHERE draft_id=$1`, d.id); e != nil {
+			return "", e
+		}
+		return templates.Render("broadcast/audience_limit", templates.Data{}), nil
+	}
 	tok, e := broadcast.NewToken()
 	if e != nil {
 		return "", e
@@ -125,19 +141,6 @@ func freezeBroadcastAudience(ctx context.Context, tx pgx.Tx, bot, actor int64, p
 	nh, ok := tokenHash(tok)
 	if !ok {
 		return "", broadcast.ErrInvalidCommand
-	}
-	if _, e = tx.Exec(ctx, `INSERT INTO broadcast_recipients(draft_id,client_id,actor_id,chat_id) SELECT $1,c.id,c.telegram_id,c.chat_id FROM broadcast_memberships m JOIN clients c ON c.id=m.client_id WHERE m.bot_id=$2 AND m.actor_id=c.telegram_id AND c.chat_id=c.telegram_id AND c.telegram_id>0 ORDER BY c.id LIMIT $3`, d.id, bot, p.MaxRecipients+1); e != nil {
-		return "", e
-	}
-	var count int
-	if e = tx.QueryRow(ctx, `SELECT count(*) FROM broadcast_recipients WHERE draft_id=$1`, d.id).Scan(&count); e != nil {
-		return "", e
-	}
-	if count > p.MaxRecipients {
-		if _, e = tx.Exec(ctx, `DELETE FROM broadcast_recipients WHERE draft_id=$1`, d.id); e != nil {
-			return "", e
-		}
-		return templates.Render("broadcast/audience_limit", templates.Data{}), nil
 	}
 	tag, e := tx.Exec(ctx, `UPDATE broadcast_drafts SET state='audience',token_hash=$2 WHERE id=$1 AND state='text' AND expires_at>clock_timestamp()`, d.id, nh[:])
 	if e != nil {
@@ -172,6 +175,13 @@ func confirmBroadcast(ctx context.Context, tx pgx.Tx, bot, actor int64, p broadc
 	}
 	if d.state != "audience" || !d.valid || d.rev != p.Revision || !equalBytes(d.hash, p.Hash[:]) {
 		return templates.Render("broadcast/draft_changed", templates.Data{}), nil
+	}
+	var hasRecipients bool
+	if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM broadcast_recipients WHERE draft_id=$1)`, d.id).Scan(&hasRecipients); e != nil {
+		return "", e
+	}
+	if !hasRecipients {
+		return templates.Render("broadcast/audience_empty", templates.Data{}), nil
 	}
 	var job int64
 	e = tx.QueryRow(ctx, `INSERT INTO broadcasts(draft_id,bot_id,creator_id,policy_revision,policy_hash,state) VALUES($1,$2,$3,$4,$5,'pending') RETURNING id`, d.id, bot, actor, p.Revision, p.Hash[:]).Scan(&job)

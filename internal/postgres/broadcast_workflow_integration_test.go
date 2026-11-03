@@ -81,6 +81,14 @@ func broadcastResponseToken(t *testing.T, body, separator string) string {
 	return fields[0]
 }
 func TestBroadcastWorkflowWithSyntheticHTTP(t *testing.T) {
+	testBroadcastWorkflowWithSyntheticHTTP(t, false)
+}
+
+func TestBroadcastImportedWorkflowWithSyntheticHTTP(t *testing.T) {
+	testBroadcastWorkflowWithSyntheticHTTP(t, true)
+}
+
+func testBroadcastWorkflowWithSyntheticHTTP(t *testing.T, imported bool) {
 	s, _ := testStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -91,6 +99,14 @@ func TestBroadcastWorkflowWithSyntheticHTTP(t *testing.T) {
 		t.Fatal("install policy")
 	}
 	for _, id := range []int64{8, 9} {
+		if imported {
+			o := authorityObservation(id)
+			o.Enabled = false
+			if err := s.SaveAuthorityObservation(ctx, bot, o); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
 		r, err := s.RegisterPrivateClient(ctx, TelegramIdentity{TelegramID: id, ChatID: id, DisplayName: "synthetic"})
 		if err != nil {
 			t.Fatal(err)

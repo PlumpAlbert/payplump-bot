@@ -21,6 +21,20 @@ var (
 	ErrExpired        = broadcast.ErrExpired
 )
 
+// broadcastEligibilitySQL requires clients alias c and the bot ID at $2 in both
+// freeze and dispatch. Announcements need bot-scoped identity provenance, not
+// payment, subscription, SUI access, or a recent observation.
+const broadcastEligibilitySQL = `c.telegram_id>0 AND c.chat_id=c.telegram_id AND (
+	EXISTS(SELECT 1 FROM broadcast_memberships m
+		WHERE m.bot_id=$2 AND m.client_id=c.id AND m.actor_id=c.telegram_id)
+	OR EXISTS(SELECT 1 FROM authority_observations a
+		WHERE a.bot_id=$2 AND a.client_id=c.id AND a.actor_id=c.telegram_id
+		AND a.observation->>'CustomerID'=c.invoice_ninja_id)
+	OR EXISTS(SELECT 1 FROM verified_import_origins i
+		WHERE i.bot_id=$2 AND i.client_id=c.id AND i.customer_id=c.invoice_ninja_id
+		AND i.sui_name=c.telegram_id::text)
+)`
+
 const broadcastPolicyLock = `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':payplump-broadcast-policy',0))`
 
 func (s *Store) InstallBroadcastPolicy(ctx context.Context, botID int64, p broadcast.Policy) error {
@@ -341,7 +355,7 @@ func (s *Store) ProcessBroadcastBatch(ctx context.Context, botID int64, supplied
 	}
 	for _, x := range items {
 		var eligible bool
-		e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM clients c JOIN broadcast_memberships m ON m.client_id=c.id WHERE c.id=$1 AND c.telegram_id=$2 AND c.chat_id=$3 AND m.bot_id=$4 AND m.actor_id=$2)`, x.client, x.actor, x.chat, botID).Scan(&eligible)
+		e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM clients c WHERE c.id=$1 AND c.telegram_id=$3 AND c.chat_id=$4 AND `+broadcastEligibilitySQL+`)`, x.client, botID, x.actor, x.chat).Scan(&eligible)
 		if e != nil {
 			return progress, errors.New("broadcast processing unavailable")
 		}
