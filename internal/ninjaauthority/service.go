@@ -65,6 +65,11 @@ func (s *Service) Run(ctx context.Context) error {
 	return nil
 }
 func (s *Service) Scan(ctx context.Context) error {
+	started := time.Now()
+	s.logger.DebugContext(ctx, "authority scan started")
+	defer func() {
+		s.logger.DebugContext(ctx, "authority scan finished", "duration_ms", time.Since(started).Milliseconds())
+	}()
 	return s.store.WithAuthorityScan(ctx, s.cfg.BotID, s.scan)
 }
 func (s *Service) scan(ctx context.Context) error {
@@ -76,14 +81,25 @@ func (s *Service) scan(ctx context.Context) error {
 		sum := sha256.Sum256([]byte(facts))
 		return s.store.AuthorityNotice(ctx, s.cfg.BotID, key, actor, reason, hex.EncodeToString(sum[:]), s.cfg.AdminIDs)
 	}
-	customers, err := s.ninja.ListCustomers(ctx)
-	if err != nil {
-		return notice("source:ninja", 0, "source_unavailable", "ninja_inventory")
+	failure := func(key string, actor int64, service, operation string, err error) error {
+		key = s.cfg.SourceScopeHash + ":" + key
+		keys = append(keys, key)
+		d := sourceFailure(service, operation, err)
+		s.logger.WarnContext(ctx, "authority source unavailable", "service", d.Service, "operation", d.Operation, "category", d.Category, "http_status", d.HTTPStatus, "diagnostic_code", NoticeCode(key))
+		return s.store.AuthoritySourceFailure(ctx, s.cfg.BotID, key, actor, d, s.cfg.AdminIDs)
 	}
-	inventory, err := s.panel.Inventory(ctx)
+	readStarted := time.Now()
+	customers, err := s.ninja.ListCustomers(s.readContext(ctx, "ninja", "customers", "source:ninja"))
 	if err != nil {
-		return notice("source:sui", 0, "source_unavailable", "sui_inventory")
+		return failure("source:ninja", 0, "ninja", "customers", err)
 	}
+	s.readFinished(ctx, "ninja", "customers", "source:ninja", readStarted, len(customers))
+	readStarted = time.Now()
+	inventory, err := s.panel.Inventory(s.readContext(ctx, "sui", "inventory", "source:sui"))
+	if err != nil {
+		return failure("source:sui", 0, "sui", "inventory", err)
+	}
+	s.readFinished(ctx, "sui", "inventory", "source:sui", readStarted, len(inventory))
 	bindings, err := s.store.LoadAuthorityBindings(ctx, s.cfg.BotID)
 	if err != nil {
 		return err
@@ -170,13 +186,15 @@ func (s *Service) scan(ctx context.Context) error {
 			}
 			continue
 		}
-		records, e := s.ninja.ListRecurring(ctx, c.ID)
+		readStarted = time.Now()
+		records, e := s.ninja.ListRecurring(s.readContext(ctx, "ninja", "recurring", key), c.ID)
 		if e != nil {
-			if e = notice(key, actor, "source_unavailable", "recurring_inventory"); e != nil {
+			if e = failure(key, actor, "ninja", "recurring", e); e != nil {
 				return e
 			}
 			continue
 		}
+		s.readFinished(ctx, "ninja", "recurring", key, readStarted, len(records))
 		o, reason := ObserveCustomer(c, records)
 		o.ScopeHash = s.cfg.SourceScopeHash
 		o.ObservedAt = started
@@ -277,13 +295,15 @@ func (s *Service) scan(ctx context.Context) error {
 		}
 		// Invoices are observed for menu association, never used to manufacture a
 		// paid period or to decide the state of an existing recurring subscription.
-		invoices, e := s.invoices.ListInvoices(ctx, c.ID)
+		readStarted = time.Now()
+		invoices, e := s.invoices.ListInvoices(s.readContext(ctx, "ninja", "invoices", key+":invoices"), c.ID)
 		if e != nil {
-			if e = notice(key+":invoices", actor, "source_unavailable", "invoice_inventory"); e != nil {
+			if e = failure(key+":invoices", actor, "ninja", "invoices", e); e != nil {
 				return e
 			}
 			continue
 		}
+		s.readFinished(ctx, "ninja", "invoices", key+":invoices", readStarted, len(invoices))
 		latest := ""
 		ties := 0
 		seen := map[string]bool{}

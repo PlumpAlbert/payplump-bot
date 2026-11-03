@@ -66,6 +66,7 @@ outbox. `InvoiceURL` — проверенная ссылка на счёт, не
 | --- | --- |
 | `clientmenu/state_authority_disabled.tmpl` | — |
 | `clientmenu/authority_footer.tmpl` | — |
+| `authority/source_unavailable.tmpl` | `Subject`, `Verb`, `Reason`, `Status`, `ActorID`, `DiagnosticCode` |
 | `authority/notice.tmpl` | `ActorID`, `Reason`, `DiagnosticCode` |
 | `authority/invoice_client.tmpl` | `InvoiceNumber`, `Body` |
 | `authority/configuration_ready.tmpl` | `Body` |
