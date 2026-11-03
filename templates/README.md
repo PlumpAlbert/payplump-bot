@@ -73,6 +73,7 @@ outbox. `InvoiceURL` — проверенная ссылка на счёт, не
 | `activation/complete_admin.tmpl` | `OperationID`, `ActorID`, `NextInvoiceDate` |
 | `activation/complete_client.tmpl` | `NextInvoiceDate` |
 | `activation/review_admin.tmpl` | `OperationID` |
+| `broadcast/audience_empty.tmpl` | — |
 | `broadcast/audience_limit.tmpl` | — |
 | `broadcast/cancelled.tmpl` | — |
 | `broadcast/confirm_audience.tmpl` | `Count`, `Token` |
