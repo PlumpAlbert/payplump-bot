@@ -32,7 +32,11 @@ func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "check-integrations" || os.Args[1] == "resume-registration" || os.Args[1] == "recovery-report" || os.Args[1] == "import-plan" || os.Args[1] == "import-stage" || os.Args[1] == "import-verify" || os.Args[1] == "import-apply") {
 		logOutput = os.Stderr // Keep the command's stdout a single JSON report.
 	}
-	logger := slog.New(slog.NewJSONHandler(logOutput, nil))
+	logger, err := newLogger(logOutput, os.Getenv("LOG_LEVEL"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if err := run(logger, os.Args[1:]); err != nil {
 		logger.Error("service stopped", "error", err)
 		os.Exit(1)

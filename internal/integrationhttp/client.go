@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -92,15 +93,15 @@ func connectionError(err error) error {
 	var network net.Error
 	switch {
 	case errors.As(err, &dns):
-		return fmt.Errorf("%w: DNS lookup failed", ErrConnection)
+		return fmt.Errorf("%w: %w", ErrConnection, ErrDNS)
 	case errors.As(err, &authority):
-		return fmt.Errorf("%w: TLS certificate authority is not trusted", ErrConnection)
+		return fmt.Errorf("%w: %w", ErrConnection, ErrTLSAuthority)
 	case errors.As(err, &hostname):
-		return fmt.Errorf("%w: TLS certificate does not match the server hostname", ErrConnection)
+		return fmt.Errorf("%w: %w", ErrConnection, ErrTLSHostname)
 	case errors.As(err, &certificate):
-		return fmt.Errorf("%w: TLS certificate is invalid or expired", ErrConnection)
+		return fmt.Errorf("%w: %w", ErrConnection, ErrTLSCertificate)
 	case errors.Is(err, syscall.ECONNREFUSED):
-		return fmt.Errorf("%w: connection refused", ErrConnection)
+		return fmt.Errorf("%w: %w", ErrConnection, ErrConnectionRefused)
 	case errors.As(err, &network) && network.Timeout():
 		return context.DeadlineExceeded
 	default:
@@ -120,6 +121,15 @@ func (c *Client) request(ctx context.Context, method string, segments []string, 
 }
 
 func (c *Client) requestType(ctx context.Context, method string, segments []string, query url.Values, body io.Reader, result any, contentType string) (http.Header, error) {
+	var event ReadEvent
+	if observer := readObserver(ctx); method == http.MethodGet && observer != nil {
+		started := time.Now()
+		page, _ := strconv.Atoi(query.Get("page"))
+		if page > 0 && page <= 100000 {
+			event.Page = page
+		}
+		defer func() { event.Duration = time.Since(started); observer(event) }()
+	}
 	u := *c.base
 	escaped := strings.TrimRight(u.EscapedPath(), "/")
 	decoded, err := url.PathUnescape(escaped)
@@ -156,6 +166,7 @@ func (c *Client) requestType(ctx context.Context, method string, segments []stri
 		return nil, connectionError(err)
 	}
 	defer response.Body.Close()
+	event.HTTPStatus = response.StatusCode
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, &HTTPError{StatusCode: response.StatusCode}
 	}
@@ -164,10 +175,14 @@ func (c *Client) requestType(ctx context.Context, method string, segments []stri
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, errors.New("could not read integration API response")
+		var network net.Error
+		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &network) && network.Timeout() {
+			return nil, context.DeadlineExceeded
+		}
+		return nil, ErrResponseRead
 	}
 	if len(responseBody) > MaxResponseBytes {
-		return nil, errors.New("integration API response exceeds 4 MiB limit")
+		return nil, ErrResponseTooLarge
 	}
 	decoder := json.NewDecoder(bytes.NewReader(responseBody))
 	decoder.UseNumber()

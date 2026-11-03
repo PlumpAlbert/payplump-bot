@@ -4,6 +4,7 @@ package templates
 var manifest = map[string][]string{
 	"clientmenu/state_authority_disabled":   {},
 	"clientmenu/authority_footer":           {},
+	"authority/source_unavailable":          {"Subject", "Verb", "Reason", "Status", "ActorID", "DiagnosticCode"},
 	"authority/notice":                      {"ActorID", "Reason", "DiagnosticCode"},
 	"authority/invoice_client":              {"InvoiceNumber", "Body"},
 	"authority/configuration_ready":         {"Body"},

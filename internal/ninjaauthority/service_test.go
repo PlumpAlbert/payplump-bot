@@ -76,6 +76,9 @@ func (s *memoryStore) AuthorityNotice(_ context.Context, _ int64, key string, _ 
 	s.notices[key] = value
 	return nil
 }
+func (s *memoryStore) AuthoritySourceFailure(ctx context.Context, bot int64, key string, actor int64, d SourceFailure, admins []int64) error {
+	return s.AuthorityNotice(ctx, bot, key, actor, "source_unavailable", d.Hash(), admins)
+}
 func (s *memoryStore) ReconcileAuthorityNotices(_ context.Context, _ int64, keys []string, _ time.Time) error {
 	keep := map[string]bool{}
 	for _, k := range keys {

@@ -464,6 +464,24 @@ func authorityKey(key string) bool {
 	return len(key) > 0 && len(key) <= 256 && utf8.ValidString(key) && !authorityControl.MatchString(key)
 }
 func (s *Store) AuthorityNotice(ctx context.Context, bot int64, key string, actor int64, reason, facts string, admins []int64) error {
+	text := templates.Render("authority/notice", templates.Data{ActorID: strconv.FormatInt(actor, 10), Reason: reason, DiagnosticCode: ninjaauthority.NoticeCode(key)})
+	return s.authorityNotice(ctx, bot, key, actor, reason, facts, admins, text)
+}
+
+func (s *Store) AuthoritySourceFailure(ctx context.Context, bot int64, key string, actor int64, d ninjaauthority.SourceFailure, admins []int64) error {
+	if !d.Valid() {
+		return ninjaauthority.ErrConflict
+	}
+	service := map[string]string{"ninja": "Invoice Ninja", "sui": "S-UI"}[d.Service]
+	status := "—"
+	if d.HTTPStatus != 0 {
+		status = strconv.Itoa(d.HTTPStatus)
+	}
+	text := templates.Render("authority/source_unavailable", templates.Data{Subject: service, Verb: d.Operation, Reason: d.Category, Status: status, ActorID: strconv.FormatInt(actor, 10), DiagnosticCode: ninjaauthority.NoticeCode(key)})
+	return s.authorityNotice(ctx, bot, key, actor, "source_unavailable", d.Hash(), admins, text)
+}
+
+func (s *Store) authorityNotice(ctx context.Context, bot int64, key string, actor int64, reason, facts string, admins []int64, text string) error {
 	if bot <= 0 || actor < 0 || !authorityKey(key) || !authorityKey(facts) || !authorityReason.MatchString(reason) || len(admins) > 1000 {
 		return ninjaauthority.ErrConflict
 	}
@@ -501,7 +519,6 @@ func (s *Store) AuthorityNotice(ctx context.Context, bot int64, key string, acto
 		return err
 	}
 	digest := sha256.Sum256([]byte(key))
-	text := templates.Render("authority/notice", templates.Data{ActorID: strconv.FormatInt(actor, 10), Reason: reason, DiagnosticCode: fmt.Sprintf("%x", digest[:6])})
 	for _, admin := range admins {
 		_, err = enqueueOutbox(ctx, tx, queue.Draft{BotID: bot, ChatID: admin, Key: fmt.Sprintf("authority:%x:%d:%d", digest, generation, admin), Text: text})
 		if err != nil {

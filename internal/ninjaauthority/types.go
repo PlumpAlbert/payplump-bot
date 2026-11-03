@@ -66,6 +66,7 @@ type Store interface {
 	AuthorizeAuthorityCreate(context.Context, int64, int64, [32]byte) error
 	CompleteAuthorityCreate(context.Context, int64, int64, sui.ClientRecord) error
 	AuthorityNotice(context.Context, int64, string, int64, string, string, []int64) error
+	AuthoritySourceFailure(context.Context, int64, string, int64, SourceFailure, []int64) error
 	ReconcileAuthorityNotices(context.Context, int64, []string, time.Time) error
 }
 
