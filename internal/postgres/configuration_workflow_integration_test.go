@@ -263,9 +263,9 @@ func TestConfigurationWorkflowWithSyntheticHTTP(t *testing.T) {
 			return
 		}
 		secret := strings.Contains(text, "https://")
-		protected := string(body["protect_content"]) == "true"
+		protected := string(body["disable_notification"]) == "true"
 		if protected {
-			if len(body) != 5 || string(body["disable_notification"]) != "true" || string(body["link_preview_options"]) != `{"is_disabled":true}` {
+			if len(body) != 4 || body["protect_content"] != nil || string(body["disable_notification"]) != "true" || string(body["link_preview_options"]) != `{"is_disabled":true}` {
 				t.Error("protected send enabled markup, keyboard, notification or preview")
 			}
 			if secret {

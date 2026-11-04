@@ -96,8 +96,6 @@ outbox. `InvoiceURL` — проверенная ссылка на счёт, не
 | `broadcast/summary.tmpl` | `JobID`, `Enqueued`, `Sent`, `Failed`, `Skipped` |
 | `broadcast/unauthorized.tmpl` | — |
 | `clientmenu/access_deadline.tmpl` | `SentDate` |
-| `clientmenu/access_denied.tmpl` | — |
-| `clientmenu/access_requested.tmpl` | — |
 | `clientmenu/actions.tmpl` | — |
 | `clientmenu/configuration_unavailable.tmpl` | — |
 | `clientmenu/excluded.tmpl` | — |

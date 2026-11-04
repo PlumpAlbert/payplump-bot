@@ -25,7 +25,7 @@ func TestAuthorityStatusDoesNotClaimOverdueOrPanelMutation(t *testing.T) {
 			if !strings.Contains(p.Text, templates.Render(tc.template, templates.Data{})) || !strings.Contains(p.Text, templates.Render("clientmenu/authority_footer", templates.Data{})) {
 				t.Fatal("authority source status missing")
 			}
-			for _, forbidden := range []string{templates.Render("clientmenu/access_denied", templates.Data{}), templates.Render("clientmenu/access_requested", templates.Data{}), templates.Render("clientmenu/payment_date", templates.Data{PaymentDate: snapshot.PaymentDate}), templates.Render("clientmenu/state_payment_review", templates.Data{})} {
+			for _, forbidden := range []string{templates.Render("clientmenu/payment_date", templates.Data{PaymentDate: snapshot.PaymentDate}), templates.Render("clientmenu/state_payment_review", templates.Data{})} {
 				if forbidden != "" && strings.Contains(p.Text, forbidden) {
 					t.Fatal("authority claimed access effect or historical payment entitlement")
 				}

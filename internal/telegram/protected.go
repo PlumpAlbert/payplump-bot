@@ -48,10 +48,9 @@ func (c *Client) GetPrivateChat(ctx context.Context, chatID int64) error {
 // method never retries. Failures without APIError.Rejected may follow delivery.
 //
 // Contract: https://core.telegram.org/bots/api#sendmessage and #linkpreviewoptions.
-// protect_content prevents forwarding
-// and saving, disable_notification silences sound, and is_disabled suppresses
-// URL previews. These are best-effort restrictions, not recall or screenshot
-// prevention. No parse_mode, entities, keyboard or URL fetching is used.
+// disable_notification silences sound and is_disabled suppresses URL previews.
+// Content protection is not enabled, so clients can copy the subscription link.
+// No parse_mode, entities, keyboard or URL fetching is used.
 func (c *Client) SendProtectedMessage(ctx context.Context, chatID int64, prepare func(context.Context) (ProtectedMessage, error)) (int64, error) {
 	if chatID <= 0 || prepare == nil {
 		return 0, errors.New("invalid Telegram protected message request")
@@ -80,12 +79,11 @@ func (c *Client) SendProtectedMessage(ctx context.Context, chatID int64, prepare
 	payload := struct {
 		ChatID              int64  `json:"chat_id"`
 		Text                string `json:"text"`
-		ProtectContent      bool   `json:"protect_content"`
 		DisableNotification bool   `json:"disable_notification"`
 		LinkPreviewOptions  struct {
 			IsDisabled bool `json:"is_disabled"`
 		} `json:"link_preview_options"`
-	}{ChatID: chatID, Text: message.Text, ProtectContent: true, DisableNotification: true}
+	}{ChatID: chatID, Text: message.Text, DisableNotification: true}
 	payload.LinkPreviewOptions.IsDisabled = true
 	var result struct {
 		ID   int64 `json:"message_id"`

@@ -34,8 +34,6 @@ var manifest = map[string][]string{
 	"broadcast/summary":                     {"JobID", "Enqueued", "Sent", "Failed", "Skipped"},
 	"broadcast/unauthorized":                {},
 	"clientmenu/access_deadline":            {"SentDate"},
-	"clientmenu/access_denied":              {},
-	"clientmenu/access_requested":           {},
 	"clientmenu/actions":                    {},
 	"clientmenu/configuration_unavailable":  {},
 	"clientmenu/excluded":                   {},
