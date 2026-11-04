@@ -48,6 +48,22 @@ func (o Observation) Hash() [32]byte {
 	return sha256.Sum256(raw)
 }
 
+// Invoice is an observed billing document, not a payment proof. Complete
+// inventories are tracked independently of the menu's representative invoice.
+type Invoice struct {
+	ID, CustomerID, Number, Status, Date, Amount string
+	ArchivedAt                                   int64
+	IsDeleted                                    bool
+}
+
+func (Invoice) String() string   { return "[private authority invoice]" }
+func (Invoice) GoString() string { return "[private authority invoice]" }
+
+// WakeGeneration carries only durable counters, never untrusted webhook IDs.
+type WakeGeneration struct {
+	Invoices, Payments int64
+}
+
 type CreateIntent struct {
 	Draft      sui.AuthorityCreateDraft
 	SourceHash [32]byte
@@ -62,6 +78,8 @@ type Store interface {
 	WithAuthorityScan(context.Context, int64, func(context.Context) error) error
 	LoadAuthorityBindings(context.Context, int64) (map[int64]Binding, error)
 	SaveAuthorityObservation(context.Context, int64, Observation) error
+	SaveAuthorityObservationWithInvoices(context.Context, int64, Observation, []Invoice) error
+	LoadAuthorityWake(context.Context, int64) (WakeGeneration, error)
 	PrepareAuthorityCreate(context.Context, int64, Observation, sui.AuthorityCreateDraft) (CreateIntent, error)
 	AuthorizeAuthorityCreate(context.Context, int64, int64, [32]byte) error
 	CompleteAuthorityCreate(context.Context, int64, int64, sui.ClientRecord) error

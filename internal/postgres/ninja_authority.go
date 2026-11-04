@@ -185,6 +185,19 @@ func authorityError(err error) error {
 }
 
 func (s *Store) SaveAuthorityObservation(ctx context.Context, bot int64, o ninjaauthority.Observation) error {
+	return s.saveAuthorityObservation(ctx, bot, o, nil)
+}
+
+func (s *Store) SaveAuthorityObservationWithInvoices(ctx context.Context, bot int64, o ninjaauthority.Observation, invoices []ninjaauthority.Invoice) error {
+	return s.saveAuthorityObservation(ctx, bot, o, &invoices)
+}
+
+func (s *Store) saveAuthorityObservation(ctx context.Context, bot int64, o ninjaauthority.Observation, invoices *[]ninjaauthority.Invoice) error {
+	if invoices != nil {
+		if err := validateAuthorityInvoices(o, *invoices); err != nil {
+			return err
+		}
+	}
 	if bot <= 0 || o.Actor <= 0 || o.CustomerID == "" || len(o.CustomerID) > 256 || len(o.RecurringID) > 256 || len(o.InvoiceID) > 256 || o.ObservedAt.IsZero() {
 		return ninjaauthority.ErrConflict
 	}
@@ -316,6 +329,11 @@ func (s *Store) SaveAuthorityObservation(ctx context.Context, bot int64, o ninja
 	err = tx.QueryRow(ctx, `INSERT INTO authority_observations(bot_id,client_id,actor_id,observation,observation_hash,source_hash,sui_id,sui_name,credentials_hash,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(bot_id,client_id) DO UPDATE SET observation=excluded.observation,observation_hash=excluded.observation_hash,source_hash=excluded.source_hash,sui_id=excluded.sui_id,sui_name=excluded.sui_name,credentials_hash=excluded.credentials_hash,observed_at=excluded.observed_at,revision=authority_observations.revision+1 RETURNING revision`, bot, client, o.Actor, raw, h[:], o.SourceHash[:], suiID, name, hash, o.ObservedAt).Scan(&revision)
 	if err != nil {
 		return authorityError(err)
+	}
+	if invoices != nil {
+		if err = saveAuthorityInvoices(ctx, tx, bot, client, previousRaw, o, *invoices); err != nil {
+			return authorityError(err)
+		}
 	}
 	if err = enqueueAuthorityChanges(ctx, tx, bot, client, revision, previousRaw, o); err != nil {
 		return err

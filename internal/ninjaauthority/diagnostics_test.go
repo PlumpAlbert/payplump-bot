@@ -122,8 +122,12 @@ func TestSourceFailuresIdentifyEachReadBoundary(t *testing.T) {
 			if err = s.Scan(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if p.posts != 0 || len(st.observations) != 0 || st.noticeCount != 1 {
-				t.Fatal("failed read crossed a write boundary")
+			wantObservations := 0
+			if tc.operation == "recurring" {
+				wantObservations = 1 // Invoice inventory remains independent of access knowledge.
+			}
+			if p.posts != 0 || len(st.observations) != wantObservations || st.noticeCount != 1 || st.observations[42].StateKnown {
+				t.Fatal("failed read crossed an access write boundary")
 			}
 			if !strings.Contains(logs.String(), `"operation":"`+tc.operation+`"`) || !strings.Contains(logs.String(), NoticeCode(s.cfg.SourceScopeHash+":"+tc.key)) || !strings.Contains(logs.String(), `"records":1`) || strings.Contains(logs.String(), "PRIVATE") {
 				t.Fatal("missing correlated boundary/counts or secret leakage")
