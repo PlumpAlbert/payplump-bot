@@ -95,7 +95,7 @@ func TestNewRejectsInvalidConfiguration(t *testing.T) {
 			t.Fatal("configuration error leaked URL/credential text")
 		}
 	}
-	for _, timeout := range []time.Duration{0, -time.Second, 31 * time.Second} {
+	for _, timeout := range []time.Duration{0, -time.Second} {
 		if c, err := invoiceninja.New("https://synthetic.invalid/panel", syntheticToken, timeout); err == nil || c != nil {
 			t.Errorf("accepted invalid timeout %v", timeout)
 		}

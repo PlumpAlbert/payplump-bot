@@ -27,7 +27,7 @@ func ValidateClientConfiguration(baseURL, token string, timeout time.Duration) e
 	if !validServiceBase(baseURL) {
 		return errors.New("invalid Invoice Ninja base URL")
 	}
-	if integrationhttp.ValidateBaseURL(baseURL) != nil || timeout <= 0 || timeout > 30*time.Second {
+	if integrationhttp.ValidateBaseURL(baseURL) != nil || timeout <= 0 {
 		return errors.New("invalid Invoice Ninja client configuration")
 	}
 	return nil

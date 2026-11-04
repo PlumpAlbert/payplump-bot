@@ -68,7 +68,7 @@ func ValidateClientConfiguration(baseURL, token string, timeout time.Duration) e
 			return errInvalidConfiguration
 		}
 	}
-	if token == "" || strings.TrimSpace(token) != token || strings.IndexFunc(token, unicode.IsControl) >= 0 || timeout <= 0 || timeout > 30*time.Second {
+	if token == "" || strings.TrimSpace(token) != token || strings.IndexFunc(token, unicode.IsControl) >= 0 || timeout <= 0 {
 		return errInvalidConfiguration
 	}
 	return nil

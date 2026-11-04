@@ -59,8 +59,8 @@ func New(baseURL string, headers http.Header, timeout time.Duration) (*Client, e
 	if err := ValidateBaseURL(baseURL); err != nil {
 		return nil, err
 	}
-	if timeout <= 0 || timeout > 30*time.Second {
-		return nil, errors.New("integration HTTP timeout must be positive and at most 30s")
+	if timeout <= 0 {
+		return nil, errors.New("integration HTTP timeout must be positive")
 	}
 	for key, values := range headers {
 		if key == "" || strings.IndexFunc(key, unicode.IsControl) >= 0 {

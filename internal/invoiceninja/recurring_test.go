@@ -145,7 +145,7 @@ func TestRecurringCapabilityAndConfiguration(t *testing.T) {
 		{"https://synthetic.invalid", " secret", time.Second},
 		{"https://synthetic.invalid", "secret\n", time.Second},
 		{"https://synthetic.invalid", recurringTestToken, 0},
-		{"https://synthetic.invalid", recurringTestToken, 31 * time.Second},
+		{"https://synthetic.invalid", recurringTestToken, -time.Second},
 	} {
 		if c, err := NewRecurringClient(args.base, args.token, args.timeout, 1, 1); c != nil || err == nil {
 			t.Fatal("accepted invalid configuration")
