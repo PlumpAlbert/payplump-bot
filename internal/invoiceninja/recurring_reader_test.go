@@ -61,7 +61,7 @@ func TestRecurringReaderCapabilityAndValidation(t *testing.T) {
 		{"http://synthetic.invalid", " secret", time.Second},
 		{"http://synthetic.invalid", "secret\n", time.Second},
 		{"http://synthetic.invalid", recurringTestToken, 0},
-		{"http://synthetic.invalid", recurringTestToken, 31 * time.Second},
+		{"http://synthetic.invalid", recurringTestToken, -time.Second},
 	} {
 		c, err := NewRecurringReader(args.base, args.token, args.timeout)
 		if c != nil || err == nil || strings.Contains(fmt.Sprint(err), recurringTestToken) {

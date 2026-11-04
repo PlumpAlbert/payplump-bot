@@ -369,7 +369,7 @@ func TestNewRejectsBadConfiguration(t *testing.T) {
 			assertInvalidConfiguration(t, client != nil, err)
 		})
 	}
-	for i, timeout := range []time.Duration{-time.Second, 0, 31 * time.Second} {
+	for i, timeout := range []time.Duration{-time.Second, 0} {
 		t.Run(fmt.Sprintf("timeout-%d", i), func(t *testing.T) {
 			client, err := sui.New("https://synthetic.invalid/panel", fixtureToken, timeout)
 			assertInvalidConfiguration(t, client != nil, err)
@@ -394,7 +394,7 @@ func TestValidateClientConfigurationMatchesConstructor(t *testing.T) {
 		{"invalid encoded control", "https://synthetic.invalid/%0a/panel", fixtureToken, time.Second, false},
 		{"invalid API suffix", "https://synthetic.invalid/panel/apiv2", fixtureToken, time.Second, false},
 		{"invalid token", "https://synthetic.invalid/panel", "bad\ntoken", time.Second, false},
-		{"invalid timeout", "https://synthetic.invalid/panel", fixtureToken, 31 * time.Second, false},
+		{"invalid timeout", "https://synthetic.invalid/panel", fixtureToken, -time.Second, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			validationErr := sui.ValidateClientConfiguration(tc.base, tc.token, tc.timeout)

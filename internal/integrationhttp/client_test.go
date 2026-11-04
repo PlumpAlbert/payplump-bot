@@ -69,7 +69,7 @@ func TestConstructorRejectsUnsafeConfigurationWithoutEcho(t *testing.T) {
 			t.Fatal("unsafe URL accepted or leaked into diagnostics")
 		}
 	}
-	for _, timeout := range []time.Duration{0, -time.Second, 31 * time.Second} {
+	for _, timeout := range []time.Duration{0, -time.Second} {
 		if _, err := New("https://example.com", nil, timeout); err == nil {
 			t.Fatal("invalid timeout accepted")
 		}

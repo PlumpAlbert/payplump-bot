@@ -529,7 +529,7 @@ func TestValidateManagedClientConfigurationMatchesConstructor(t *testing.T) {
 		{"absent version", "https://synthetic.invalid/panel", "synthetic-token", "", time.Second, 10, true},
 		{"invalid capacity", "https://synthetic.invalid/panel", "synthetic-token", "1.6.4", time.Second, 1001, false},
 		{"invalid base", "https://synthetic.invalid/panel/apiv2", "synthetic-token", "1.6.4", time.Second, 10, false},
-		{"invalid timeout", "https://synthetic.invalid/panel", "synthetic-token", "1.6.4", 31 * time.Second, 10, false},
+		{"invalid timeout", "https://synthetic.invalid/panel", "synthetic-token", "1.6.4", -time.Second, 10, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			validationErr := ValidateManagedClientConfiguration(tc.base, tc.token, tc.version, tc.timeout, tc.maxAccounts)

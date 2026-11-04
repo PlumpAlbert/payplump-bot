@@ -69,7 +69,7 @@ func TestRecordReaderCapabilityAndValidation(t *testing.T) {
 		{"http://synthetic.invalid", "reader-secret\n", "1.6.4", time.Second},
 		{"http://synthetic.invalid", "", "1.6.4", time.Second},
 		{"http://synthetic.invalid", "reader-secret", "1.6.4", 0},
-		{"http://synthetic.invalid", "reader-secret", "1.6.4", 31 * time.Second},
+		{"http://synthetic.invalid", "reader-secret", "1.6.4", -time.Second},
 	} {
 		c, err := NewRecordReader(args.base, args.token, args.version, args.timeout)
 		if c != nil || err == nil || strings.Contains(fmt.Sprint(err), "reader-secret") {

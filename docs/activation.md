@@ -42,7 +42,7 @@ barriers остаются обязательными. Старые stage/pilot �
 | --- | --- |
 | `ACTIVATION_WORKERS` | `1`, допустимо 1–4 |
 | `ACTIVATION_POLL_INTERVAL` | `1s`, допустимо 100ms–1m |
-| `ACTIVATION_HTTP_TIMEOUT` | `5s`, допустимо 1s–10s на запрос |
+| `ACTIVATION_HTTP_TIMEOUT` | `5s`; любая положительная длительность на запрос, например `30s` или `2m`; более ранний deadline операции сохраняется |
 | `ACTIVATION_MAX_SUI_ACCOUNTS` | `1000`, допустимо 1–1000 полных клиентов |
 
 Используются `INVOICE_NINJA_BASE_URL`, `INVOICE_NINJA_API_TOKEN`,

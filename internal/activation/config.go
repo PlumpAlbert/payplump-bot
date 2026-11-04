@@ -151,8 +151,11 @@ func (c Config) Validate() error {
 	if c.Workers < 1 || c.Workers > 4 || c.PageSize < 1 || c.PageSize > 100 || c.MaxPages < 1 || c.MaxPages > 100 || c.MaxAccounts < 1 || c.MaxAccounts > 1000 {
 		return errors.New("invalid activation worker or inventory bounds")
 	}
-	if c.PollInterval < 100*time.Millisecond || c.PollInterval > time.Minute || c.HTTPTimeout < time.Second || c.HTTPTimeout > 10*time.Second {
-		return errors.New("invalid activation timeouts")
+	if c.PollInterval < 100*time.Millisecond || c.PollInterval > time.Minute {
+		return errors.New("ACTIVATION_POLL_INTERVAL must be between 100ms and 1m")
+	}
+	if c.HTTPTimeout <= 0 {
+		return errors.New("ACTIVATION_HTTP_TIMEOUT must be positive")
 	}
 	if (!c.NinjaAuthority && !idList(c.InboundIDs, 1, 100)) || (!c.ManagedClients && !idList(c.AllowedTelegramIDs, 1, 20)) || !idList(c.ExcludedTelegramIDs, 0, 1000) {
 		return errors.New("invalid activation inbound, pilot allowlist or exclusion IDs")

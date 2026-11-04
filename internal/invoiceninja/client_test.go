@@ -459,7 +459,7 @@ func TestValidateClientConfigurationMatchesConstructor(t *testing.T) {
 		{"invalid token", "https://synthetic.invalid", "bad\ntoken", time.Second, false},
 		{"invalid service path", "https://synthetic.invalid/api/v1", syntheticToken, time.Second, false},
 		{"invalid query", "https://synthetic.invalid/panel?secret=x", syntheticToken, time.Second, false},
-		{"invalid timeout", "https://synthetic.invalid", syntheticToken, 31 * time.Second, false},
+		{"invalid timeout", "https://synthetic.invalid", syntheticToken, -time.Second, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			validationErr := invoiceninja.ValidateClientConfiguration(tc.base, tc.token, tc.timeout)

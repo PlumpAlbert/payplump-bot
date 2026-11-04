@@ -2,6 +2,7 @@ package activation
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -56,7 +57,7 @@ func TestActivationConfigExplicitPilotAndDependencies(t *testing.T) {
 		"REGISTRATION_EXCLUDED_TELEGRAM_IDS": {"0", "01", "1,1"}, "SUI_INBOUND_IDS": {"", "0", "1,1"},
 		"INVOICE_NINJA_TELEGRAM_ID_FIELD": {"", "number", "custom_value1"}, "INVOICE_NINJA_INCLUSIVE_TAXES": {"", "bad"},
 		"PAYMENTS_CURRENCY_ID": {"", "RUB", "01", "0", "1e2"}, "ACTIVATION_WORKERS": {"0", "5", "bad"}, "ACTIVATION_MAX_SUI_ACCOUNTS": {"0", "1001", "bad"},
-		"ACTIVATION_POLL_INTERVAL": {"0s", "1ns", "2m", "bad"}, "ACTIVATION_HTTP_TIMEOUT": {"500ms", "11s", "bad"}, "INTEGRATION_PAGE_SIZE": {"0", "101", "bad"}, "INTEGRATION_MAX_PAGES": {"0", "101", "bad"},
+		"ACTIVATION_POLL_INTERVAL": {"0s", "1ns", "2m", "bad"}, "ACTIVATION_HTTP_TIMEOUT": {"0s", "-1s", "bad"}, "INTEGRATION_PAGE_SIZE": {"0", "101", "bad"}, "INTEGRATION_MAX_PAGES": {"0", "101", "bad"},
 		"INVOICE_NINJA_BASE_URL": {"https://billing.invalid/api/v1", "https://user:synthetic@billing.invalid", "https://billing.invalid?secret=synthetic"},
 		"SUI_BASE_URL":           {"https://panel.invalid/apiv2", "http://panel.invalid/?private=x"}, "INVOICE_NINJA_API_TOKEN": {"", "synthetic\n"}, "SUI_API_TOKEN": {"", " synthetic"},
 	} {
@@ -162,5 +163,77 @@ func TestActivationVersionsAreOptionalAndInformational(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestActivationHTTPTimeoutPolicy(t *testing.T) {
+	for _, authority := range []bool{false, true} {
+		t.Run(fmt.Sprintf("authority=%t", authority), func(t *testing.T) {
+			enabledActivationEnv(t)
+			load := func() (Config, error) {
+				if authority {
+					return AuthorityConfigFromEnvironment(os.Getenv, true, true, false)
+				}
+				return ConfigFromEnvironment(os.Getenv, true, true, false)
+			}
+			for _, tc := range []struct {
+				raw  string
+				want time.Duration
+			}{{"", 5 * time.Second}, {"500ms", 500 * time.Millisecond}, {"11s", 11 * time.Second}, {"30s", 30 * time.Second}, {"31s", 31 * time.Second}, {"2m", 2 * time.Minute}} {
+				t.Run("accept/"+tc.raw, func(t *testing.T) {
+					t.Setenv("ACTIVATION_HTTP_TIMEOUT", tc.raw)
+					cfg, err := load()
+					if err != nil || cfg.HTTPTimeout != tc.want || cfg.NinjaAuthority != authority {
+						t.Fatalf("load timeout=%v authority=%t err=%v", cfg.HTTPTimeout, cfg.NinjaAuthority, err)
+					}
+					direct := activationTestConfig()
+					direct.NinjaAuthority, direct.HTTPTimeout = authority, tc.want
+					if err := direct.Validate(); err != nil {
+						t.Fatalf("direct timeout rejected: %v", err)
+					}
+				})
+			}
+			for _, key := range []string{"ACTIVATION_HTTP_TIMEOUT", "ACTIVATION_POLL_INTERVAL"} {
+				other := "ACTIVATION_HTTP_TIMEOUT"
+				if key == other {
+					other = "ACTIVATION_POLL_INTERVAL"
+				}
+				for _, raw := range []string{"0s", "-17ms", "synthetic-private-duration", "9223372036854775808ns"} {
+					t.Run(key+"/"+raw, func(t *testing.T) {
+						t.Setenv(key, raw)
+						_, err := load()
+						if err == nil || !strings.Contains(err.Error(), key) || strings.Contains(err.Error(), other) || strings.Contains(err.Error(), raw) {
+							t.Fatalf("duration error missing field or exposing input: %v", err)
+						}
+					})
+				}
+				for _, duration := range []time.Duration{0, -time.Second} {
+					cfg := activationTestConfig()
+					cfg.NinjaAuthority = authority
+					if key == "ACTIVATION_HTTP_TIMEOUT" {
+						cfg.HTTPTimeout = duration
+					} else {
+						cfg.PollInterval = duration
+					}
+					if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), key) || strings.Contains(err.Error(), other) {
+						t.Fatalf("direct duration error missing field: %v", err)
+					}
+				}
+			}
+			for _, interval := range []time.Duration{100 * time.Millisecond, time.Minute} {
+				cfg := activationTestConfig()
+				cfg.NinjaAuthority, cfg.PollInterval = authority, interval
+				if err := cfg.Validate(); err != nil {
+					t.Fatalf("poll boundary rejected: %v", err)
+				}
+			}
+			for _, interval := range []time.Duration{100*time.Millisecond - 1, time.Minute + 1} {
+				cfg := activationTestConfig()
+				cfg.NinjaAuthority, cfg.PollInterval = authority, interval
+				if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "ACTIVATION_POLL_INTERVAL") {
+					t.Fatalf("poll bounds lost: %v", err)
+				}
+			}
+		})
 	}
 }
