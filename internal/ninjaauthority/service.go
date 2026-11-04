@@ -48,18 +48,49 @@ func New(store Store, ninja Ninja, invoices Invoices, panel Panel, cfg Config, l
 	return &Service{store: store, ninja: ninja, invoices: invoices, panel: panel, cfg: cfg, logger: logger, now: time.Now}, nil
 }
 func (s *Service) Run(ctx context.Context) error {
+	return s.run(ctx, 5*time.Minute, time.Second)
+}
+
+// run performs scans synchronously. Only generations read before a scan are
+// consumed: a webhook arriving during it remains pending for the next poll.
+func (s *Service) run(ctx context.Context, fallback, poll time.Duration) error {
+	timer := time.NewTimer(fallback)
+	defer timer.Stop()
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	var observed WakeGeneration
+	readWake := func() (WakeGeneration, error) {
+		read, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		return s.store.LoadAuthorityWake(read, s.cfg.BotID)
+	}
+	reason := "startup"
 	for ctx.Err() == nil {
-		scan, cancel := context.WithTimeout(ctx, 3*time.Minute)
-		if err := s.Scan(scan); err != nil && ctx.Err() == nil {
-			s.logger.Warn("Ninja authority reconciliation deferred")
+		generation, err := readWake()
+		if ctx.Err() != nil {
+			return nil
 		}
-		cancel()
-		timer := time.NewTimer(5 * time.Minute)
+		if reason == "webhook" && (err != nil || generation == observed) {
+			// Read failures retry only at the poll interval, never in a busy loop.
+		} else {
+			s.logger.DebugContext(ctx, "authority scan triggered", "reason", reason)
+			scan, cancel := context.WithTimeout(ctx, 3*time.Minute)
+			if err := s.Scan(scan); err != nil && ctx.Err() == nil {
+				s.logger.Warn("Ninja authority reconciliation deferred")
+			}
+			cancel()
+			if err == nil {
+				observed = generation
+			}
+			timer.Reset(fallback)
+		}
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return nil
 		case <-timer.C:
+			reason = "timer"
+		case <-ticker.C:
+			reason = "webhook"
 		}
 	}
 	return nil
@@ -187,15 +218,22 @@ func (s *Service) scan(ctx context.Context) error {
 			continue
 		}
 		readStarted = time.Now()
-		records, e := s.ninja.ListRecurring(s.readContext(ctx, "ninja", "recurring", key), c.ID)
-		if e != nil {
-			if e = failure(key, actor, "ninja", "recurring", e); e != nil {
+		records, recurringErr := s.ninja.ListRecurring(s.readContext(ctx, "ninja", "recurring", key), c.ID)
+		if recurringErr != nil {
+			if e = failure(key, actor, "ninja", "recurring", recurringErr); e != nil {
 				return e
 			}
-			continue
+		} else {
+			s.readFinished(ctx, "ninja", "recurring", key, readStarted, len(records))
 		}
-		s.readFinished(ctx, "ninja", "recurring", key, readStarted, len(records))
 		o, reason := ObserveCustomer(c, records)
+		if recurringErr != nil {
+			// Recurring availability controls access knowledge, not invoice
+			// inventory observation for an otherwise unambiguous identity.
+			o.StateKnown, o.Enabled = false, false
+			o.RecurringID, o.NextInvoiceDate = "", ""
+			reason = ""
+		}
 		o.ScopeHash = s.cfg.SourceScopeHash
 		o.ObservedAt = started
 		if reason != "" {
@@ -293,7 +331,7 @@ func (s *Service) scan(ctx context.Context) error {
 		} else {
 			o.Binding = Binding{CustomerID: c.ID, Name: name, CredentialsHash: old.CredentialsHash}
 		}
-		// Invoices are observed for menu association, never used to manufacture a
+		// Invoices are observed for the durable ledger and menu, never to manufacture a
 		// paid period or to decide the state of an existing recurring subscription.
 		readStarted = time.Now()
 		invoices, e := s.invoices.ListInvoices(s.readContext(ctx, "ninja", "invoices", key+":invoices"), c.ID)
@@ -304,42 +342,16 @@ func (s *Service) scan(ctx context.Context) error {
 			continue
 		}
 		s.readFinished(ctx, "ninja", "invoices", key+":invoices", readStarted, len(invoices))
-		latest := ""
-		ties := 0
-		seen := map[string]bool{}
-		valid := true
-		for _, i := range invoices {
-			if i.ID == "" || seen[i.ID] || i.ClientID != c.ID {
-				valid = false
-				break
-			}
-			seen[i.ID] = true
-			if i.IsDeleted || i.ArchivedAt != 0 || i.StatusID == "1" || i.StatusID == "5" {
-				continue
-			}
-			if o.RecurringID != "" && i.RecurringID != o.RecurringID {
-				continue
-			}
-			if i.Date > latest {
-				latest = i.Date
-				o.InvoiceID = i.ID
-				o.InvoiceNumber, o.InvoiceAmount, o.InvoiceStatus, o.InvoiceDate = i.Number, i.Amount.String(), i.StatusID, i.Date
-				ties = 1
-			} else if i.Date == latest {
-				ties++
-			}
-		}
+		invoiceList, representative, valid := observeInvoices(c.ID, invoices)
 		if !valid {
 			return notice("source:ninja", 0, "ambiguous_identity", "invalid_invoice_inventory")
 		}
-		if ties > 1 {
-			o.InvoiceID = ""
-			o.InvoiceNumber, o.InvoiceAmount, o.InvoiceStatus, o.InvoiceDate = "", "", "", ""
-			if e = notice(key+":invoices", actor, "ambiguous_invoice", "latest_date_tie"); e != nil {
-				return e
-			}
+		if representative != nil {
+			i := representative
+			o.InvoiceID = i.ID
+			o.InvoiceNumber, o.InvoiceAmount, o.InvoiceStatus, o.InvoiceDate = i.Number, i.Amount.String(), i.StatusID, i.Date
 		}
-		if e = s.store.SaveAuthorityObservation(ctx, s.cfg.BotID, o); e != nil {
+		if e = s.store.SaveAuthorityObservationWithInvoices(ctx, s.cfg.BotID, o, invoiceList); e != nil {
 			if e = notice(key, actor, "local_binding_conflict", "save_observation"); e != nil {
 				return e
 			}

@@ -16,12 +16,13 @@ import (
 )
 
 type memoryStore struct {
-	mu           sync.Mutex
-	bindings     map[int64]Binding
-	observations map[int64]Observation
-	intents      map[int64]CreateIntent
-	notices      map[string]string
-	noticeCount  int
+	mu             sync.Mutex
+	bindings       map[int64]Binding
+	observations   map[int64]Observation
+	intents        map[int64]CreateIntent
+	notices        map[string]string
+	noticeCount    int
+	invoiceBatches [][]Invoice
 }
 
 func newMemoryStore() *memoryStore {
@@ -41,6 +42,13 @@ func (s *memoryStore) SaveAuthorityObservation(_ context.Context, _ int64, o Obs
 		s.bindings[o.Actor] = o.Binding
 	}
 	return nil
+}
+func (s *memoryStore) SaveAuthorityObservationWithInvoices(ctx context.Context, bot int64, o Observation, invoices []Invoice) error {
+	s.invoiceBatches = append(s.invoiceBatches, invoices)
+	return s.SaveAuthorityObservation(ctx, bot, o)
+}
+func (s *memoryStore) LoadAuthorityWake(context.Context, int64) (WakeGeneration, error) {
+	return WakeGeneration{}, nil
 }
 func (s *memoryStore) PrepareAuthorityCreate(_ context.Context, _ int64, o Observation, d sui.AuthorityCreateDraft) (CreateIntent, error) {
 	if old, ok := s.intents[o.Actor]; ok {
