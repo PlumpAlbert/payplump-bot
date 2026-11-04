@@ -238,7 +238,7 @@ func TestMenuKnownAndUnknownActionsAreLocal(t *testing.T) {
 				case action == clientmenu.Start || action == clientmenu.Home:
 					assertMenuContains(t, p.Text, menuCopy("actions"), menuCopy("status_footer"))
 				case action == clientmenu.Status:
-					assertMenuContains(t, p.Text, menuCopy("access_denied"), menuCopy("payment_date", templates.Data{PaymentDate: snapshot.PaymentDate}), menuCopy("next_invoice_date", templates.Data{NextInvoiceDate: snapshot.NextInvoiceDate}))
+					assertMenuContains(t, p.Text, menuCopy("payment_date", templates.Data{PaymentDate: snapshot.PaymentDate}), menuCopy("next_invoice_date", templates.Data{NextInvoiceDate: snapshot.NextInvoiceDate}))
 				case action == clientmenu.Configuration:
 					assertMenuContains(t, p.Text, menuCopy("configuration_unavailable"))
 				}
@@ -262,11 +262,7 @@ func TestMenuStatusAndConfigurationNeverClaimLiveSUIAccess(t *testing.T) {
 			f := menuReader()
 			s := newMenuService(t, menuConfig(), f)
 			status := prepareMenu(t, s, clientmenu.Status, snapshot).Text
-			if access {
-				assertMenuContains(t, status, menuCopy("access_requested"))
-			} else {
-				assertMenuContains(t, status, menuCopy("access_denied"))
-			}
+			assertNoMenuText(t, status, "В базе", "запрошено", "подключение не проверено")
 			if state == "synthetic-unknown-state" {
 				assertMenuContains(t, status, menuCopy("state_unknown"))
 				assertNoMenuText(t, status, state)

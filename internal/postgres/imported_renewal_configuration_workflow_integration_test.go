@@ -228,7 +228,7 @@ func assertImportedRenewalProtectedConfiguration(t *testing.T, args importedConf
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"id": chat, "type": "private"}})
 			return
 		}
-		if r.URL.Path != "/botSYNTHETIC/sendMessage" || string(body["protect_content"]) != "true" || len(body) != 5 {
+		if r.URL.Path != "/botSYNTHETIC/sendMessage" || body["protect_content"] != nil || len(body) != 4 {
 			t.Error("unexpected or unprotected Telegram send")
 			http.Error(w, "bad send", http.StatusBadRequest)
 			return

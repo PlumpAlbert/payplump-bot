@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/ninjaauthority"
 	"github.com/PlumpAlbert/payplump-bot/internal/queue"
@@ -15,7 +16,7 @@ import (
 // payment receipts and contain neither subscription URLs nor credentials.
 // Initial adoption is silent; later invoice changes retain the bot's useful
 // notifications without running legacy billing/access mutation workers.
-func enqueueAuthorityChanges(ctx context.Context, tx pgx.Tx, bot, client, revision int64, previousRaw []byte, o ninjaauthority.Observation) error {
+func enqueueAuthorityChanges(ctx context.Context, tx pgx.Tx, bot, client, revision int64, previousRaw []byte, o ninjaauthority.Observation, admins []int64) error {
 	var previous ninjaauthority.Observation
 	if len(previousRaw) > 0 && json.Unmarshal(previousRaw, &previous) != nil {
 		return ninjaauthority.ErrConflict
@@ -37,7 +38,23 @@ func enqueueAuthorityChanges(ctx context.Context, tx pgx.Tx, bot, client, revisi
 			if sent {
 				return nil
 			}
-			_, err := enqueueOutbox(ctx, tx, queue.Draft{BotID: bot, ChatID: o.Actor, Key: key, Text: templates.Render("authority/configuration_ready", templates.Data{Body: templates.Render("clientmenu/label_configuration", templates.Data{})})})
+			return enqueueAuthorityClientAndAdmins(ctx, tx, bot, o.Actor, key,
+				templates.Render("authority/configuration_ready", templates.Data{Body: templates.Render("clientmenu/label_configuration", templates.Data{})}),
+				templates.Render("authority/configuration_ready_admin", templates.Data{ActorID: strconv.FormatInt(o.Actor, 10)}), admins)
+		}
+	}
+	return nil
+}
+
+// Only automatic public business events enter this helper. Client copy and safe
+// admin summaries share the observation transaction, but keep distinct role keys.
+// admins has been validated, sorted and deduplicated at the save boundary.
+func enqueueAuthorityClientAndAdmins(ctx context.Context, tx pgx.Tx, bot, actor int64, key, clientText, adminText string, admins []int64) error {
+	if _, err := enqueueOutbox(ctx, tx, queue.Draft{BotID: bot, ChatID: actor, Key: key, Text: clientText}); err != nil {
+		return err
+	}
+	for _, admin := range admins {
+		if _, err := enqueueOutbox(ctx, tx, queue.Draft{BotID: bot, ChatID: admin, Key: key + ":admin:" + strconv.FormatInt(admin, 10), Text: adminText}); err != nil {
 			return err
 		}
 	}

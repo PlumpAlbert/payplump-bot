@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -50,7 +51,7 @@ type invoiceWorkflowHTTP struct {
 	ninjaHost string
 	local     http.RoundTripper
 	mu        sync.Mutex
-	sent      []string
+	attempts  map[int64][]string
 }
 
 func (g *invoiceWorkflowHTTP) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -67,13 +68,18 @@ func (g *invoiceWorkflowHTTP) RoundTrip(r *http.Request) (*http.Response, error)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		return nil, err
 	}
-	if body.ChatID != 42 {
+	if body.ChatID != 42 && body.ChatID != 99 && body.ChatID != 100 && body.ChatID != 101 {
 		return nil, errors.New("unexpected invoice notification recipient")
 	}
 	g.mu.Lock()
-	g.sent = append(g.sent, body.Text)
+	g.attempts[body.ChatID] = append(g.attempts[body.ChatID], body.Text)
 	g.mu.Unlock()
-	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":1,"chat":{"id":42,"type":"private"}}}`)), Request: r}, nil
+	if body.ChatID == 101 {
+		// One blocked admin must not prevent the client or other admins receiving notices.
+		return &http.Response{StatusCode: 403, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":false,"error_code":403,"description":"Forbidden"}`)), Request: r}, nil
+	}
+	bodyJSON := fmt.Sprintf(`{"ok":true,"result":{"message_id":1,"chat":{"id":%d,"type":"private"}}}`, body.ChatID)
+	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(bodyJSON)), Request: r}, nil
 }
 
 // Real invoice HTTP decoding, authenticated webhook, durable wake, authority
@@ -100,7 +106,7 @@ func TestAuthorityInvoiceWebhookAndPollingDeliverEveryNewInvoice(t *testing.T) {
 	}))
 	defer api.Close()
 	apiURL, _ := url.Parse(api.URL)
-	gate := &invoiceWorkflowHTTP{ninjaHost: apiURL.Host, local: api.Client().Transport}
+	gate := &invoiceWorkflowHTTP{ninjaHost: apiURL.Host, local: api.Client().Transport, attempts: make(map[int64][]string)}
 	old := http.DefaultTransport
 	http.DefaultTransport = gate
 	defer func() { http.DefaultTransport = old }()
@@ -110,7 +116,7 @@ func TestAuthorityInvoiceWebhookAndPollingDeliverEveryNewInvoice(t *testing.T) {
 	}
 	panel := invoiceWorkflowPanel{record: authorityRecord(t, authorityDraft(t, "42", true), 123)}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := ninjaauthority.Config{BotID: bot, SourceScopeHash: strings.Repeat("a", 64), InboundIDs: []int64{1, 2}, AdminIDs: []int64{99}}
+	cfg := ninjaauthority.Config{BotID: bot, SourceScopeHash: strings.Repeat("a", 64), InboundIDs: []int64{1, 2}, AdminIDs: []int64{99, 100, 101, 99}}
 	service, err := ninjaauthority.New(s, invoiceWorkflowSource{}, reader, panel, cfg, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -182,9 +188,12 @@ func TestAuthorityInvoiceWebhookAndPollingDeliverEveryNewInvoice(t *testing.T) {
 		return err == nil && revision >= 2
 	})
 	countSent := func(want int) bool {
-		var count int
-		err := s.pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE bot_id=$1 AND chat_id=42 AND status='sent'`, bot).Scan(&count)
-		return err == nil && count == want
+		var complete bool
+		err := s.pool.QueryRow(ctx, `SELECT
+ count(*) FILTER(WHERE chat_id IN (42,99,100) AND status='sent')=$2*3
+ AND count(*) FILTER(WHERE chat_id=101 AND status='failed' AND last_error_code=403)=$2
+ AND count(*)=$2*4 FROM outbox WHERE bot_id=$1`, bot, want).Scan(&complete)
+		return err == nil && complete
 	}
 	// Same day, unrelated recurring ID and draft status must not suppress creation.
 	mu.Lock()
@@ -229,17 +238,22 @@ func TestAuthorityInvoiceWebhookAndPollingDeliverEveryNewInvoice(t *testing.T) {
 	wait(func() bool { return countSent(4) })
 	paymentSQL(t, s, ctx, `SELECT NOT EXISTS(SELECT 1 FROM payment_confirmations) AND NOT EXISTS(SELECT 1 FROM subscriptions WHERE payment_date IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM outbox WHERE protected_configuration OR client_menu)`)
 	gate.mu.Lock()
-	texts := append([]string(nil), gate.sent...)
-	gate.mu.Unlock()
-	counts := map[string]int{}
-	for _, body := range texts {
-		for _, number := range []string{"HISTORY", "MANUAL", "ANOTHER", "BACKDATED"} {
-			if strings.Contains(body, number) {
-				counts[number]++
+	defer gate.mu.Unlock()
+	for _, recipient := range []int64{42, 99, 100, 101} {
+		texts := gate.attempts[recipient]
+		counts := map[string]int{}
+		for _, body := range texts {
+			if strings.Contains(body, "https://") || strings.Contains(body, "SYNTHETIC") {
+				t.Fatal("ordinary invoice notice contains synthetic URL/credential")
+			}
+			for _, number := range []string{"HISTORY", "MANUAL", "ANOTHER", "BACKDATED"} {
+				if strings.Contains(body, number) {
+					counts[number]++
+				}
 			}
 		}
-	}
-	if len(texts) != 4 || counts["HISTORY"] != 0 || counts["MANUAL"] != 2 || counts["ANOTHER"] != 1 || counts["BACKDATED"] != 1 {
-		t.Fatalf("unexpected synthetic deliveries: %+v", counts)
+		if len(texts) != 4 || counts["HISTORY"] != 0 || counts["MANUAL"] != 2 || counts["ANOTHER"] != 1 || counts["BACKDATED"] != 1 {
+			t.Fatalf("unexpected synthetic attempts for %d: %+v", recipient, counts)
+		}
 	}
 }

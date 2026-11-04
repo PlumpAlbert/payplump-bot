@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +24,7 @@ type memoryStore struct {
 	notices        map[string]string
 	noticeCount    int
 	invoiceBatches [][]Invoice
+	saveAdmins     [][]int64
 }
 
 func newMemoryStore() *memoryStore {
@@ -36,16 +38,17 @@ func (s *memoryStore) WithAuthorityScan(ctx context.Context, bot int64, f func(c
 func (s *memoryStore) LoadAuthorityBindings(context.Context, int64) (map[int64]Binding, error) {
 	return s.bindings, nil
 }
-func (s *memoryStore) SaveAuthorityObservation(_ context.Context, _ int64, o Observation) error {
+func (s *memoryStore) SaveAuthorityObservation(_ context.Context, _ int64, o Observation, admins ...int64) error {
+	s.saveAdmins = append(s.saveAdmins, append([]int64(nil), admins...))
 	s.observations[o.Actor] = o
 	if o.Binding.SUIID > 0 {
 		s.bindings[o.Actor] = o.Binding
 	}
 	return nil
 }
-func (s *memoryStore) SaveAuthorityObservationWithInvoices(ctx context.Context, bot int64, o Observation, invoices []Invoice) error {
+func (s *memoryStore) SaveAuthorityObservationWithInvoices(ctx context.Context, bot int64, o Observation, invoices []Invoice, admins ...int64) error {
 	s.invoiceBatches = append(s.invoiceBatches, invoices)
-	return s.SaveAuthorityObservation(ctx, bot, o)
+	return s.SaveAuthorityObservation(ctx, bot, o, admins...)
 }
 func (s *memoryStore) LoadAuthorityWake(context.Context, int64) (WakeGeneration, error) {
 	return WakeGeneration{}, nil
@@ -415,5 +418,37 @@ func TestAuthorityReusesPersistedOwnBinding(t *testing.T) {
 	}
 	if p.posts != 0 || st.observations[42].Binding.Name != name || st.noticeCount != 1 {
 		t.Fatal("own binding lost, recreated or silently toggled")
+	}
+}
+
+func TestAuthoritySaveForwardsAdminsForInventoryAndCreatedReadiness(t *testing.T) {
+	s, st, _, _ := fixture(t, "2", false)
+	s.cfg.AdminIDs = []int64{42, 99, 101}
+	if err := s.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Initial inventory is unbound; the followup save carries actual readiness.
+	if len(st.invoiceBatches) != 1 || len(st.saveAdmins) != 2 || !st.observations[42].SUIEnabled || st.observations[42].Binding.SUIID == 0 {
+		t.Fatal("expected inventory and ready followup saves")
+	}
+	for _, admins := range st.saveAdmins {
+		if !slices.Equal(admins, s.cfg.AdminIDs) {
+			t.Fatalf("forwarded admins = %v", admins)
+		}
+	}
+}
+
+func TestAuthoritySaveForwardsAdminsForMissingCustomer(t *testing.T) {
+	s, st, n, _ := fixture(t, "2", false)
+	if err := s.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	n.customers = nil
+	st.saveAdmins = nil
+	if err := s.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.saveAdmins) != 1 || !slices.Equal(st.saveAdmins[0], s.cfg.AdminIDs) || st.observations[42].StateKnown {
+		t.Fatal("missing-customer invalidation did not forward recipients")
 	}
 }

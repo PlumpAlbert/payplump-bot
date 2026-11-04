@@ -77,8 +77,8 @@ func (CreateIntent) GoString() string { return "[sensitive authority create inte
 type Store interface {
 	WithAuthorityScan(context.Context, int64, func(context.Context) error) error
 	LoadAuthorityBindings(context.Context, int64) (map[int64]Binding, error)
-	SaveAuthorityObservation(context.Context, int64, Observation) error
-	SaveAuthorityObservationWithInvoices(context.Context, int64, Observation, []Invoice) error
+	SaveAuthorityObservation(context.Context, int64, Observation, ...int64) error
+	SaveAuthorityObservationWithInvoices(context.Context, int64, Observation, []Invoice, ...int64) error
 	LoadAuthorityWake(context.Context, int64) (WakeGeneration, error)
 	PrepareAuthorityCreate(context.Context, int64, Observation, sui.AuthorityCreateDraft) (CreateIntent, error)
 	AuthorizeAuthorityCreate(context.Context, int64, int64, [32]byte) error

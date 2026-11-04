@@ -160,11 +160,6 @@ func statusText(s Snapshot) string {
 		state = templates.Render("clientmenu/state_payment_review", templates.Data{})
 	}
 	message := templates.Render("clientmenu/status", templates.Data{State: state})
-	if s.DesiredAccess {
-		message += templates.Render("clientmenu/access_requested", templates.Data{})
-	} else {
-		message += templates.Render("clientmenu/access_denied", templates.Data{})
-	}
 	if date(s.PaymentDate) {
 		message += templates.Render("clientmenu/payment_date", templates.Data{PaymentDate: s.PaymentDate})
 	}

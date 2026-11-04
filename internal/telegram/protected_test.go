@@ -73,11 +73,11 @@ func TestSendProtectedMessageFlagsAndPrepareOrder(t *testing.T) {
 		}
 		var id int64
 		var gotText string
-		if len(body) != 5 || json.Unmarshal(body["chat_id"], &id) != nil || id != chatID || json.Unmarshal(body["text"], &gotText) != nil || gotText != text {
+		if len(body) != 4 || json.Unmarshal(body["chat_id"], &id) != nil || id != chatID || json.Unmarshal(body["text"], &gotText) != nil || gotText != text {
 			t.Error("protected payload changed or added fields")
 		}
-		if string(body["protect_content"]) != "true" || string(body["disable_notification"]) != "true" || string(body["link_preview_options"]) != `{"is_disabled":true}` {
-			t.Error("missing protection/preview/notification restrictions")
+		if body["protect_content"] != nil || string(body["disable_notification"]) != "true" || string(body["link_preview_options"]) != `{"is_disabled":true}` {
+			t.Error("unexpected content protection or missing preview/notification restrictions")
 		}
 		fmt.Fprintf(w, `{"ok":true,"result":{"message_id":7,"chat":{"id":%d,"type":"private"}}}`, chatID)
 	})

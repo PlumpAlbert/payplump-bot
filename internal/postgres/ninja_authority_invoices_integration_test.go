@@ -3,12 +3,17 @@
 package postgres
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/ninjaauthority"
+	"github.com/PlumpAlbert/payplump-bot/templates"
 )
 
 func inventoryObservation(actor int64) ninjaauthority.Observation {
@@ -16,6 +21,31 @@ func inventoryObservation(actor int64) ninjaauthority.Observation {
 	o.ObservedAt = time.Date(2040, 2, 1, 12, 0, 0, 0, time.UTC)
 	o.InvoiceNumber, o.InvoiceStatus, o.InvoiceAmount, o.InvoiceDate = "SYNTHETIC-BASE", "2", "0", "2040-02-01"
 	return o
+}
+
+// Presentation is editable independently of the canonical invoice snapshot.
+// Verify both the exact per-invoice event and all persisted fields, including
+// archive/deletion flags even when the client template omits Status.
+func assertAuthorityCreatedInvoice(t *testing.T, s *Store, ctx context.Context, actor int64, invoice ninjaauthority.Invoice) {
+	t.Helper()
+	raw, err := json.Marshal(invoice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := invoice.Status
+	if invoice.ArchivedAt != 0 {
+		status += " (архивный)"
+	}
+	if invoice.IsDeleted {
+		status += " (удалённый)"
+	}
+	body := templates.Render("authority/invoice_created", templates.Data{InvoiceNumber: invoice.Number, Amount: invoice.Amount, Status: status})
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(invoice.ID)))
+	paymentSQL(t, s, ctx, `SELECT count(*)=1 FROM authority_invoice_ledger l JOIN outbox o
+		ON o.bot_id=l.bot_id AND o.message_key='authority-invoice:' || l.client_id::text || ':' || $2 || ':1'
+		WHERE l.bot_id=9123 AND l.invoice_id=$1 AND l.generation=1 AND l.snapshot=$3::jsonb
+		AND o.chat_id=$4 AND o.body=$5 AND NOT o.client_menu AND NOT o.protected_configuration`,
+		invoice.ID, digest, string(raw), actor, body)
 }
 
 func TestAuthorityInventoryAllDocumentsAndDurableDedup(t *testing.T) {
@@ -42,7 +72,9 @@ func TestAuthorityInventoryAllDocumentsAndDurableDedup(t *testing.T) {
 	deleted.ID, deleted.IsDeleted = "synthetic-deleted", true
 	save(base, draft, backdated, archived, deleted)
 	paymentSQL(t, s, ctx, `SELECT count(*)=4 AND bool_and(NOT client_menu AND NOT protected_configuration) FROM outbox`)
-	paymentSQL(t, s, ctx, `SELECT EXISTS(SELECT 1 FROM outbox WHERE body LIKE '%архивный%') AND EXISTS(SELECT 1 FROM outbox WHERE body LIKE '%удалённый%')`)
+	for _, invoice := range []ninjaauthority.Invoice{draft, backdated, archived, deleted} {
+		assertAuthorityCreatedInvoice(t, s, ctx, o.Actor, invoice)
+	}
 	// A new Store value has no in-memory dedup state; canonical ledger survives.
 	s = &Store{pool: s.pool}
 	save(base, draft, backdated, archived, deleted)
@@ -228,7 +260,8 @@ func TestAuthorityInventoryEmptyBaselineAndRemovedHistory(t *testing.T) {
 			if err := s.SaveAuthorityObservationWithInvoices(ctx, 9123, o, invoices); err != nil {
 				t.Fatal(err)
 			}
-			paymentSQL(t, s, ctx, `SELECT count(*)=1 AND bool_and(body LIKE '%архивный%' AND body LIKE '%удалённый%') FROM outbox`)
+			paymentSQL(t, s, ctx, `SELECT count(*)=1 FROM outbox`)
+			assertAuthorityCreatedInvoice(t, s, ctx, o.Actor, fresh)
 			// Neither the inventory scope nor observation can drift independently.
 			o.ScopeHash = strings.Repeat("b", 64)
 			if err := s.SaveAuthorityObservationWithInvoices(ctx, 9123, o, invoices); !errors.Is(err, ninjaauthority.ErrConflict) {
