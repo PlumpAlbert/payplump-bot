@@ -70,15 +70,11 @@ func (noBroadcastFallback) ApplyTelegramUpdate(context.Context, int64, string, t
 }
 func broadcastResponseToken(t *testing.T, body, separator string) string {
 	t.Helper()
-	_, tail, ok := strings.Cut(body, separator)
-	fields := strings.Fields(tail)
-	if !ok || len(fields) == 0 {
-		t.Fatal("expected broadcast confirmation token missing")
+	token, valid := broadcastPresentedToken(body, separator)
+	if !valid {
+		t.Fatal("valid broadcast confirmation token missing")
 	}
-	if _, valid := tokenHash(fields[0]); !valid {
-		t.Fatal("invalid broadcast confirmation token")
-	}
-	return fields[0]
+	return token
 }
 func TestBroadcastWorkflowWithSyntheticHTTP(t *testing.T) {
 	testBroadcastWorkflowWithSyntheticHTTP(t, false)
