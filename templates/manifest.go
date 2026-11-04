@@ -2,6 +2,9 @@ package templates
 
 // manifest lists the only editable files and the only fields each may use.
 var manifest = map[string][]string{
+	"authority/invoice_created_admin":       {"ActorID", "InvoiceNumber", "Amount", "Status"},
+	"authority/invoice_updated_admin":       {"ActorID", "InvoiceNumber", "Amount", "Status"},
+	"authority/configuration_ready_admin":   {"ActorID"},
 	"clientmenu/state_authority_disabled":   {},
 	"clientmenu/authority_footer":           {},
 	"authority/source_unavailable":          {"Subject", "Verb", "Reason", "Status", "ActorID", "DiagnosticCode"},

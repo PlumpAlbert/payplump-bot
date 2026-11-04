@@ -8,12 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/PlumpAlbert/payplump-bot/internal/ninjaauthority"
-	"github.com/PlumpAlbert/payplump-bot/internal/queue"
 	"github.com/PlumpAlbert/payplump-bot/templates"
 	"github.com/jackc/pgx/v5"
 )
@@ -57,7 +57,7 @@ func validateAuthorityInvoices(o ninjaauthority.Observation, invoices []ninjaaut
 
 // Called under the existing bot-before-client locks, in the observation's
 // transaction. A binding-only save never enters this path.
-func saveAuthorityInvoices(ctx context.Context, tx pgx.Tx, bot, client int64, previousRaw []byte, o ninjaauthority.Observation, invoices []ninjaauthority.Invoice) error {
+func saveAuthorityInvoices(ctx context.Context, tx pgx.Tx, bot, client int64, previousRaw []byte, o ninjaauthority.Observation, invoices []ninjaauthority.Invoice, admins []int64) error {
 	var customer, scope string
 	err := tx.QueryRow(ctx, `SELECT customer_id,scope_hash FROM authority_invoice_baselines WHERE bot_id=$1 AND client_id=$2`, bot, client).Scan(&customer, &scope)
 	baseline := errors.Is(err, pgx.ErrNoRows)
@@ -116,14 +116,17 @@ func saveAuthorityInvoices(ctx context.Context, tx pgx.Tx, bot, client int64, pr
 		if i.IsDeleted {
 			status += " (удалённый)"
 		}
-		var text string
+		var clientText, adminText string
 		if !baseline && fresh {
-			text = templates.Render("authority/invoice_created", templates.Data{InvoiceNumber: i.Number, Amount: i.Amount, Status: status})
+			clientText = templates.Render("authority/invoice_created", templates.Data{InvoiceNumber: i.Number, Amount: i.Amount, Status: status})
+			adminText = templates.Render("authority/invoice_created_admin", templates.Data{ActorID: strconv.FormatInt(o.Actor, 10), InvoiceNumber: i.Number, Amount: i.Amount, Status: status})
 		} else {
-			text = templates.Render("authority/invoice_client", templates.Data{InvoiceNumber: i.Number, Amount: i.Amount, Status: status})
+			clientText = templates.Render("authority/invoice_client", templates.Data{InvoiceNumber: i.Number, Amount: i.Amount, Status: status})
+			adminText = templates.Render("authority/invoice_updated_admin", templates.Data{ActorID: strconv.FormatInt(o.Actor, 10), InvoiceNumber: i.Number, Amount: i.Amount, Status: status})
 		}
 		digest := sha256.Sum256([]byte(i.ID))
-		_, err = enqueueOutbox(ctx, tx, queue.Draft{BotID: bot, ChatID: o.Actor, Key: fmt.Sprintf("authority-invoice:%d:%x:%d", client, digest, generation), Text: text})
+		err = enqueueAuthorityClientAndAdmins(ctx, tx, bot, o.Actor, fmt.Sprintf("authority-invoice:%d:%x:%d", client, digest, generation),
+			clientText, adminText, admins)
 		if err != nil {
 			return err
 		}

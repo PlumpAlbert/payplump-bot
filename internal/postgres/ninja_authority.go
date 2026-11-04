@@ -184,15 +184,35 @@ func authorityError(err error) error {
 	return err
 }
 
-func (s *Store) SaveAuthorityObservation(ctx context.Context, bot int64, o ninjaauthority.Observation) error {
-	return s.saveAuthorityObservation(ctx, bot, o, nil)
+// Recipients are delivery configuration, not part of the observation or its hash.
+func authorityAdminRecipients(admins []int64) ([]int64, error) {
+	for _, id := range admins {
+		if id <= 0 {
+			return nil, ninjaauthority.ErrConflict
+		}
+	}
+	admins = slices.Clone(admins)
+	slices.Sort(admins)
+	return slices.Compact(admins), nil
 }
 
-func (s *Store) SaveAuthorityObservationWithInvoices(ctx context.Context, bot int64, o ninjaauthority.Observation, invoices []ninjaauthority.Invoice) error {
-	return s.saveAuthorityObservation(ctx, bot, o, &invoices)
+func (s *Store) SaveAuthorityObservation(ctx context.Context, bot int64, o ninjaauthority.Observation, admins ...int64) error {
+	recipients, err := authorityAdminRecipients(admins)
+	if err != nil {
+		return err
+	}
+	return s.saveAuthorityObservation(ctx, bot, o, nil, recipients)
 }
 
-func (s *Store) saveAuthorityObservation(ctx context.Context, bot int64, o ninjaauthority.Observation, invoices *[]ninjaauthority.Invoice) error {
+func (s *Store) SaveAuthorityObservationWithInvoices(ctx context.Context, bot int64, o ninjaauthority.Observation, invoices []ninjaauthority.Invoice, admins ...int64) error {
+	recipients, err := authorityAdminRecipients(admins)
+	if err != nil {
+		return err
+	}
+	return s.saveAuthorityObservation(ctx, bot, o, &invoices, recipients)
+}
+
+func (s *Store) saveAuthorityObservation(ctx context.Context, bot int64, o ninjaauthority.Observation, invoices *[]ninjaauthority.Invoice, admins []int64) error {
 	if invoices != nil {
 		if err := validateAuthorityInvoices(o, *invoices); err != nil {
 			return err
@@ -331,11 +351,11 @@ func (s *Store) saveAuthorityObservation(ctx context.Context, bot int64, o ninja
 		return authorityError(err)
 	}
 	if invoices != nil {
-		if err = saveAuthorityInvoices(ctx, tx, bot, client, previousRaw, o, *invoices); err != nil {
+		if err = saveAuthorityInvoices(ctx, tx, bot, client, previousRaw, o, *invoices, admins); err != nil {
 			return authorityError(err)
 		}
 	}
-	if err = enqueueAuthorityChanges(ctx, tx, bot, client, revision, previousRaw, o); err != nil {
+	if err = enqueueAuthorityChanges(ctx, tx, bot, client, revision, previousRaw, o, admins); err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `UPDATE automatic_import_issues SET resolved=true,updated_at=clock_timestamp() WHERE bot_id=$1 AND actor_id=$2 AND NOT resolved`, bot, o.Actor)

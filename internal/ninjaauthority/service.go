@@ -351,7 +351,7 @@ func (s *Service) scan(ctx context.Context) error {
 			o.InvoiceID = i.ID
 			o.InvoiceNumber, o.InvoiceAmount, o.InvoiceStatus, o.InvoiceDate = i.Number, i.Amount.String(), i.StatusID, i.Date
 		}
-		if e = s.store.SaveAuthorityObservationWithInvoices(ctx, s.cfg.BotID, o, invoiceList); e != nil {
+		if e = s.store.SaveAuthorityObservationWithInvoices(ctx, s.cfg.BotID, o, invoiceList, s.cfg.AdminIDs...); e != nil {
 			if e = notice(key, actor, "local_binding_conflict", "save_observation"); e != nil {
 				return e
 			}
@@ -369,7 +369,7 @@ func (s *Service) scan(ctx context.Context) error {
 			o.InboundIDs = created.InboundIDs()
 			slices.Sort(o.InboundIDs)
 			o.SUIEnabled = created.Enabled()
-			if e = s.store.SaveAuthorityObservation(ctx, s.cfg.BotID, o); e != nil {
+			if e = s.store.SaveAuthorityObservation(ctx, s.cfg.BotID, o, s.cfg.AdminIDs...); e != nil {
 				return e
 			}
 			panelIDs[created.ID()] = created
@@ -399,7 +399,7 @@ func (s *Service) scan(ctx context.Context) error {
 			o.InboundIDs = r.InboundIDs()
 			slices.Sort(o.InboundIDs)
 		}
-		if err := s.store.SaveAuthorityObservation(ctx, s.cfg.BotID, o); err != nil {
+		if err := s.store.SaveAuthorityObservation(ctx, s.cfg.BotID, o, s.cfg.AdminIDs...); err != nil {
 			return err
 		}
 		if err := notice("actor:"+strconv.FormatInt(actor, 10)+":missing", actor, "ninja_missing", "absent_from_complete_inventory"); err != nil {

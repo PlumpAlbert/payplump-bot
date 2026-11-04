@@ -52,7 +52,8 @@ func TestAuthorityActivationJournalCompletesWithoutSUIAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.Binding.CustomerID = o.CustomerID
-	if err := s.SaveAuthorityObservation(ctx, 123, o); err != nil {
+	admins := []int64{991, 992, 991, 31000}
+	if err := s.SaveAuthorityObservation(ctx, 123, o, admins...); err != nil {
 		t.Fatal(err)
 	}
 	d := authorityDraft(t, "31000", false)
@@ -61,23 +62,38 @@ func TestAuthorityActivationJournalCompletesWithoutSUIAudit(t *testing.T) {
 	o.Binding.Name = r.Name()
 	o.Binding.CredentialsHash = r.CredentialsHash()
 	o.SUIEnabled = false
-	if err := s.SaveAuthorityObservation(ctx, 123, o); err != nil {
+	if err := s.SaveAuthorityObservation(ctx, 123, o, admins...); err != nil {
 		t.Fatal(err)
 	}
-	paymentSQL(t, s, ctx, `SELECT NOT EXISTS(SELECT 1 FROM outbox WHERE message_key LIKE 'authority-change:%:configuration_ready')`)
+	paymentSQL(t, s, ctx, `SELECT NOT EXISTS(SELECT 1 FROM outbox)`)
 	o.SUIEnabled = true
+	// A failed admin insert must roll back readiness and the client notice too.
+	paymentExec(t, s, ctx, `ALTER TABLE outbox ADD CONSTRAINT synthetic_block_ready_admin CHECK(chat_id<>992)`)
+	if err := s.SaveAuthorityObservation(ctx, 123, o, admins...); err == nil {
+		t.Fatal("expected admin outbox insertion failure")
+	}
+	paymentSQL(t, s, ctx, `SELECT NOT EXISTS(SELECT 1 FROM outbox) AND (SELECT observation->>'SUIEnabled'='false' FROM authority_observations WHERE bot_id=123)`)
+	paymentExec(t, s, ctx, `ALTER TABLE outbox DROP CONSTRAINT synthetic_block_ready_admin`)
 	for i := 0; i < 2; i++ {
-		if err := s.SaveAuthorityObservation(ctx, 123, o); err != nil {
+		if err := s.SaveAuthorityObservation(ctx, 123, o, admins...); err != nil {
 			t.Fatal(err)
 		}
 	}
+	s = &Store{pool: s.pool}     // Restart must not rearm the ready event.
+	admins = append(admins, 993) // New admins do not get a historical replay.
 	for _, enabled := range []bool{false, true} {
 		o.Enabled = enabled
-		if err := s.SaveAuthorityObservation(ctx, 123, o); err != nil {
+		if err := s.SaveAuthorityObservation(ctx, 123, o, admins...); err != nil {
 			t.Fatal(err)
 		}
 	}
 	paymentSQL(t, s, ctx, `SELECT (SELECT count(*)=1 FROM outbox WHERE message_key LIKE 'authority-change:%:configuration_ready') AND NOT EXISTS(SELECT 1 FROM activation_steps WHERE step IN ('sui_create','sui_enable'))`)
+	paymentSQL(t, s, ctx, `SELECT count(*)=4 AND count(*) FILTER(WHERE chat_id=31000)=2
+ AND count(*) FILTER(WHERE chat_id=991)=1 AND count(*) FILTER(WHERE chat_id=992)=1
+ AND count(*) FILTER(WHERE chat_id=993)=0 AND bool_and(NOT protected_configuration AND NOT client_menu)
+ FROM outbox`)
+	paymentSQL(t, s, ctx, `SELECT count(*)=3 AND bool_and(body LIKE '%31000%' AND body NOT LIKE '%https://%')
+ FROM outbox WHERE message_key LIKE 'authority-change:%:configuration_ready:admin:%'`)
 }
 
 func TestAuthorityActivationOnlyEmptyLegacyJournalsTransition(t *testing.T) {
